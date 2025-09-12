@@ -9,11 +9,6 @@
 
 namespace cuda {
 
-void AddSpatial(bool fp16, void *data, const void *biases,
-                const void *residual, const void *mask,
-                int bsize, int batch, int channels, int spatial,
-                Activation act, cudaStream_t stream);
-
 class LayerBasic {
 protected:
     CudaHandles *handles_{nullptr};
@@ -36,37 +31,24 @@ public:
                 Activation act);
     ~Convolution();
 
-    void Forward(const int batch,
-                 void *output, void *input,
-                 const void *residual, const void *mask,
-                 void *scratch, void *scratch_other, size_t scratch_size);
+    void LoadWeights(const std::vector<float> &weights);
 
     void LoadWeights(const std::vector<float> &weights,
-                     size_t &scratch_size,
-                     bool winograd);
+                     const std::vector<float> &biases);
 
-    void LoadWeights(const std::vector<float> &weights,
-                     const std::vector<float> &biases,
-                     size_t &scratch_size,
-                     bool winograd);
+    void* GetDevWeights() {
+        return cuda_weights_;
+    }
+
+    void* GetDevBiases() {
+        return cuda_biases_;
+    }
 
 private:
     int filter_dim_;
     int filters_;
     int in_channels_;
     int out_channels_;
-    bool winograd_;
-
-#ifdef USE_CUDNN
-    cudnnFilterDescriptor_t filter_desc_;
-    cudnnTensorDescriptor_t in_tensor_desc_;
-    cudnnTensorDescriptor_t out_tensor_desc_;
-
-    cudnnConvolutionDescriptor_t conv_desc_;
-
-    cudnnTensorDescriptor_t bias_desc_;
-    cudnnConvolutionFwdAlgo_t conv_algo_;
-#endif
 
     void *cuda_weights_;
     void *cuda_biases_{nullptr};
@@ -80,14 +62,18 @@ public:
                          const int channels, Activation act);
     ~DepthwiseConvolution();
 
-    void Forward(const int batch,
-                 void *output, void *input,
-                 const void *residual, const void *mask);
-
     void LoadWeights(const std::vector<float> &weights);
 
     void LoadWeights(const std::vector<float> &weights,
                      const std::vector<float> &biases);
+
+    void* GetDevWeights() {
+        return cuda_weights_;
+    }
+
+    void* GetDevBiases() {
+        return cuda_biases_;
+    }
 
 private:
     int filters_;
@@ -107,10 +93,17 @@ public:
                  Activation act);
     ~FullyConnect();
 
-    void Forward(const int batch, void *output, void *input);
-
     void LoadWeights(const std::vector<float> &weights,
                      const std::vector<float> &biases);
+
+    void* GetDevWeights() {
+        return cuda_weights_;
+    }
+
+    void* GetDevBiases() {
+        return cuda_biases_;
+    }
+
 private:
     int inputs_;
     int outputs_;
@@ -127,10 +120,6 @@ public:
                   const int batch,
                   const int board_size,
                   const int channels);
-
-    void Forward(const int batch,
-                 void *output, void *input,
-                 void *mask, void *sqrt_mask);
 
 private:
     int channels_;
@@ -153,14 +142,25 @@ public:
                      const std::vector<float> &weights_w2,
                      const std::vector<float> &weights_b2);
 
-    void Forward(const int batch, void *output, void *input,
-                 void *residual, void *mask, void *sqrt_mask);
+    void* GetDevSqueezeWeights() {
+        return cuda_weights_w1_;
+    }
+
+    void* GetDevSqueezeBiases() {
+        return cuda_weights_b1_;
+    }
+
+    void* GetDevExciteWeights() {
+        return cuda_weights_w2_;
+    }
+
+    void* GetDevExciteBiases() {
+        return cuda_weights_b2_;
+    }
 
 private:
     int se_size_;
     int channels_;
-
-    std::array<void *, 3> cuda_op_;
 
     void *cuda_weights_w1_;
     void *cuda_weights_b1_;

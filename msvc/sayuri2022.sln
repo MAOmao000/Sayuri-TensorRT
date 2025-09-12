@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36414.22 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "sayuri", "VS2022\sayuri.vcxproj", "{007FB3FB-67AC-45E5-8FF3-79FC551DBB1B}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{007FB3FB-67AC-45E5-8FF3-79FC551DBB1B}.Debug|x64.ActiveCfg = Debug|x64
+		{007FB3FB-67AC-45E5-8FF3-79FC551DBB1B}.Debug|x64.Build.0 = Debug|x64
+		{007FB3FB-67AC-45E5-8FF3-79FC551DBB1B}.Release|x64.ActiveCfg = Release|x64
+		{007FB3FB-67AC-45E5-8FF3-79FC551DBB1B}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {EA8D4FA9-AABC-427E-A938-4FFBA1643270}
+	EndGlobalSection
+EndGlobal
