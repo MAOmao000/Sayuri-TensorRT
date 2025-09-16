@@ -1418,6 +1418,8 @@ bool CudaForwardPipe::NNGraph::constructNetwork(
             }
         } else if (tower_ptr->IsNestedBottleneckBlock()) {
             // nested-bottleneck
+            //  in: batch_size * weights_->residual_channels
+            //  out: batch_size * weights_->residual_channels / 2
             auto preConvLayer = buildConvLayer(
                 outputConv,
                 tower_ptr->pre_btl_conv.GetFilter(),
@@ -1436,6 +1438,8 @@ bool CudaForwardPipe::NNGraph::constructNetwork(
                 "nestedbottleneck" + std::to_string(i) + "pre.activation",
                 default_act_type);
             // 1st conv layer (1st block)
+            //  in: batch_size * weights_->residual_channels / 2
+            //  out: batch_size * weights_->residual_channels / 2
             auto firstConvLayer = buildConvLayer(
                 preActivationConvLayer->getOutput(0),
                 tower_ptr->conv1.GetFilter(),
@@ -1454,6 +1458,8 @@ bool CudaForwardPipe::NNGraph::constructNetwork(
                 "nestedbottleneck" + std::to_string(i) + "_1.activation",
                 default_act_type);
             // 2nd conv layer (1st block)
+            //  in: batch_size * weights_->residual_channels / 2
+            //  out: batch_size * weights_->residual_channels / 2
             auto secondConvLayer = buildConvLayer(
                 firstActivationConvLayer->getOutput(0),
                 tower_ptr->conv2.GetFilter(),
@@ -1476,6 +1482,8 @@ bool CudaForwardPipe::NNGraph::constructNetwork(
                 "nestedbottleneck" + std::to_string(i) + "_2.activation",
                 default_act_type);
             // 3rd conv layer (2nd block)
+            //  in: batch_size * weights_->residual_channels / 2
+            //  out: batch_size * weights_->residual_channels / 2
             auto thirdConvLayer = buildConvLayer(
                 secondActivationConvLayer->getOutput(0),
                 tower_ptr->conv3.GetFilter(),
@@ -1494,6 +1502,8 @@ bool CudaForwardPipe::NNGraph::constructNetwork(
                 "nestedbottleneck" + std::to_string(i) + "_3.activation",
                 default_act_type);
             // 4th conv layer (2nd block)
+            //  in: batch_size * weights_->residual_channels / 2
+            //  out: batch_size * weights_->residual_channels / 2
             auto fourthConvLayer = buildConvLayer(
                 thirdActivationConvLayer->getOutput(0),
                 tower_ptr->conv4.GetFilter(),
@@ -1516,6 +1526,8 @@ bool CudaForwardPipe::NNGraph::constructNetwork(
                 "nestedbottleneck" + std::to_string(i) + "_4.activation",
                 default_act_type);
             // post-bottleneck
+            //  in: batch_size * weights_->residual_channels / 2
+            //  out: batch_size * weights_->residual_channels
             auto postConvLayer = buildConvLayer(
                 fourthActivationConvLayer->getOutput(0),
                 tower_ptr->post_btl_conv.GetFilter(),
@@ -1769,7 +1781,7 @@ bool CudaForwardPipe::NNGraph::constructNetwork(
     } else {
         inputPool = actPolicyLayer->getOutput(0);
     }
-    // in: batch_size * 64(weights_->policy_head_channels) * num_intersections
+    // in: batch_size * 64(weights_->policy_head_channels)
     // out: batch_size * 64(weights_->policy_head_channels) * 3
     auto p_poolLayer = applyGPoolLayer(
         inputPool,
@@ -1843,7 +1855,7 @@ bool CudaForwardPipe::NNGraph::constructNetwork(
         weights_->pass_fc.GetOutputs());
     // value head
     // in: batch_size * weights_->residual_channels * num_intersections
-    // out: batch_size * 64(weights_->value_head_channels) * num_intersection
+    // out: batch_size * 64(weights_->value_head_channels)
     // Class: Convolution
     auto valueConvLayer = buildConvLayer(
         outputConv,
@@ -1862,7 +1874,7 @@ bool CudaForwardPipe::NNGraph::constructNetwork(
         tune_desc,
         "v_hd.act",
         default_act_type);
-    // in: batch_size * 64(weights_->value_head_channels) * num_intersection
+    // in: batch_size * 64(weights_->value_head_channels)
     // out: batch_size * 64(weights_->value_head_channels) * 3
     auto v_poolLayer = applyGPoolLayer(
         actValueLayer->getOutput(0),
@@ -1892,6 +1904,12 @@ bool CudaForwardPipe::NNGraph::constructNetwork(
         tune_desc,
         "fc.val.matmul",
         weights_->v_inter_fc.GetOutputs());
+    auto val1ActValueLayer = buildActivationLayer(
+        val1MatMulLayer->getOutput(0),
+        network,
+        tune_desc,
+        "v_hd.act",
+        default_act_type);
     // in: batch_size * 64(weights_->value_head_channels) * num_intersection
     // out: batch_size * 1(weights_->ownership_channels) * num_intersection
     // Class: Convolution
@@ -1910,12 +1928,12 @@ bool CudaForwardPipe::NNGraph::constructNetwork(
     // out: batch_size * 15(weights_->value_misc_outputs)
     // Class: FullyConnect
     int32_t const mmInputs_v2 = static_cast<int32_t>(
-        val1MatMulLayer->getOutput(0)->getDimensions().d[1]
-        * val1MatMulLayer->getOutput(0)->getDimensions().d[2]
-        * val1MatMulLayer->getOutput(0)->getDimensions().d[3]);
-    auto inputReshape_v2 = network->addShuffle(*val1MatMulLayer->getOutput(0));
+        val1ActValueLayer->getOutput(0)->getDimensions().d[1]
+        * val1ActValueLayer->getOutput(0)->getDimensions().d[2]
+        * val1ActValueLayer->getOutput(0)->getDimensions().d[3]);
+    auto inputReshape_v2 = network->addShuffle(*val1ActValueLayer->getOutput(0));
     int32_t const variable_batch_v2 = static_cast<int32_t>(
-        val1MatMulLayer->getOutput(0)->getDimensions().d[0]);
+        val1ActValueLayer->getOutput(0)->getDimensions().d[0]);
     inputReshape_v2->setReshapeDimensions(Dims{4, {variable_batch_v2, mmInputs_v2, 1, 1}});
     auto val2MatMulLayer = buildConvLayer(
         inputReshape_v2->getOutput(0),
@@ -2016,9 +2034,6 @@ ILayer* CudaForwardPipe::NNGraph::buildConvLayer(
             biases_size
         }
     );
-    if (filter_size == 1) {
-        return convLayer;
-    }
     convLayer->setDilationNd({2, {1, 1}});
     convLayer->setPaddingMode(PaddingMode::kSAME_UPPER);
     convLayer->setNbGroups(groups);
