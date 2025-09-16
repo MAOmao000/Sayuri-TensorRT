@@ -1908,7 +1908,7 @@ bool CudaForwardPipe::NNGraph::constructNetwork(
         val1MatMulLayer->getOutput(0),
         network,
         tune_desc,
-        "v_hd.act",
+        "v_hd.misc.act",
         default_act_type);
     // in: batch_size * 64(weights_->value_head_channels) * num_intersection
     // out: batch_size * 1(weights_->ownership_channels) * num_intersection
