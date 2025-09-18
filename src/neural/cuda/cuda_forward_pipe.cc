@@ -1254,10 +1254,7 @@ bool CudaForwardPipe::NNGraph::constructNetwork(
         1);
     // See. https://github.com/NVIDIA/TensorRT/issues/2282
     auto inShapeLayer = network->addShape(*batchSizeTensor);
-    auto castLayer = network->addCast(*inShapeLayer->getOutput(0), DataType::kINT32);
-    auto shapeLayer = network->addUnary(
-        *castLayer->getOutput(0),
-        UnaryOperation::kABS);
+    auto shapeLayer = network->addCast(*inShapeLayer->getOutput(0), DataType::kINT32);
     // input layer
     inputFeature = initInputs(
         "InputFeature",
