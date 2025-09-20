@@ -21,8 +21,6 @@
 #include "utils/threadpool.h"
 #include "utils/half.h"
 
-constexpr auto SIGMOID = 99;
-
 using namespace nvinfer1;
 
 struct InferDeleter {
@@ -101,9 +99,8 @@ private:
 
     class BackendContext {
     public:
-        bool m_buffers_allocated{false};
-        std::unique_ptr<nvinfer1::IExecutionContext> mContext{nullptr};
-        std::map<std::string, void*> mBuffers;
+        std::unique_ptr<nvinfer1::IExecutionContext> execution_context_{nullptr};
+        std::map<std::string, void*> buffers_;
     };
 
     class NNGraph {
@@ -146,7 +143,7 @@ private:
         };
 
     public:
-        NNGraph(std::mutex &mtx) : io_mutex_(mtx) {}
+        NNGraph() {}
         ~NNGraph();
         void ConstructGraph(bool dump_gpu_info,
                             const int gpu,
@@ -176,9 +173,7 @@ private:
 
         // Create full model using the TensorRT network definition API and build the engine.
         bool constructNetwork(
-            TrtUniquePtr<nvinfer1::INetworkDefinition>& network,
-            std::string& tune_desc,
-            const int board_size
+            TrtUniquePtr<nvinfer1::INetworkDefinition>& network
         );
 
         nvinfer1::ITensor* initInputs(
@@ -189,6 +184,49 @@ private:
             const int cols
         );
 
+        ILayer* buildResidualBlock(
+            ITensor* input,
+            BlockBasic* tower_ptr,
+            NNGraph::Block* block_ptr,
+            TrtUniquePtr<nvinfer1::INetworkDefinition>& network);
+
+        ILayer* buildBottleneckBlock(
+            ITensor* input,
+            BlockBasic* tower_ptr,
+            NNGraph::Block* block_ptr,
+            TrtUniquePtr<nvinfer1::INetworkDefinition>& network);
+
+        ILayer* buildNestedBottleneckBlock(
+            ITensor* input,
+            BlockBasic* tower_ptr,
+            NNGraph::Block* block_ptr,
+            TrtUniquePtr<nvinfer1::INetworkDefinition>& network);
+
+        ILayer* buildMixerBlock(
+            ITensor* input,
+            BlockBasic* tower_ptr,
+            NNGraph::Block* block_ptr,
+            TrtUniquePtr<nvinfer1::INetworkDefinition>& network);
+
+        ILayer* buildSqueezeExcitationLayer(
+            ITensor* residual,
+            ITensor* input,
+            BlockBasic* tower_ptr,
+            NNGraph::Block* block_ptr,
+            TrtUniquePtr<nvinfer1::INetworkDefinition>& network);
+
+        void buildPolicyHead(
+            ITensor* input,
+            TrtUniquePtr<nvinfer1::INetworkDefinition>& network);
+
+        void buildPolicyHeadRepLK(
+            ITensor* input,
+            TrtUniquePtr<nvinfer1::INetworkDefinition>& network);
+
+        void buildValueHead(
+            ITensor* input,
+            TrtUniquePtr<nvinfer1::INetworkDefinition>& network);
+
         nvinfer1::ILayer* buildConvLayer(
             nvinfer1::ITensor* input,
             unsigned int filter_size,
@@ -197,24 +235,17 @@ private:
             int64_t biases_size,
             void* biases,
             TrtUniquePtr<nvinfer1::INetworkDefinition>& network,
-            std::string& tune_desc,
-            std::string op_name,
             unsigned int outputs,
             const int groups = 1
         );
 
         nvinfer1::ILayer* buildActivationLayer(
             nvinfer1::ITensor* input,
-            TrtUniquePtr<nvinfer1::INetworkDefinition>& network,
-            std::string& tune_desc,
-            std::string op_name,
-            const int act
+            TrtUniquePtr<nvinfer1::INetworkDefinition>& network
         );
 
         nvinfer1::ILayer* applyGPoolLayer(
             nvinfer1::ITensor* input,
-            nvinfer1::IConstantLayer* maskScaleLayer,
-            nvinfer1::IConstantLayer* maskQuadLayer,
             TrtUniquePtr<nvinfer1::INetworkDefinition>& network,
             const bool isValueHead = false
         );
@@ -238,24 +269,17 @@ private:
         void *cuda_output_val_;
         void *cuda_output_ownership_;
 
-        std::array<void*, 2> host_mask_op_;
-
-        std::array<void*, 2> cuda_scratch_op_;
-        std::array<void*, 4> cuda_conv_op_;
-        std::array<void*, 3> cuda_pol_op_;
-        std::array<void*, 3> cuda_val_op_;
-        std::array<void*, 2> cuda_mask_op_;
-
-        std::mutex &io_mutex_;
-
-        size_t scratch_size_;
         std::shared_ptr<DNNWeights> weights_{nullptr};
-        std::unique_ptr<nvinfer1::IRuntime> mRuntime;
-        std::unique_ptr<nvinfer1::ICudaEngine> mEngine;
-        std::unique_ptr<BackendContext> m_context;
+        std::unique_ptr<nvinfer1::IRuntime> runtime_;
+        std::unique_ptr<nvinfer1::ICudaEngine> engine_;
+        std::unique_ptr<BackendContext> context_;
 
-        std::vector<std::unique_ptr<float[]>> extraWeights;
-        std::vector<std::unique_ptr<half_float_t[]>> extrahalfWeights;
+        nvinfer1::IConstantLayer* maskScaleLayer_{nullptr};
+        nvinfer1::IConstantLayer* maskQuadLayer_{nullptr};
+        nvinfer1::ICastLayer* shapeLayer_{nullptr};
+
+        std::vector<std::unique_ptr<float[]>> extraWeights_;
+        std::vector<std::unique_ptr<half_float_t[]>> extrahalfWeights_;
     };
 
     struct ForwawrdEntry {
