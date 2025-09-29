@@ -126,7 +126,7 @@ if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR "${CMAKE_CXX_COMPILER_ID}" STR
     set(CMAKE_EXE_LINKER_FLAGS "-flto -g")
 elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
     set(GCC_COMPILE_FLAGS "-Wall -Wextra -ffast-math -march=native -flto")
-    set(GCC_DISABLED_WARNING_COMPILE_FLAGS "-Wno-ignored-attributes -Wno-maybe-uninitialized -Wno-mismatched-tags")
+    set(GCC_DISABLED_WARNING_COMPILE_FLAGS "-Wno-ignored-attributes -Wno-maybe-uninitialized -Wno-mismatched-tags -Wno-unused-variable -Wno-unused-parameter -Wno-stringop-overflow -Wno-deprecated-declarations")
     set(CMAKE_CXX_FLAGS "${GCC_COMPILE_FLAGS} ${GCC_DISABLED_WARNING_COMPILE_FLAGS} ${CMAKE_CXX_FLAGS}")
     set(CMAKE_CXX_FLAGS_DEBUG "-g -Og ${CMAKE_CXX_FLAGS}")
     set(CMAKE_CXX_FLAGS_RELEASE "-g -O3 -DNDEBUG ${CMAKE_CXX_FLAGS}")

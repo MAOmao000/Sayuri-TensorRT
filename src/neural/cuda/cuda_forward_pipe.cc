@@ -947,7 +947,6 @@ bool CudaForwardPipe::NNGraph::build(bool dump_gpu_info,
                                      const int board_size,
                                      std::shared_ptr<DNNWeights> weights) {
 
-    // Bump this when between program versions we want to forcibly drop old timing caches and plan caches.
     auto builder
         = TrtUniquePtr<IBuilder>(createInferBuilder(tensorrt_logger.getTRTLogger()));
     if (!builder) {
@@ -1006,126 +1005,140 @@ bool CudaForwardPipe::NNGraph::build(bool dump_gpu_info,
     // Typical runtime allocation is much less than the 2 GiB specified below
     config->setMemoryPoolLimit(MemoryPoolType::kWORKSPACE, 1U << 31);
 
-    std::ifstream in;
-    in.open(weights_file, std::ios::in | std::ios::binary | std::ios::ate);
-    std::ifstream::pos_type fileSize = in.tellg();
-    if (fileSize < 0) {
-        LOGGING << "tellg failed to determine size.\n";
-        return false;
-    }
-    std::string str;
-    in.seekg(0, std::ios::beg);
-    str.resize(fileSize);
-    in.read(&str[0], fileSize);
-    in.close();
-    char hashResultBuf[65];
-    SHA2::get256((const uint8_t*)str.data(), str.size(), hashResultBuf);
-    std::string model_hash{""};
-    model_hash.assign(hashResultBuf);
-
     std::string plan;
-    {
-        static std::mutex tuneMutex;
-        tuneMutex.lock();
-        uint8_t deviceHash[32];
-        SHA2::get256(dev_prop.name, deviceHash);
-
-        // Truncated to 4 bytes
-        char deviceIdent[4 * 2 + 1];
-        for(int i = 0; i < 4; i++) {
-            sprintf(deviceIdent + i * 2, "%02x", static_cast<unsigned char>(deviceHash[i]));
+    if (GetOption<std::string>("mode") == "selfplay") {
+        auto planBuffer = std::unique_ptr<IHostMemory>(
+            builder->buildSerializedNetwork(*network, *config));
+        if (!planBuffer) {
+            LOGGING << "TensorRT backend: failed to create plan.\n";
+            return false;
         }
-        deviceIdent[sizeof(deviceIdent) - 1] = 0;
-
-        std::string precision = (handles_.fp16) ? "half" : "single";
-
-        std::filesystem::path filepath = network->getName();
-        auto planCacheFile = strprintf(
-            "trt-%d_gpu-%s_net-%s_%s_%dx%d_batch%d_%s",
-            getInferLibVersion(),
-            deviceIdent,
-            filepath.filename().string().c_str(),
-            GetProgramVersion().c_str(),
-            board_size,
-            board_size,
-            max_batch_size,
-            precision.c_str()
+        plan.insert(
+            plan.end(),
+            static_cast<char*>(planBuffer->data()),
+            static_cast<char*>(planBuffer->data()) + planBuffer->size()
         );
-        std::string paramStr = strprintf(
-            "_%d_%s_%s_%d_%d_%d_%s",
-            getInferLibVersion(),
-            deviceIdent,
-            GetProgramVersion().c_str(),
-            board_size,
-            board_size,
-            max_batch_size,
-            precision.c_str()
-        );
+    } else {
+        std::ifstream in;
+        in.open(weights_file, std::ios::in | std::ios::binary | std::ios::ate);
+        std::ifstream::pos_type fileSize = in.tellg();
+        if (fileSize < 0) {
+            LOGGING << "tellg failed to determine size.\n";
+            return false;
+        }
+        std::string str;
+        in.seekg(0, std::ios::beg);
+        str.resize(fileSize);
+        in.read(&str[0], fileSize);
+        in.close();
+        char hashResultBuf[65];
+        SHA2::get256((const uint8_t*)str.data(), str.size(), hashResultBuf);
+        std::string model_hash{""};
+        model_hash.assign(hashResultBuf);
 
-        try {
-            plan = readFileBinary(planCacheFile);
-        } catch (std::exception const& e) {
-            (void) e;
-        };
-        if (plan.size() > 0) {
-            if (plan.size() < 64 + paramStr.size()) {
-                LOGGING << "Could not parse plan, unexpected size in " + planCacheFile + ".\n";
-                plan.clear();
-            } else {
-                std::string cachedParamStr = plan.substr(plan.size() - paramStr.size());
-                std::string modelHash = plan.substr(plan.size() - 64 - paramStr.size(), 64);
-                if (modelHash != model_hash) {
-                    LOGGING << "Plan cache is corrupted or is for the wrong model in " + planCacheFile + ".\n";
-                    plan.clear();
-                } else if (cachedParamStr != paramStr) {
-                    LOGGING << "Plan cache is corrupted or is for the wrong parameters in " + planCacheFile + ".\n";
+        {
+            static std::mutex tuneMutex;
+            tuneMutex.lock();
+            uint8_t deviceHash[32];
+            SHA2::get256(dev_prop.name, deviceHash);
+
+            // Truncated to 4 bytes
+            char deviceIdent[4 * 2 + 1];
+            for(int i = 0; i < 4; i++) {
+                sprintf(deviceIdent + i * 2, "%02x", static_cast<unsigned char>(deviceHash[i]));
+            }
+            deviceIdent[sizeof(deviceIdent) - 1] = 0;
+
+            std::string precision = (handles_.fp16) ? "half" : "single";
+
+            std::filesystem::path filepath = network->getName();
+            auto planCacheFile = strprintf(
+                "trt-%d_gpu-%s_net-%s_%s_%dx%d_batch%d_%s",
+                getInferLibVersion(),
+                deviceIdent,
+                filepath.filename().string().c_str(),
+                GetProgramVersion().c_str(),
+                board_size,
+                board_size,
+                max_batch_size,
+                precision.c_str()
+            );
+            std::string paramStr = strprintf(
+                "_%d_%s_%s_%d_%d_%d_%s",
+                getInferLibVersion(),
+                deviceIdent,
+                GetProgramVersion().c_str(),
+                board_size,
+                board_size,
+                max_batch_size,
+                precision.c_str()
+            );
+
+            try {
+                plan = readFileBinary(planCacheFile);
+            } catch (std::exception const& e) {
+                (void) e;
+            };
+            if (plan.size() > 0) {
+                if (plan.size() < 64 + paramStr.size()) {
+                    LOGGING << "Could not parse plan, unexpected size in " + planCacheFile + ".\n";
                     plan.clear();
                 } else {
-                    plan.erase(plan.size() - 64 - paramStr.size());
+                    std::string cachedParamStr = plan.substr(plan.size() - paramStr.size());
+                    std::string modelHash = plan.substr(plan.size() - 64 - paramStr.size(), 64);
+                    if (modelHash != model_hash) {
+                        LOGGING << "Plan cache is corrupted or is for the wrong model in " + planCacheFile + ".\n";
+                        plan.clear();
+                    } else if (cachedParamStr != paramStr) {
+                        LOGGING << "Plan cache is corrupted or is for the wrong parameters in " + planCacheFile + ".\n";
+                        plan.clear();
+                    } else {
+                        plan.erase(plan.size() - 64 - paramStr.size());
+                    }
                 }
             }
-        }
-        if (plan.size() <= 0) {
-            LOGGING << "Creating new plan cache.\n";
-            auto planBuffer = std::unique_ptr<IHostMemory>(
-                builder->buildSerializedNetwork(*network, *config));
-            if (!planBuffer) {
-                tuneMutex.unlock();
-                LOGGING << "TensorRT backend: failed to create plan.\n";
-                return false;
-            }
-            plan.insert(
-                plan.end(),
-                static_cast<char*>(planBuffer->data()),
-                static_cast<char*>(planBuffer->data()) + planBuffer->size()
-            );
-            if (model_hash.size() != 64) {
-                tuneMutex.unlock();
-                LOGGING << "Unexpected model hash size.\n";
-                return false;
-            }
-            plan.insert(
-                plan.end(),
-                model_hash.begin(),
-                model_hash.end()
-            );
-            plan.insert(
-                plan.end(),
-                paramStr.begin(),
-                paramStr.end()
-            );
+            if (plan.size() <= 0) {
+                LOGGING << "Creating new plan cache.\n";
+                auto planBuffer = std::unique_ptr<IHostMemory>(
+                    builder->buildSerializedNetwork(*network, *config));
+                if (!planBuffer) {
+                    tuneMutex.unlock();
+                    LOGGING << "TensorRT backend: failed to create plan.\n";
+                    return false;
+                }
+                plan.insert(
+                    plan.end(),
+                    static_cast<char*>(planBuffer->data()),
+                    static_cast<char*>(planBuffer->data()) + planBuffer->size()
+                );
+                if (model_hash.size() != 64) {
+                    tuneMutex.unlock();
+                    LOGGING << "Unexpected model hash size.\n";
+                    return false;
+                }
+                plan.insert(
+                    plan.end(),
+                    model_hash.begin(),
+                    model_hash.end()
+                );
+                plan.insert(
+                    plan.end(),
+                    paramStr.begin(),
+                    paramStr.end()
+                );
 #ifdef NDEBUG
-            std::ofstream ofs;
-            ofs.open(planCacheFile, std::ios_base::out | std::ios_base::binary);
-            ofs.write(plan.data(), plan.size());
-            ofs.close();
+                std::ofstream ofs;
+                ofs.open(planCacheFile, std::ios_base::out | std::ios_base::binary);
+                ofs.write(plan.data(), plan.size());
+                ofs.close();
 #endif
-            LOGGING << "Saved new plan cache to " + planCacheFile + ".\n";
-            plan.erase(plan.size() - 64 - paramStr.size());
-        } else {
-            LOGGING << "Using existing plan cache at " + planCacheFile + ".\n";
+                LOGGING << "Saved new plan cache to " + planCacheFile + ".\n";
+                plan.erase(plan.size() - 64 - paramStr.size());
+            } else {
+                LOGGING << "Using existing plan cache at " + planCacheFile + ".\n";
+            }
+            tuneMutex.unlock();
         }
-        tuneMutex.unlock();
     }
 
     runtime_.reset(createInferRuntime(tensorrt_logger.getTRTLogger()));
