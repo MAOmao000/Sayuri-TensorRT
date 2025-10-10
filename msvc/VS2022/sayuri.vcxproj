@@ -253,9 +253,9 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_DEBUG;_CONSOLE;WIN32;NOMINMAX;USE_CUDA;ENABLE_FP16;BYTE_ORDER=1234;LITTLE_ENDIAN=1234;BIG_ENDIAN=4321;_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH;_ITERATOR_DEBUG_LEVEL=2;_CRT_SECURE_NO_WARNINGS;_SILENCE_CXX17_RESULT_OF_DEPRECATION_WARNING;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_DEBUG;_CONSOLE;WIN32;NOMINMAX;USE_CUDA;USE_ZLIB;ENABLE_FP16;BYTE_ORDER=1234;LITTLE_ENDIAN=1234;BIG_ENDIAN=4321;_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH;_ITERATOR_DEBUG_LEVEL=2;_CRT_SECURE_NO_WARNINGS;_SILENCE_CXX17_RESULT_OF_DEPRECATION_WARNING;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <LanguageStandard>stdcpp17</LanguageStandard>
-      <AdditionalIncludeDirectories>..\..\src;C:\Program Files\TensorRT-10.13.0.35\include;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\lib\vcpkg\installed\x64-windows-static\include;..\..\src;C:\Program Files\TensorRT-10.13.0.35\include;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <AdditionalOptions>/arch:AVX2 /D"__FMA__" %(AdditionalOptions)</AdditionalOptions>
@@ -265,8 +265,8 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\lib\x64;C:\Program Files\TensorRT-10.13.0.35\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>cuda.lib;cudart_static.lib;nvinfer_10.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:\lib\vcpkg\installed\x64-windows-static\debug\lib;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\lib\x64;C:\Program Files\TensorRT-10.13.0.35\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>zlibd.lib;cuda.lib;cudart_static.lib;nvinfer_10.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <IgnoreAllDefaultLibraries>false</IgnoreAllDefaultLibraries>
       <IgnoreSpecificDefaultLibraries>libcmt.lib;msvcrt.lib;msvcrtd.lib;%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
     </Link>
