@@ -5,12 +5,6 @@
     <h3>Sayuri</h3>
 </div>
 
-## Notes
-
-We evaluated sayuri with the TensorRT backend, and found a speedup of over 1.5x when using fp16.
-
-Since it uses C++17 features, a C++ version of 17 or higher is required.
-
 ## Let's ROCK!
 
 **Sayuri** is a GTP-compliant Go engine built on Deep Convolutional Neural Networks and Monte Carlo Tree Search. It learns to play Go from scratch using an AlphaZero-style algorithm, without any handcrafted human strategies. Inspired heavily by **Leela Zero** and **KataGo**, Sayuri initially borrowed its board data structures, search algorithms, and network format from Leela Zero. In later versions, the engine follows KataGo's research and now supports variable rulesets, komi settings, and board sizes.
