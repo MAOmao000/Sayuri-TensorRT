@@ -1853,17 +1853,8 @@ ILayer* CudaForwardPipe::NNGraph::buildSqueezeExcitationLayer(
     );
     // ToDo: Windows debug build
     //       nvinfer1::virtualMachineSyntax::CompileError
-    int32_t const mmInputs_se = static_cast<int32_t>(
-        seLayer->getOutput(0)->getDimensions().d[1]
-        * seLayer->getOutput(0)->getDimensions().d[2]
-        * seLayer->getOutput(0)->getDimensions().d[3]);
-    auto inputReshape_se = network->addShuffle(*seLayer->getOutput(0));
-    int32_t const variable_batch_se = static_cast<int32_t>(
-        seLayer->getOutput(0)->getDimensions().d[0]);
-    inputReshape_se->setReshapeDimensions(Dims{4, {variable_batch_se, mmInputs_se, 1, 1}});
     auto seMaskLayer = applyMaskLayer(
-//        seLayer,
-        inputReshape_se,
+        seLayer,
         network);
     //  in: seMaskLayer [batch_size, weights_->residual_channels, board_size_, board_size_]
     //  in: residual [batch_size, weights_->residual_channels, board_size_, board_size_]
@@ -1874,6 +1865,48 @@ ILayer* CudaForwardPipe::NNGraph::buildSqueezeExcitationLayer(
     auto outputConvLayer = buildActivationLayer(
         mergeLayer->getOutput(0), network);
     return outputConvLayer;
+/*
+    if (GetOption<std::string>("mode") == "selfplay") {
+        int32_t const variable_batch_se = static_cast<int32_t>(
+            seLayer->getOutput(0)->getDimensions().d[0]);
+        auto inputReshape_mask = network->addShuffle(*inputMask_);
+        inputReshape_mask->setReshapeDimensions(Dims{4, {variable_batch_se, 1, board_size_, board_size_}});
+        auto maskLayer =
+            network->addElementWise(
+                *seLayer->getOutput(0), *inputReshape_mask->getOutput(0), ElementWiseOperation::kPROD);
+        auto mergeLayer = network->addElementWise(
+            *maskLayer->getOutput(0),
+            *residual,
+            ElementWiseOperation::kSUM);
+        auto outputConvLayer = buildActivationLayer(
+            mergeLayer->getOutput(0), network);
+        return outputConvLayer;
+        //return maskLayer;
+    //seLayer->getOutput(0)->setAllowedFormats(1U << static_cast<int>(TensorFormat::kLINEAR));
+    //int32_t const mmInputs_se = static_cast<int32_t>(
+    //    seLayer->getOutput(0)->getDimensions().d[1]
+    //    * seLayer->getOutput(0)->getDimensions().d[2]
+    //    * seLayer->getOutput(0)->getDimensions().d[3]);
+    //auto inputReshape_se = network->addShuffle(*seLayer->getOutput(0));
+    //int32_t const variable_batch_se = static_cast<int32_t>(
+    //    seLayer->getOutput(0)->getDimensions().d[0]);
+    //inputReshape_se->setReshapeDimensions(Dims{4, {variable_batch_se, mmInputs_se, 1, 1}});
+//    auto castLayer = network->addCast(seLayer->getOutput(0), DataType::kFLOAT);
+  //  auto seMaskLayer = applyMaskLayer(
+  //      seLayer,
+//        inputReshape_se,
+  //      network);
+    //  in: seMaskLayer [batch_size, weights_->residual_channels, board_size_, board_size_]
+    //  in: residual [batch_size, weights_->residual_channels, board_size_, board_size_]
+    }
+    auto mergeLayer = network->addElementWise(
+        *seLayer->getOutput(0),
+        *residual,
+        ElementWiseOperation::kSUM);
+    auto outputConvLayer = buildActivationLayer(
+        mergeLayer->getOutput(0), network);
+    return outputConvLayer;
+*/
 }
 
 void CudaForwardPipe::NNGraph::buildPolicyHead(
