@@ -164,6 +164,8 @@ private:
     private:
         void SetComputationMode(cuda::CudaHandles *handles);
 
+        bool ApplyMask(const std::vector<InputData> &input);
+
         void FillOutputs(const std::vector<float> &batch_prob,
                          const std::vector<float> &batch_prob_pass,
                          const std::vector<float> &batch_value_misc,
@@ -174,14 +176,6 @@ private:
         // Create full model using the TensorRT network definition API and build the engine.
         bool constructNetwork(
             TrtUniquePtr<nvinfer1::INetworkDefinition>& network
-        );
-
-        nvinfer1::ITensor* initInputs(
-            char const *inputName,
-            TrtUniquePtr<nvinfer1::INetworkDefinition>& network,
-            const int channels,
-            const int rows,
-            const int cols
         );
 
         ILayer* buildResidualBlock(
@@ -250,6 +244,11 @@ private:
             const bool isValueHead = false
         );
 
+        nvinfer1::ILayer* applyMaskLayer(
+            nvinfer1::ILayer* inputLayer,
+            TrtUniquePtr<nvinfer1::INetworkDefinition>& network
+        );
+
         cuda::CudaHandles handles_;
 
         int board_size_{0};
@@ -274,8 +273,10 @@ private:
         std::unique_ptr<nvinfer1::ICudaEngine> engine_;
         std::unique_ptr<BackendContext> context_;
 
-        nvinfer1::IConstantLayer* maskScaleLayer_{nullptr};
-        nvinfer1::IConstantLayer* maskQuadLayer_{nullptr};
+        nvinfer1::ITensor* inputMask_{nullptr};
+        nvinfer1::ILayer* maskSumLayer_{nullptr};
+        nvinfer1::ILayer* maskScaleLayer_{nullptr};
+        nvinfer1::ILayer* maskQuadLayer_{nullptr};
         nvinfer1::ICastLayer* shapeLayer_{nullptr};
 
         std::vector<std::unique_ptr<float[]>> extraWeights_;
