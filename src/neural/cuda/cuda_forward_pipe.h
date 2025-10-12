@@ -230,12 +230,13 @@ private:
             void* biases,
             TrtUniquePtr<nvinfer1::INetworkDefinition>& network,
             unsigned int outputs,
-            const int groups = 1
+            const bool depth_wise = false
         );
 
         nvinfer1::ILayer* buildActivationLayer(
             nvinfer1::ITensor* input,
-            TrtUniquePtr<nvinfer1::INetworkDefinition>& network
+            TrtUniquePtr<nvinfer1::INetworkDefinition>& network,
+            const bool needMask = true
         );
 
         nvinfer1::ILayer* applyGPoolLayer(

@@ -52,7 +52,7 @@
 --resign-threshold 0.05
 --resign-discard-prob 0.9
 
---parallel-games 128
+--parallel-games 64
 --cache-memory-mib 400
 --early-symm-cache
 --first-pass-bonus

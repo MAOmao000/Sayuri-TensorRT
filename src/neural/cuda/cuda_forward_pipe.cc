@@ -646,7 +646,11 @@ void CudaForwardPipe::NNGraph::SetComputationMode(cuda::CudaHandles *handles) {
 }
 
 std::vector<OutputResult> CudaForwardPipe::NNGraph::BatchForward(const std::vector<InputData> &batch_input) {
+#ifdef NDEBUG
     const auto batch_size = (int)batch_input.size();
+#else
+    const auto batch_size = 10;
+#endif
 
     assert(max_batch_ >= batch_size);
 
@@ -654,6 +658,7 @@ std::vector<OutputResult> CudaForwardPipe::NNGraph::BatchForward(const std::vect
     const auto num_intersections = board_size_ * board_size_;
     auto batch_planes = std::vector<float>(batch_size * input_channels * num_intersections);
     auto batch_mask = std::vector<float>(batch_size * num_intersections, 1.f);
+#ifdef NDEBUG
     for (int b = 0; b < batch_size; ++b) {
         const auto& input = batch_input[b];
         for (int idx = 0; idx < input_channels * num_intersections; ++idx) {
@@ -670,6 +675,15 @@ std::vector<OutputResult> CudaForwardPipe::NNGraph::BatchForward(const std::vect
             }
         }
     }
+#else
+    std::string filepath = "C:\\IGO\Sayuri\\msvc\\x64\\Release\\debuginput.txt";
+    std::ifstream ifs(filepath);
+    std::string data;
+    int idx = 0;
+    while (std::getline(ifs, data)) {
+        batch_planes[idx] = stof(data);
+    }
+#endif
     auto search = context_->buffers_.find("InputFeature");
     assert(search != context_->buffers_.end());
     cuda::ReportCUDAErrors(cudaMemcpyAsync(
@@ -769,8 +783,52 @@ std::vector<OutputResult> CudaForwardPipe::NNGraph::BatchForward(const std::vect
         cudaStreamPerThread)
     );
 
+//auto p_actConv = std::vector<float>(batch_size * weights_->policy_head_channels * num_intersections);
+//search = context_->buffers_.find("p_actConv");
+//assert(search != context_->buffers_.end());
+//cuda::ReportCUDAErrors(cudaMemcpyAsync(
+//    &p_actConv[0],
+//    search->second,
+//    batch_size * weights_->policy_head_channels * num_intersections * sizeof(float),
+//    cudaMemcpyDeviceToHost,
+//    cudaStreamPerThread)
+//);
+//auto p_dwConv = std::vector<float>(batch_size * weights_->policy_head_channels * num_intersections);
+//search = context_->buffers_.find("p_dwConv");
+//assert(search != context_->buffers_.end());
+//cuda::ReportCUDAErrors(cudaMemcpyAsync(
+//    &p_dwConv[0],
+//    search->second,
+//    batch_size * weights_->policy_head_channels * num_intersections * sizeof(float),
+//    cudaMemcpyDeviceToHost,
+//    cudaStreamPerThread)
+//);
+//auto p_ptConv = std::vector<float>(batch_size * weights_->policy_head_channels * num_intersections);
+//search = context_->buffers_.find("p_ptConv");
+//assert(search != context_->buffers_.end());
+//cuda::ReportCUDAErrors(cudaMemcpyAsync(
+//    &p_ptConv[0],
+//    search->second,
+//    batch_size * weights_->policy_head_channels * num_intersections * sizeof(float),
+//    cudaMemcpyDeviceToHost,
+//    cudaStreamPerThread)
+//);
     // Asynchronously enqueue the inference work
     cudaStreamSynchronize(cudaStreamPerThread);
+/*
+#ifndef NDEBUG
+    std::ofstream outputFile("probabilities.txt", std::ios::trunc);
+    for (auto i = 0; i < batch_size * num_intersections * weights_->probabilities_channels; ++i)
+        outputFile << batch_prob[i] << std::endl;
+    outputFile.close();
+    for (auto i = 0; i < batch_size * weights_->pass_probability_outputs; ++i)
+        std::cerr << i << ": " << batch_prob_pass[i] << std::endl;
+    for (auto i = 0; i < batch_size * num_intersections; ++i)
+        std::cerr << i << ": " << batch_ownership[i] << std::endl;
+    for (auto i = 0; i < batch_size * weights_->value_misc_outputs; ++i)
+        std::cerr << i << ": " << batch_value_misc[i] << std::endl;
+#endif
+*/
     auto batch_output_result = std::vector<OutputResult>(batch_size);
 
     FillOutputs(batch_prob,
@@ -1138,7 +1196,7 @@ bool CudaForwardPipe::NNGraph::build(bool dump_gpu_info,
                 }
             }
             if (plan.size() <= 0) {
-                LOGGING << "Creating new plan cache.\n";
+                LOGGING << "Creating new plan cache...\n";
                 auto planBuffer = std::unique_ptr<IHostMemory>(
                     builder->buildSerializedNetwork(*network, *config));
                 if (!planBuffer) {
@@ -1401,7 +1459,7 @@ bool CudaForwardPipe::NNGraph::constructNetwork(
     //  in: outputConv [batch_size, weights_->residual_channels, board_size_, board_size_]
     buildValueHead(outputConv, network);
 
-    LOGGING << "Done constructing network...\n";
+    LOGGING << "Done constructing network.\n";
 
     return true;
 }
@@ -1926,27 +1984,29 @@ void CudaForwardPipe::NNGraph::buildPolicyHead(
         weights_->p_hd_conv.GetOutputs());
     auto actPolicyLayer = buildActivationLayer(
         policyConvLayer->getOutput(0), network);
-    auto polMaskLayer = applyMaskLayer(
-        actPolicyLayer,
-        network);
+//    auto polMaskLayer = applyMaskLayer(
+//        actPolicyLayer,
+//        network);
     // Class: GlobalPooling(NormalGlobalPooling)
     //  in: polMaskLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
     // out: p_poolLayer [batch_size, 64(weights_->policy_head_channels) * 3, 1, 1]
     auto p_poolLayer = applyGPoolLayer(
-        polMaskLayer->getOutput(0), network);
+        //polMaskLayer->getOutput(0), network);
+        actPolicyLayer->getOutput(0), network);
     // Class: FullyConnect
     //  in: p_poolLayer [batch_size, 64(weights_->policy_head_channels) * 3, 1, 1]
     // out: pol1MatMulLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
-    int32_t const mmInputs_p1 = static_cast<int32_t>(
-        p_poolLayer->getOutput(0)->getDimensions().d[1]
-        * p_poolLayer->getOutput(0)->getDimensions().d[2]
-        * p_poolLayer->getOutput(0)->getDimensions().d[3]);
-    auto inputReshape_p1 = network->addShuffle(*p_poolLayer->getOutput(0));
-    int32_t const variable_batch_p1 = static_cast<int32_t>(
-        p_poolLayer->getOutput(0)->getDimensions().d[0]);
-    inputReshape_p1->setReshapeDimensions(Dims{4, {variable_batch_p1, mmInputs_p1, 1, 1}});
-    auto pol1MatMulLayer = buildConvLayer(
-        inputReshape_p1->getOutput(0),
+//    int32_t const mmInputs_p1 = static_cast<int32_t>(
+//        p_poolLayer->getOutput(0)->getDimensions().d[1]
+//        * p_poolLayer->getOutput(0)->getDimensions().d[2]
+//        * p_poolLayer->getOutput(0)->getDimensions().d[3]);
+//    auto inputReshape_p1 = network->addShuffle(*p_poolLayer->getOutput(0));
+//    int32_t const variable_batch_p1 = static_cast<int32_t>(
+//        p_poolLayer->getOutput(0)->getDimensions().d[0]);
+//    inputReshape_p1->setReshapeDimensions(Dims{4, {variable_batch_p1, mmInputs_p1, 1, 1}});
+    auto pol1ActMulLayer = buildConvLayer(
+//        inputReshape_p1->getOutput(0),
+        p_poolLayer->getOutput(0),
         1,
         weights_->p_inter_fc.GetWeights().size(),
         graph_->p_inter.GetDevWeights(),
@@ -1957,19 +2017,21 @@ void CudaForwardPipe::NNGraph::buildPolicyHead(
     // in1: polMaskLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
     // in2: pol1MatMulLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
     // out: p_interMaskLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
-    auto mergeLayer = network->addElementWise(
-        *polMaskLayer->getOutput(0),
-        *pol1MatMulLayer->getOutput(0),
+    auto pol1BiasLayer = network->addElementWise(
+//        *polMaskLayer->getOutput(0),
+        *actPolicyLayer->getOutput(0),
+//        *pol1MatMulLayer->getOutput(0),
+        *pol1ActMulLayer->getOutput(0),
         ElementWiseOperation::kSUM);
-    auto p_interMaskLayer = applyMaskLayer(
-        mergeLayer ,
-        network);
+    auto p_interMaskLayer = applyMaskLayer(pol1BiasLayer, network);
+//        mergeLayer ,
+//        network);
     // Class: Convolution
     //  in: p_interMaskLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
     // out: p_probConvLayer [batch_size, 5(weights_->probabilities_channels), board_size_, board_size_]
     auto p_probConvLayer = buildConvLayer(
         p_interMaskLayer->getOutput(0),
-        weights_->prob_conv.GetFilter(),
+        1,
         weights_->prob_conv.GetWeights().size(),
         graph_->p_prob.GetDevWeights(),
         weights_->prob_conv.GetBiases().size(),
@@ -1986,16 +2048,17 @@ void CudaForwardPipe::NNGraph::buildPolicyHead(
     // Class: FullyConnect
     //  in: pol1MatMulLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
     // out: pol2MatMulLayer [batch_size, 5(weights_->policy_head_channels), 1, 1]
-    int32_t const mmInputs_p2 = static_cast<int32_t>(
-        pol1MatMulLayer->getOutput(0)->getDimensions().d[1]
-        * pol1MatMulLayer->getOutput(0)->getDimensions().d[2]
-        * pol1MatMulLayer->getOutput(0)->getDimensions().d[3]);
-    auto inputpassReshape_p2 = network->addShuffle(*pol1MatMulLayer->getOutput(0));
-    int32_t const variable_batch_p2 = static_cast<int32_t>(
-        pol1MatMulLayer->getOutput(0)->getDimensions().d[0]);
-    inputpassReshape_p2->setReshapeDimensions(Dims{4, {variable_batch_p2, mmInputs_p2, 1, 1}});
+//    int32_t const mmInputs_p2 = static_cast<int32_t>(
+//        pol1MatMulLayer->getOutput(0)->getDimensions().d[1]
+//        * pol1MatMulLayer->getOutput(0)->getDimensions().d[2]
+//        * pol1MatMulLayer->getOutput(0)->getDimensions().d[3]);
+//    auto inputpassReshape_p2 = network->addShuffle(*pol1MatMulLayer->getOutput(0));
+//    int32_t const variable_batch_p2 = static_cast<int32_t>(
+//        pol1MatMulLayer->getOutput(0)->getDimensions().d[0]);
+//    inputpassReshape_p2->setReshapeDimensions(Dims{4, {variable_batch_p2, mmInputs_p2, 1, 1}});
     auto pol2MatMulLayer = buildConvLayer(
-        inputpassReshape_p2->getOutput(0),
+//        inputpassReshape_p2->getOutput(0),
+        pol1ActMulLayer->getOutput(0),
         1,
         weights_->pass_fc.GetWeights().size(),
         graph_->p_prob_pass.GetDevWeights(),
@@ -2014,6 +2077,8 @@ void CudaForwardPipe::NNGraph::buildPolicyHead(
 void CudaForwardPipe::NNGraph::buildPolicyHeadRepLK(
     ITensor* input, TrtUniquePtr<INetworkDefinition>& network) {
 
+//std::cerr << "weights_->p_hd_conv.GetFilter():" << weights_->p_hd_conv.GetFilter() << std::endl;
+//std::cerr << "weights_->weights_->p_hd_conv.GetOutputs():" << weights_->p_hd_conv.GetOutputs() << std::endl;
     // policy head
     // Class: Convolution
     //  in: input [batch_size, weights_->residual_channels, board_size_, board_size_]
@@ -2029,33 +2094,42 @@ void CudaForwardPipe::NNGraph::buildPolicyHeadRepLK(
         weights_->p_hd_conv.GetOutputs());
     auto actPolicyLayer = buildActivationLayer(
         policyConvLayer->getOutput(0), network);
-    auto polMaskLayer = applyMaskLayer(
-        actPolicyLayer,
-        network);
+//auto p_actConv = actPolicyLayer->getOutput(0);
+//network->markOutput(*p_actConv);
+//p_actConv->setName("p_actConv");
+//p_actConv->setAllowedFormats(1U << static_cast<int>(TensorFormat::kLINEAR));
+//p_actConv->setType(DataType::kFLOAT);
     // Class: DepthwiseConvolution
     //  in: polMaskLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
     // out: p_dwMaskLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
+    // x = (self.conv(x) + self.rep3x3(x)) * mask
     auto p_dwConvLayer = buildConvLayer(
-        polMaskLayer->getOutput(0),
+        actPolicyLayer->getOutput(0),
         weights_->p_dw_conv.GetFilter(),
-        weights_->p_dw_conv.GetWeights().size(),
+        weights_->p_dw_conv.GetWeights().size(), // 64 * 7 * 7
         graph_->p_dw_conv.GetDevWeights(),
-        weights_->p_dw_conv.GetBiases().size(),
+        weights_->p_dw_conv.GetBiases().size(),  // 64
         graph_->p_dw_conv.GetDevBiases(),
         network,
         weights_->p_dw_conv.GetOutputs(),
-        weights_->p_dw_conv.GetOutputs());
+        true);
+//std::cerr << "p_dw_conv.GetFilter():" << weights_->p_dw_conv.GetFilter() << std::endl;
+//std::cerr << "p_dw_conv.GetWeights().size():" << weights_->p_dw_conv.GetWeights().size() << std::endl;
+//std::cerr << "p_dw_conv.GetBiases().size():" << weights_->p_dw_conv.GetBiases().size() << std::endl;
+//std::cerr << "p_dw_conv.GetOutputs():" << weights_->p_dw_conv.GetOutputs() << std::endl;
     auto p_dwActPolicyLayer = buildActivationLayer(
         p_dwConvLayer->getOutput(0), network);
-    auto p_dwMaskLayer = applyMaskLayer(
-        p_dwActPolicyLayer,
-        network);
+//auto p_dwConv = p_dwConvLayer->getOutput(0);
+//network->markOutput(*p_dwConv);
+//p_dwConv->setName("p_dwConv");
+//p_dwConv->setAllowedFormats(1U << static_cast<int>(TensorFormat::kLINEAR));
+//p_dwConv->setType(DataType::kFLOAT);
     // Class: Convolution
     //  in: p_dwMaskLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
     // out: p_ptMaskLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
     auto p_ptConvLayer = buildConvLayer(
-        p_dwMaskLayer->getOutput(0),
-        weights_->p_pt_conv.GetFilter(),
+        p_dwActPolicyLayer->getOutput(0),
+        1,
         weights_->p_pt_conv.GetWeights().size(),
         graph_->p_pt_conv.GetDevWeights(),
         weights_->p_pt_conv.GetBiases().size(),
@@ -2064,27 +2138,31 @@ void CudaForwardPipe::NNGraph::buildPolicyHeadRepLK(
         weights_->p_pt_conv.GetOutputs());
     auto p_ptActPolicyLayer = buildActivationLayer(
         p_ptConvLayer->getOutput(0), network);
-    auto p_ptMaskLayer = applyMaskLayer(
-        p_ptActPolicyLayer,
-        network);
+//auto p_ptConv = p_ptActPolicyLayer->getOutput(0);
+//network->markOutput(*p_ptConv);
+//p_ptConv->setName("p_ptConv");
+//p_ptConv->setAllowedFormats(1U << static_cast<int>(TensorFormat::kLINEAR));
+//p_ptConv->setType(DataType::kFLOAT);
     // Class: GlobalPooling(NormalGlobalPooling)
-    //  in: p_ptMaskLayer [batch_size, 64(weights_->policy_head_channels) * num_intersections
+    //  in: p_ptActLayer [batch_size, 64(weights_->policy_head_channels) * num_intersections
     // out: p_poolLayer [batch_size, 64(weights_->policy_head_channels) * 3, 1, 1]
     auto p_poolLayer = applyGPoolLayer(
-        p_ptMaskLayer->getOutput(0), network);
+        p_ptActPolicyLayer->getOutput(0), network);
     // Class: FullyConnect
     //  in: p_poolLayer [batch_size, 64(weights_->policy_head_channels) * 3, 1, 1]
     // out: pol1MatMulLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
-    int32_t const mmInputs_p1 = static_cast<int32_t>(
-        p_poolLayer->getOutput(0)->getDimensions().d[1]
-        * p_poolLayer->getOutput(0)->getDimensions().d[2]
-        * p_poolLayer->getOutput(0)->getDimensions().d[3]);
-    auto inputReshape_p1 = network->addShuffle(*p_poolLayer->getOutput(0));
-    int32_t const variable_batch_p1 = static_cast<int32_t>(
-        p_poolLayer->getOutput(0)->getDimensions().d[0]);
-    inputReshape_p1->setReshapeDimensions(Dims{4, {variable_batch_p1, mmInputs_p1, 1, 1}});
+//auto dim = p_poolLayer->getOutput(0)->getDimensions();
+//    int32_t const mmInputs_p1 = static_cast<int32_t>(
+//        p_poolLayer->getOutput(0)->getDimensions().d[1]
+//        * p_poolLayer->getOutput(0)->getDimensions().d[2]
+//        * p_poolLayer->getOutput(0)->getDimensions().d[3]);
+//    auto inputReshape_p1 = network->addShuffle(*p_poolLayer->getOutput(0));
+//    int32_t const variable_batch_p1 = static_cast<int32_t>(
+//        p_poolLayer->getOutput(0)->getDimensions().d[0]);
+//    inputReshape_p1->setReshapeDimensions(Dims{4, {variable_batch_p1, mmInputs_p1, 1, 1}});
     auto pol1MatMulLayer = buildConvLayer(
-        inputReshape_p1->getOutput(0),
+//        inputReshape_p1->getOutput(0),
+        p_poolLayer->getOutput(0),
         1,
         weights_->p_inter_fc.GetWeights().size(),
         graph_->p_inter.GetDevWeights(),
@@ -2092,22 +2170,24 @@ void CudaForwardPipe::NNGraph::buildPolicyHeadRepLK(
         graph_->p_inter.GetDevBiases(),
         network,
         weights_->p_inter_fc.GetOutputs());
-    // in1: p_ptMaskLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
-    // in2: pol1MatMulLayer [batch_size, 64(weights_->policy_head_channels), 1, 1]
+    auto pol1ActMulLayer = buildActivationLayer(
+        pol1MatMulLayer->getOutput(0), network, false);
+    // in1: p_ptActPolicyLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
+    // in2: pol1ActMulLayer [batch_size, 64(weights_->policy_head_channels), 1, 1]
     // out: p_interMaskLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
-    auto mergeLayer = network->addElementWise(
-        *p_ptMaskLayer->getOutput(0),
-        *pol1MatMulLayer->getOutput(0),
+//    auto mergeLayer = network->addElementWise(
+    auto pol1BiasLayer = network->addElementWise(
+        *p_ptActPolicyLayer->getOutput(0),
+        *pol1ActMulLayer->getOutput(0),
         ElementWiseOperation::kSUM);
-    auto p_interMaskLayer = applyMaskLayer(
-        mergeLayer ,
-        network);
+//    auto p_interMaskLayer = applyMaskLayer(mergeLayer, network);
+    auto p_interMaskLayer = applyMaskLayer(pol1BiasLayer, network);
     // Class: Convolution
     //  in: p_interMaskLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
     // out: p_probConvLayer [batch_size, 5(weights_->probabilities_channels), board_size_, board_size_]
     auto p_probConvLayer = buildConvLayer(
         p_interMaskLayer->getOutput(0),
-        weights_->prob_conv.GetFilter(),
+        1,
         weights_->prob_conv.GetWeights().size(),
         graph_->p_prob.GetDevWeights(),
         weights_->prob_conv.GetBiases().size(),
@@ -2122,18 +2202,19 @@ void CudaForwardPipe::NNGraph::buildPolicyHeadRepLK(
     output_prob->setType(DataType::kFLOAT);
 
     // Class: FullyConnect
-    //  in: pol1MatMulLayer [batch_size, 64(weights_->policy_head_channels), 1, 1]
+    //  in: p_ptActPolicyLayer [batch_size, 64(weights_->policy_head_channels), 1, 1]
     // out: pol2MatMulLayer [batch_size, 5(weights_->policy_head_channels), 1, 1]
-    int32_t const mmInputs_p2 = static_cast<int32_t>(
-        pol1MatMulLayer->getOutput(0)->getDimensions().d[1]
-        * pol1MatMulLayer->getOutput(0)->getDimensions().d[2]
-        * pol1MatMulLayer->getOutput(0)->getDimensions().d[3]);
-    auto inputpassReshape_p2 = network->addShuffle(*pol1MatMulLayer->getOutput(0));
-    int32_t const variable_batch_p2 = static_cast<int32_t>(
-        pol1MatMulLayer->getOutput(0)->getDimensions().d[0]);
-    inputpassReshape_p2->setReshapeDimensions(Dims{4, {variable_batch_p2, mmInputs_p2, 1, 1}});
+//    int32_t const mmInputs_p2 = static_cast<int32_t>(
+//        p_ptActPolicyLayer->getOutput(0)->getDimensions().d[1]
+//        * p_ptActPolicyLayer->getOutput(0)->getDimensions().d[2]
+//        * p_ptActPolicyLayer->getOutput(0)->getDimensions().d[3]);
+//    auto inputpassReshape_p2 = network->addShuffle(*p_ptActPolicyLayer->getOutput(0));
+//    int32_t const variable_batch_p2 = static_cast<int32_t>(
+//        p_ptActPolicyLayer->getOutput(0)->getDimensions().d[0]);
+//    inputpassReshape_p2->setReshapeDimensions(Dims{4, {variable_batch_p2, mmInputs_p2, 1, 1}});
     auto pol2MatMulLayer = buildConvLayer(
-        inputpassReshape_p2->getOutput(0),
+//        inputpassReshape_p2->getOutput(0),
+        pol1ActMulLayer->getOutput(0),
         1,
         weights_->pass_fc.GetWeights().size(),
         graph_->p_prob_pass.GetDevWeights(),
@@ -2155,7 +2236,7 @@ void CudaForwardPipe::NNGraph::buildValueHead(
     // value head
     // Class: Convolution
     //  in: input [batch_size, weights_->residual_channels, board_size_, board_size_]
-    // out: valMaskLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
+    // out: actValueLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
     auto valueConvLayer = buildConvLayer(
         input,
         weights_->v_hd_conv.GetFilter(),
@@ -2167,42 +2248,11 @@ void CudaForwardPipe::NNGraph::buildValueHead(
         weights_->v_hd_conv.GetOutputs());
     auto actValueLayer = buildActivationLayer(
         valueConvLayer->getOutput(0), network);
-    auto valMaskLayer = applyMaskLayer(
-        actValueLayer,
-        network);
-    // Class: GlobalPooling(HeadGlobalPooling)
-    //  in: valMaskLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
-    // out: v_poolLayer [batch_size, 64(weights_->value_head_channels) * 3, 1, 1]
-    auto v_poolLayer = applyGPoolLayer(
-        valMaskLayer->getOutput(0), network,
-        true);
-    // Class: FullyConnect
-    //  in: v_poolLayer [batch_size, 64(weights_->value_head_channels) * 3, 1, 1]
-    // out: val1ActValueLayer [batch_size, 64(weights_->value_head_channels) * 3, 1, 1]
-    int32_t const mmInputs_v1 = static_cast<int32_t>(
-        v_poolLayer->getOutput(0)->getDimensions().d[1]
-        * v_poolLayer->getOutput(0)->getDimensions().d[2]
-        * v_poolLayer->getOutput(0)->getDimensions().d[3]);
-    auto inputReshape_v1 = network->addShuffle(*v_poolLayer->getOutput(0));
-    int32_t const variable_batch_v1 = static_cast<int32_t>(
-        v_poolLayer->getOutput(0)->getDimensions().d[0]);
-    inputReshape_v1->setReshapeDimensions(Dims{4, {variable_batch_v1, mmInputs_v1, 1, 1}});
-    auto val1MatMulLayer = buildConvLayer(
-        inputReshape_v1->getOutput(0),
-        1,
-        weights_->v_inter_fc.GetWeights().size(),
-        graph_->v_inter.GetDevWeights(),
-        weights_->v_inter_fc.GetBiases().size(),
-        graph_->v_inter.GetDevBiases(),
-        network,
-        weights_->v_inter_fc.GetOutputs());
-    auto val1ActValueLayer = buildActivationLayer(
-        val1MatMulLayer->getOutput(0), network);
     // Class: Convolution
-    //  in: valMaskLayer [batch_size, 64(weights_->value_head_channels), board_size_, board_size_]
+    //  in: actValueLayer [batch_size, 64(weights_->value_head_channels), board_size_, board_size_]
     // out: v_ownershipConvLayer [batch_size, 1(weights_->ownership_channels), board_size_, board_size_]
     auto v_ownershipConvLayer = buildConvLayer(
-        valMaskLayer->getOutput(0),
+        actValueLayer->getOutput(0),
         weights_->v_ownership.GetFilter(),
         weights_->v_ownership.GetWeights().size(),
         graph_->v_ownership.GetDevWeights(),
@@ -2211,25 +2261,55 @@ void CudaForwardPipe::NNGraph::buildValueHead(
         network,
         weights_->v_ownership.GetOutputs());
     // Mark the outputs for the network
+    // tanh is done with Network::GetOutputInternal
     auto output_ownership = v_ownershipConvLayer->getOutput(0);
     network->markOutput(*output_ownership);
     output_ownership->setName("output_ownership");
     output_ownership->setAllowedFormats(1U << static_cast<int>(TensorFormat::kLINEAR));
     output_ownership->setType(DataType::kFLOAT);
 
+    // Class: GlobalPooling(HeadGlobalPooling)
+    //  in: actValueLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
+    // out: v_poolLayer [batch_size, 64(weights_->value_head_channels) * 3, 1, 1]
+    auto v_poolLayer = applyGPoolLayer(
+        actValueLayer->getOutput(0), network, true);
+    // Class: FullyConnect
+    //  in: v_poolLayer [batch_size, 64(weights_->value_head_channels) * 3, 1, 1]
+    // out: val1ActValueLayer [batch_size, 64(weights_->value_head_channels) * 3, 1, 1]
+//    int32_t const mmInputs_v1 = static_cast<int32_t>(
+//        v_poolLayer->getOutput(0)->getDimensions().d[1]
+//        * v_poolLayer->getOutput(0)->getDimensions().d[2]
+//        * v_poolLayer->getOutput(0)->getDimensions().d[3]);
+//    auto inputReshape_v1 = network->addShuffle(*v_poolLayer->getOutput(0));
+//    int32_t const variable_batch_v1 = static_cast<int32_t>(
+//        v_poolLayer->getOutput(0)->getDimensions().d[0]);
+//    inputReshape_v1->setReshapeDimensions(Dims{4, {variable_batch_v1, mmInputs_v1, 1, 1}});
+    auto val1MatMulLayer = buildConvLayer(
+//        inputReshape_v1->getOutput(0),
+        v_poolLayer->getOutput(0),
+        1,
+        weights_->v_inter_fc.GetWeights().size(),
+        graph_->v_inter.GetDevWeights(),
+        weights_->v_inter_fc.GetBiases().size(),
+        graph_->v_inter.GetDevBiases(),
+        network,
+        weights_->v_inter_fc.GetOutputs());
+    auto val1ActValueLayer = buildActivationLayer(
+        val1MatMulLayer->getOutput(0), network, false);
     // Class: FullyConnect
     //  in: val1ActValueLayer [batch_size, 64(weights_->value_head_channels) * 3, 1, 1]
     // out: val2MatMulLayer [batch_size, 15(weights_->value_misc_outputs), 1, 1]
-    int32_t const mmInputs_v2 = static_cast<int32_t>(
-        val1ActValueLayer->getOutput(0)->getDimensions().d[1]
-        * val1ActValueLayer->getOutput(0)->getDimensions().d[2]
-        * val1ActValueLayer->getOutput(0)->getDimensions().d[3]);
-    auto inputReshape_v2 = network->addShuffle(*val1ActValueLayer->getOutput(0));
-    int32_t const variable_batch_v2 = static_cast<int32_t>(
-        val1ActValueLayer->getOutput(0)->getDimensions().d[0]);
-    inputReshape_v2->setReshapeDimensions(Dims{4, {variable_batch_v2, mmInputs_v2, 1, 1}});
+//    int32_t const mmInputs_v2 = static_cast<int32_t>(
+//        val1ActValueLayer->getOutput(0)->getDimensions().d[1]
+//        * val1ActValueLayer->getOutput(0)->getDimensions().d[2]
+//        * val1ActValueLayer->getOutput(0)->getDimensions().d[3]);
+//    auto inputReshape_v2 = network->addShuffle(*val1ActValueLayer->getOutput(0));
+//    int32_t const variable_batch_v2 = static_cast<int32_t>(
+//        val1ActValueLayer->getOutput(0)->getDimensions().d[0]);
+//    inputReshape_v2->setReshapeDimensions(Dims{4, {variable_batch_v2, mmInputs_v2, 1, 1}});
     auto val2MatMulLayer = buildConvLayer(
-        inputReshape_v2->getOutput(0),
+//        inputReshape_v2->getOutput(0),
+        val1ActValueLayer->getOutput(0),
         1,
         weights_->v_misc.GetWeights().size(),
         graph_->v_misc.GetDevWeights(),
@@ -2254,7 +2334,7 @@ ILayer* CudaForwardPipe::NNGraph::buildConvLayer(
     void* biases,
     TrtUniquePtr<INetworkDefinition>& network,
     unsigned int outputs,
-    const int groups) {
+    const bool depth_wise) {
 
     auto data_type = handles_.fp16 ? DataType::kHALF : DataType::kFLOAT;
     // For convenience, both I/O tensors have 3 dimentions (in addition to batch), so that
@@ -2274,15 +2354,27 @@ ILayer* CudaForwardPipe::NNGraph::buildConvLayer(
             biases_size
         }
     );
+    if (filter_size == 1) {
+        return convLayer;
+    }
+if (depth_wise) {
+//    convLayer->setPrePadding({ 1, 1 });
+//    convLayer->setPostPadding({ 1, 1 });
+    convLayer->setNbGroups(outputs);
     convLayer->setDilationNd({2, {1, 1}});
     convLayer->setPaddingMode(PaddingMode::kSAME_UPPER);
-    convLayer->setNbGroups(groups);
+    return convLayer;
+} else {
+    convLayer->setDilationNd({2, {1, 1}});
+    convLayer->setPaddingMode(PaddingMode::kSAME_UPPER);
+}
     return convLayer;
 }
 
 ILayer* CudaForwardPipe::NNGraph::buildActivationLayer(
     ITensor* input,
-    TrtUniquePtr<INetworkDefinition>& network) {
+    TrtUniquePtr<INetworkDefinition>& network,
+    const bool needMask) {
 
     ILayer* actLayer = nullptr;
 
@@ -2308,6 +2400,9 @@ ILayer* CudaForwardPipe::NNGraph::buildActivationLayer(
         sigmoidLayer->setAlpha(3.0);
         sigmoidLayer->setBeta(6.0);
         actLayer = network->addElementWise(*input, *sigmoidLayer->getOutput(0), ElementWiseOperation::kPROD);
+    }
+    if (needMask) {
+        return applyMaskLayer(actLayer, network);
     }
     return actLayer;
 }
