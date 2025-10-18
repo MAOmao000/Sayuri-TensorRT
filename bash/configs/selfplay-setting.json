@@ -6,7 +6,7 @@
         "PolicyHeadChannels" : 24,
         "ValueHeadChannels" : 24,
         "SeRatio" : 4,
-        "PolicyHeadType" : "kNormal",
+        "PolicyHeadType" : "RepLK",
         "Activation" : "mish",
         "NamePostfix" : "",
 
