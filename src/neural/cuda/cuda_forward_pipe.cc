@@ -656,9 +656,7 @@ std::vector<OutputResult> CudaForwardPipe::NNGraph::BatchForward(const std::vect
     const auto input_channels = weights_->input_channels;
     const auto num_intersections = board_size_ * board_size_;
     auto batch_planes = std::vector<float>(batch_size * input_channels * num_intersections);
-#ifdef USE_PLUGIN
     auto batch_mask = std::vector<float>(batch_size * num_intersections, 1.f);
-#endif
 
     for (int b = 0; b < batch_size; ++b) {
         const auto& input = batch_input[b];
@@ -667,7 +665,9 @@ std::vector<OutputResult> CudaForwardPipe::NNGraph::BatchForward(const std::vect
         }
         if (GetOption<std::string>("mode") == "selfplay") {
             const int planes_bsize = batch_input[b].board_size;
-#ifdef USE_PLUGIN
+#ifndef USE_PLUGIN
+    if (GetOption<std::string>("mode") == "selfplay") {
+#endif
             for (int idx = 0; idx < num_intersections; ++idx) {
                 const int x = idx % board_size_;
                 const int y = idx / board_size_;
@@ -675,6 +675,8 @@ std::vector<OutputResult> CudaForwardPipe::NNGraph::BatchForward(const std::vect
                     batch_mask[b * num_intersections + idx] = 0.f;
                 }
             }
+#ifndef USE_PLUGIN
+    }
 #endif
         }
     }
@@ -688,7 +690,9 @@ std::vector<OutputResult> CudaForwardPipe::NNGraph::BatchForward(const std::vect
         cudaStreamPerThread)
     );
 
-#ifdef USE_PLUGIN
+#ifndef USE_PLUGIN
+    if (GetOption<std::string>("mode") == "selfplay") {
+#endif
     search = context_->buffers_.find("InputMask");
     assert(search != context_->buffers_.end());
     cuda::ReportCUDAErrors(cudaMemcpyAsync(
@@ -698,6 +702,8 @@ std::vector<OutputResult> CudaForwardPipe::NNGraph::BatchForward(const std::vect
         cudaMemcpyHostToDevice,
         cudaStreamPerThread)
     );
+#ifndef USE_PLUGIN
+    }
 #endif
 
     const auto probabilities_channels = weights_->probabilities_channels;
@@ -718,7 +724,9 @@ std::vector<OutputResult> CudaForwardPipe::NNGraph::BatchForward(const std::vect
             board_size_,
             board_size_)
     );
-#ifdef USE_PLUGIN
+#ifndef USE_PLUGIN
+    if (GetOption<std::string>("mode") == "selfplay") {
+#endif
     context_->execution_context_->setInputShape(
         "InputMask",
         Dims4(
@@ -727,6 +735,8 @@ std::vector<OutputResult> CudaForwardPipe::NNGraph::BatchForward(const std::vect
             board_size_,
             board_size_)
     );
+#ifndef USE_PLUGIN
+    }
 #endif
     context_->execution_context_->setInputShape(
         "BatchSize",
@@ -1024,13 +1034,17 @@ bool CudaForwardPipe::NNGraph::build(bool dump_gpu_info,
         Dims4(max_batch_size,weights->residual_channels, 1, 1));
     profile->setDimensions("BatchSize", OptProfileSelector::kMAX,
         Dims4(max_batch_size, weights->residual_channels, 1, 1));
-#ifdef USE_PLUGIN
+#ifndef USE_PLUGIN
+    if (GetOption<std::string>("mode") == "selfplay") {
+#endif
     profile->setDimensions("InputMask", OptProfileSelector::kMIN,
         Dims4(1, 1, board_size, board_size));
     profile->setDimensions("InputMask", OptProfileSelector::kOPT,
         Dims4(max_batch_size, 1, board_size, board_size));
     profile->setDimensions("InputMask", OptProfileSelector::kMAX,
         Dims4(max_batch_size, 1, board_size, board_size));
+#ifndef USE_PLUGIN
+    }
 #endif
 
     config->addOptimizationProfile(profile);
@@ -1308,6 +1322,11 @@ bool CudaForwardPipe::NNGraph::constructNetwork(
 #endif
 
     if (GetOption<std::string>("mode") == "selfplay") {
+#ifndef USE_PLUGIN
+        inputMask_ = network->addInput(
+            "InputMask", DataType::kFLOAT, {4, {-1, 1, board_size_, board_size_}});
+        inputMask_->setAllowedFormats(1U << static_cast<int>(TensorFormat::kLINEAR));
+#endif
         // mask_sum_hw = torch.sum(mask, dim=(1,2,3))
         // div = torch.reshape(mask_sum_hw, (-1,1))
         maskSumLayer_ = network->addReduce(
