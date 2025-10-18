@@ -12,6 +12,7 @@
 #include <fstream>
 #include <numeric>
 #include <map>
+#include <cassert>
 
 #include "neural/cuda/cuda_common.h"
 #include "neural/cuda/cuda_layers.h"
@@ -20,6 +21,9 @@
 #include "neural/description.h"
 #include "utils/threadpool.h"
 #include "utils/half.h"
+#ifdef USE_PLUGIN
+#include "neural/cuda/cuda_kernels.h"
+#endif
 
 using namespace nvinfer1;
 
@@ -79,6 +83,263 @@ inline std::string readFileBinary(
 
 template <typename T>
 using TrtUniquePtr = std::unique_ptr<T, InferDeleter>;
+
+#ifdef USE_PLUGIN
+class DepthwiseConvPlugin:
+    public IPluginV3,
+    public IPluginV3OneCore,
+    public IPluginV3OneBuild,
+    public IPluginV3OneRuntime {
+public:
+    DepthwiseConvPlugin(DepthwiseConvPlugin const& p) = default;
+
+    DepthwiseConvPlugin(int ismixer, int filters, int activation):
+        mIsMixer(ismixer),
+        mFilters(filters),
+        mActivation(activation) {
+
+        initFieldsToSerialize();
+    }
+
+    void initFieldsToSerialize() {
+        mDataToSerialize.clear();
+        mDataToSerialize.emplace_back(PluginField(
+            "ismixer", &mIsMixer, PluginFieldType::kINT32, 1));
+        mDataToSerialize.emplace_back(PluginField(
+            "filters", &mFilters, PluginFieldType::kINT32, 1));
+        mDataToSerialize.emplace_back(PluginField(
+            "activation", &mActivation, PluginFieldType::kINT32, 1));
+        mFCToSerialize.nbFields = mDataToSerialize.size();
+        mFCToSerialize.fields = mDataToSerialize.data();
+    }
+
+    // IPluginV3 methods
+
+    IPluginCapability* getCapabilityInterface(
+        PluginCapabilityType type) noexcept override {
+        try {
+            if (type == PluginCapabilityType::kBUILD) {
+                return static_cast<IPluginV3OneBuild*>(this);
+            } else if (type == PluginCapabilityType::kRUNTIME) {
+                return static_cast<IPluginV3OneRuntime*>(this);
+            }
+            assert(type == PluginCapabilityType::kCORE);
+            return static_cast<IPluginV3OneCore*>(this);
+        } catch (std::exception const& e) {
+            std::cerr << e.what() << std::endl;
+        }
+        return nullptr;
+    }
+
+    IPluginV3* clone() noexcept override {
+        auto clone = std::make_unique<DepthwiseConvPlugin>(*this);
+        clone->initFieldsToSerialize();
+        return clone.release();
+    }
+
+    // IPluginV3OneCore methods
+    char const* getPluginName() const noexcept override {
+        return "DepthwiseConvPlugin";
+    }
+
+    char const* getPluginVersion() const noexcept override {
+        return "0";
+    }
+
+    char const* getPluginNamespace() const noexcept override {
+        return "";
+    }
+
+    // IPluginV3OneBuild methods
+    int32_t getNbOutputs() const noexcept override {
+        return 1;
+    }
+
+    int32_t configurePlugin(
+        DynamicPluginTensorDesc const* in,
+        int32_t nbInputs,
+        DynamicPluginTensorDesc const* out,
+        int32_t nbOutputs
+    ) noexcept override {
+        return 0;
+    }
+
+    bool supportsFormatCombination(
+        int32_t pos,
+        DynamicPluginTensorDesc const* inOut,
+        int32_t nbInputs,
+        int32_t nbOutputs
+    ) noexcept override {
+        assert(nbInputs == 4 && nbOutputs == 1 && pos < nbInputs + nbOutputs);
+        return inOut[pos].desc.format == PluginFormat::kLINEAR;
+    }
+
+    int32_t getOutputDataTypes(
+        DataType* outputTypes,
+        int32_t nbOutputs,
+        DataType const* inputTypes,
+        int32_t nbInputs
+    ) const noexcept override {
+        outputTypes[0] = inputTypes[0];
+        return 0;
+    }
+
+    int32_t getOutputShapes(
+        DimsExprs const* inputs,
+        int32_t nbInputs,
+        DimsExprs const* shapeInputs,
+        int32_t nbShapeInputs,
+        DimsExprs* outputs,
+        int32_t nbOutputs,
+        IExprBuilder& exprBuilder
+    ) noexcept override {
+        // The input tensor must be 4-D
+        if (inputs[0].nbDims != 4) {
+            return -1;
+        }
+
+        outputs[0].nbDims = 4;
+
+        outputs[0].d[0] = inputs[0].d[0];
+        outputs[0].d[1] = inputs[0].d[1];
+        outputs[0].d[2] = inputs[0].d[2];
+        outputs[0].d[3] = inputs[0].d[3];
+        return 0;
+    }
+
+    int32_t enqueue(
+        PluginTensorDesc const* inputDesc,
+        PluginTensorDesc const* outputDesc,
+        void const* const* inputs,
+        void* const* outputs,
+        void* workspace,
+        cudaStream_t stream
+    ) noexcept override {
+        // launch the kernel
+        int const batch = inputDesc[0].dims.d[0];
+        int const channels = inputDesc[0].dims.d[1];
+        int const height = inputDesc[0].dims.d[2];
+        int const width = inputDesc[0].dims.d[3];
+        if (mIsMixer) {
+             cuda::depthwise_conv(
+                 static_cast<float*>(outputs[0]),       // T *output
+                 static_cast<float const*>(inputs[0]),  // const T *input
+                 static_cast<float const*>(inputs[1]),  // const T *weights
+                 static_cast<float const*>(inputs[2]),  // const T *biases
+                 static_cast<float const*>(inputs[0]),  // const T *residual
+                 static_cast<float const*>(inputs[3]),  // const T *mask
+                 mFilters,                              // int filter_size
+                 batch,
+                 channels,
+                 height,
+                 width,
+                 static_cast<Activation>(mActivation),  // Activation act
+                 stream);                               // cudaStream_t stream);
+        } else {
+             cuda::depthwise_conv(
+                 static_cast<float*>(outputs[0]),       // T *output
+                 static_cast<float const*>(inputs[0]),  // const T *input
+                 static_cast<float const*>(inputs[1]),  // const T *weights
+                 static_cast<float const*>(inputs[2]),  // const T *biases
+                 static_cast<float const*>(nullptr),    // const T *residual
+                 static_cast<float const*>(inputs[3]),  // const T *mask
+                 mFilters,                              // int filter_size
+                 batch,
+                 channels,
+                 height,
+                 width,
+                 static_cast<Activation>(mActivation),  // Activation act
+                 stream);                               // cudaStream_t stream);
+        }
+        return 0;
+    }
+
+    int32_t onShapeChange(
+        PluginTensorDesc const* in,
+        int32_t nbInputs,
+        PluginTensorDesc const* out,
+        int32_t nbOutputs
+    ) noexcept override {
+        return 0;
+    }
+
+    IPluginV3* attachToContext(IPluginResourceContext* context) noexcept override {
+        return clone();
+    }
+
+    PluginFieldCollection const* getFieldsToSerialize() noexcept override {
+        return &mFCToSerialize;
+    }
+
+private:
+    int mIsMixer{0};
+    int mFilters{0};
+    int mActivation{0};
+    std::vector<nvinfer1::PluginField> mDataToSerialize;
+    nvinfer1::PluginFieldCollection mFCToSerialize;
+};
+
+class DepthwiseConvCreator: public nvinfer1::IPluginCreatorV3One {
+public:
+    DepthwiseConvCreator() {
+        mPluginAttributes.clear();
+        mPluginAttributes.emplace_back(PluginField(
+            "ismixer", nullptr, PluginFieldType::kINT32, 1));
+        mPluginAttributes.emplace_back(PluginField(
+            "filttars", nullptr, PluginFieldType::kINT32, 1));
+        mPluginAttributes.emplace_back(PluginField(
+            "activation", nullptr, PluginFieldType::kINT32, 1));
+        mFC.nbFields = mPluginAttributes.size();
+        mFC.fields = mPluginAttributes.data();
+    }
+
+    char const* getPluginName() const noexcept override {
+        return "DepthwiseConvPlugin";
+    }
+
+    char const* getPluginVersion() const noexcept override {
+        return "0";
+    }
+
+    PluginFieldCollection const* getFieldNames() noexcept override {
+        return &mFC;
+    }
+
+    IPluginV3* createPlugin(
+        char const* name,
+        PluginFieldCollection const* fc,
+        TensorRTPhase phase
+    ) noexcept override {
+        try {
+            int ismixer{0};
+            int filters{0};
+            int activation{0};
+            for (int32_t i = 0; i < fc->nbFields; ++i) {
+                auto const fieldName(fc->fields[i].name);
+                if (std::strcmp(fieldName, "ismixer") == 0) {
+                    ismixer = *static_cast<int const*>(fc->fields[i].data);
+                } else if (std::strcmp(fieldName, "filters") == 0) {
+                    filters = *static_cast<int const*>(fc->fields[i].data);
+                } else if (std::strcmp(fieldName, "activation") == 0) {
+                    activation = *static_cast<int const*>(fc->fields[i].data);
+                }
+            }
+            return new DepthwiseConvPlugin(ismixer, filters, activation);
+        } catch (std::exception const& e) {
+            std::cerr << e.what() << std::endl;
+        }
+        return nullptr;
+    }
+
+    char const* getPluginNamespace() const noexcept override {
+        return "";
+    }
+
+private:
+    nvinfer1::PluginFieldCollection mFC;
+    std::vector<nvinfer1::PluginField> mPluginAttributes;
+};
+#endif
 
 class CudaForwardPipe : public NetworkForwardPipe {
 public:
@@ -279,6 +540,12 @@ private:
         nvinfer1::ILayer* maskScaleLayer_{nullptr};
         nvinfer1::ILayer* maskQuadLayer_{nullptr};
         nvinfer1::ICastLayer* shapeLayer_{nullptr};
+
+#ifdef USE_PLUGIN
+        std::unique_ptr<nvinfer1::IPluginV3> policy_plugin_;
+        std::unique_ptr<nvinfer1::IPluginV3> mixer_plugin_;
+        std::vector<nvinfer1::ITensor*> pluginVec_{nullptr, nullptr, nullptr, nullptr};
+#endif
 
         std::vector<std::unique_ptr<float[]>> extraWeights_;
         std::vector<std::unique_ptr<half_float_t[]>> extrahalfWeights_;
