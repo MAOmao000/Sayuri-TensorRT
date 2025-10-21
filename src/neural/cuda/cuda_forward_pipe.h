@@ -507,7 +507,7 @@ private:
         );
 
         nvinfer1::ILayer* applyMaskLayer(
-            nvinfer1::ILayer* inputLayer,
+            nvinfer1::ITensor* input,
             TrtUniquePtr<nvinfer1::INetworkDefinition>& network
         );
 

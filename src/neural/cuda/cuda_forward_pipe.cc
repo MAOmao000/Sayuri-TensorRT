@@ -702,6 +702,7 @@ std::vector<OutputResult> CudaForwardPipe::NNGraph::BatchForward(const std::vect
             const int x = idx % board_size_;
             const int y = idx / board_size_;
             if (x >= planes_bsize || y >= planes_bsize) {
+                batch_planes[b * num_intersections + idx] = 0.f;
                 batch_mask[b * num_intersections + idx] = 0.f;
             }
         }
@@ -718,7 +719,9 @@ std::vector<OutputResult> CudaForwardPipe::NNGraph::BatchForward(const std::vect
     );
 
 #ifndef USE_PLUGIN
+#ifndef MASK_DEBUG
     if (GetOption<std::string>("mode") == "selfplay") {
+#endif
 #endif
         search = context_->buffers_.find("InputMask");
         assert(search != context_->buffers_.end());
@@ -730,7 +733,9 @@ std::vector<OutputResult> CudaForwardPipe::NNGraph::BatchForward(const std::vect
             cudaStreamPerThread)
         );
 #ifndef USE_PLUGIN
+#ifndef MASK_DEBUG
     }
+#endif
 #endif
 
     const auto probabilities_channels = weights_->probabilities_channels;
@@ -752,7 +757,9 @@ std::vector<OutputResult> CudaForwardPipe::NNGraph::BatchForward(const std::vect
             board_size_)
     );
 #ifndef USE_PLUGIN
+#ifndef MASK_DEBUG
     if (GetOption<std::string>("mode") == "selfplay") {
+#endif
 #endif
         context_->execution_context_->setInputShape(
             "InputMask",
@@ -763,7 +770,9 @@ std::vector<OutputResult> CudaForwardPipe::NNGraph::BatchForward(const std::vect
                 board_size_)
         );
 #ifndef USE_PLUGIN
+#ifndef MASK_DEBUG
     }
+#endif
 #endif
     context_->execution_context_->setInputShape(
         "BatchSize",
@@ -1062,7 +1071,9 @@ bool CudaForwardPipe::NNGraph::build(bool dump_gpu_info,
     profile->setDimensions("BatchSize", OptProfileSelector::kMAX,
         Dims4(max_batch_size, weights->residual_channels, 1, 1));
 #ifndef USE_PLUGIN
+#ifndef MASK_DEBUG
     if (GetOption<std::string>("mode") == "selfplay") {
+#endif
 #endif
         profile->setDimensions("InputMask", OptProfileSelector::kMIN,
             Dims4(1, 1, board_size, board_size));
@@ -1071,7 +1082,9 @@ bool CudaForwardPipe::NNGraph::build(bool dump_gpu_info,
         profile->setDimensions("InputMask", OptProfileSelector::kMAX,
             Dims4(max_batch_size, 1, board_size, board_size));
 #ifndef USE_PLUGIN
+#ifndef MASK_DEBUG
     }
+#endif
 #endif
 
     config->addOptimizationProfile(profile);
@@ -1348,7 +1361,9 @@ bool CudaForwardPipe::NNGraph::constructNetwork(
     inputMask_->setAllowedFormats(1U << static_cast<int>(TensorFormat::kLINEAR));
 #endif
 
+#ifndef MASK_DEBUG
     if (GetOption<std::string>("mode") == "selfplay") {
+#endif
 #ifndef USE_PLUGIN
         inputMask_ = network->addInput(
             "InputMask", DataType::kFLOAT, {4, {-1, 1, board_size_, board_size_}});
@@ -1401,6 +1416,7 @@ bool CudaForwardPipe::NNGraph::constructNetwork(
             {DataType::kFLOAT, nullptr, 0});
         extraWeights_.push_back(move(maskQuadWeightsShift));
         extraWeights_.push_back(move(maskQuadWeightsScale));
+#ifndef MASK_DEBUG
     } else {
         // b_diff = div_sqrt - self.b_avg(=(19 + 9) / 2)
         // layer_raw_mean * (b_diff / 10.0)
@@ -1419,6 +1435,7 @@ bool CudaForwardPipe::NNGraph::constructNetwork(
         extraWeights_.push_back(move(maskScaleLayerWeights));
         extraWeights_.push_back(move(maskQuadLayerWeights));
     }
+#endif
 
     auto batchSizeTensor = network->addInput(
         "BatchSize",
@@ -1535,13 +1552,13 @@ ILayer* CudaForwardPipe::NNGraph::buildResidualBlock(
         block_ptr->conv2.GetDevBiases(),
         network,
         tower_ptr->conv2.GetOutputs());
-    auto secondActivationConvLayer = buildActivationLayer(secondConvLayer->getOutput(0), network);
+    auto secondMaskConvLayer = applyMaskLayer(secondConvLayer->getOutput(0), network);
     if (tower_ptr->apply_se) {
         // in: input [batch_size, weights_->residual_channels, board_size_, board_size_]
         // in: secondConvLayer [batch_size, weights_->residual_channels, board_size_, board_size_]
         auto outputConvLayer = buildSqueezeExcitationLayer(
             input,
-            secondActivationConvLayer->getOutput(0),
+            secondMaskConvLayer->getOutput(0),
             tower_ptr,
             block_ptr,
             network);
@@ -1551,10 +1568,10 @@ ILayer* CudaForwardPipe::NNGraph::buildResidualBlock(
         // in: secondConvLayer [batch_size, weights_->residual_channels, board_size_, board_size_]
         auto mergeLayer = network->addElementWise(
             *input,
-            *secondActivationConvLayer->getOutput(0),
+            *secondMaskConvLayer->getOutput(0),
             ElementWiseOperation::kSUM);
         // in: mergeLayer [batch_size, weights_->residual_channels, board_size_, board_size_]
-        auto outputConvLayer = buildActivationLayer(mergeLayer->getOutput(0), network);
+        auto outputConvLayer = buildActivationLayer(mergeLayer->getOutput(0), network, false);
         return outputConvLayer;
     }
 }
@@ -1577,7 +1594,7 @@ ILayer* CudaForwardPipe::NNGraph::buildBottleneckBlock(
         tower_ptr->pre_btl_conv.GetOutputs());
     auto preActivationConvLayer = buildActivationLayer(preConvLayer->getOutput(0), network);
     // 1st conv layer
-    //  in: preActivationConvLayer [batch_size, weights_->residual_channels, board_size_, board_size_]
+    //  in: preActivationConvLayer [batch_size, weights_->residual_channels / 2, board_size_, board_size_]
     auto firstConvLayer = buildConvLayer(
         preActivationConvLayer->getOutput(0),
         tower_ptr->conv1.GetFilter(),
@@ -1589,7 +1606,7 @@ ILayer* CudaForwardPipe::NNGraph::buildBottleneckBlock(
         tower_ptr->conv1.GetOutputs());
     auto firstActivationConvLayer = buildActivationLayer(firstConvLayer->getOutput(0), network);
     // 2nd conv layer
-    //  in: firstActivationConvLayer [batch_size, weights_->residual_channels, board_size_, board_size_]
+    //  in: firstActivationConvLayer [batch_size, weights_->residual_channels / 2, board_size_, board_size_]
     auto secondConvLayer = buildConvLayer(
         firstActivationConvLayer->getOutput(0),
         tower_ptr->conv2.GetFilter(),
@@ -1601,7 +1618,7 @@ ILayer* CudaForwardPipe::NNGraph::buildBottleneckBlock(
         tower_ptr->conv2.GetOutputs());
     auto secondActivationConvLayer = buildActivationLayer(secondConvLayer->getOutput(0), network);
     // post-bottleneck
-    //  in: secondActivationConvLayer [batch_size, weights_->residual_channels, board_size_, board_size_]
+    //  in: secondActivationConvLayer [batch_size, weights_->residual_channels / 2, board_size_, board_size_]
     auto postConvLayer = buildConvLayer(
         secondActivationConvLayer->getOutput(0),
         tower_ptr->post_btl_conv.GetFilter(),
@@ -1611,7 +1628,7 @@ ILayer* CudaForwardPipe::NNGraph::buildBottleneckBlock(
         block_ptr->post_btl_conv.GetDevBiases(),
         network,
         tower_ptr->post_btl_conv.GetOutputs());
-    auto postConvMaskLayer = applyMaskLayer(postConvLayer, network);
+    auto postConvMaskLayer = applyMaskLayer(postConvLayer->getOutput(0), network);
     if (tower_ptr->apply_se) {
         // in: input [batch_size, weights_->residual_channels, board_size_, board_size_]
         // in: postConvLayer [batch_size, weights_->residual_channels, board_size_, board_size_]
@@ -1630,7 +1647,7 @@ ILayer* CudaForwardPipe::NNGraph::buildBottleneckBlock(
             *postConvMaskLayer->getOutput(0),
             ElementWiseOperation::kSUM);
         // in: mergeLayer [batch_size, weights_->residual_channels, board_size_, board_size_]
-        auto outputConvLayer = buildActivationLayer(mergeLayer->getOutput(0), network);
+        auto outputConvLayer = buildActivationLayer(mergeLayer->getOutput(0), network, false);
         return outputConvLayer;
     }
 }
@@ -1675,9 +1692,10 @@ ILayer* CudaForwardPipe::NNGraph::buildNestedBottleneckBlock(
         block_ptr->conv2.GetDevBiases(),
         network,
         tower_ptr->conv2.GetOutputs());
+    auto secondMaskConvLayer = applyMaskLayer(secondConvLayer->getOutput(0), network);
     auto secondMergeLayer = network->addElementWise(
+        *secondMaskConvLayer->getOutput(0),
         *preActivationConvLayer->getOutput(0),
-        *secondConvLayer->getOutput(0),
         ElementWiseOperation::kSUM);
     auto secondActivationConvLayer = buildActivationLayer(secondMergeLayer->getOutput(0), network);
     // 3rd conv layer (2nd block)
@@ -1703,9 +1721,10 @@ ILayer* CudaForwardPipe::NNGraph::buildNestedBottleneckBlock(
         block_ptr->conv4.GetDevBiases(),
         network,
         tower_ptr->conv4.GetOutputs());
+    auto fourthMaskConvLayer = applyMaskLayer(fourthConvLayer->getOutput(0), network);
     auto fourthMergeLayer = network->addElementWise(
+        *fourthMaskConvLayer->getOutput(0),
         *secondActivationConvLayer->getOutput(0),
-        *fourthConvLayer->getOutput(0),
         ElementWiseOperation::kSUM);
     auto fourthActivationConvLayer = buildActivationLayer(fourthMergeLayer->getOutput(0), network);
     // post-bottleneck
@@ -1719,7 +1738,7 @@ ILayer* CudaForwardPipe::NNGraph::buildNestedBottleneckBlock(
         block_ptr->post_btl_conv.GetDevBiases(),
         network,
         tower_ptr->post_btl_conv.GetOutputs());
-    auto postConvMaskLayer = applyMaskLayer(postConvLayer, network);
+    auto postConvMaskLayer = applyMaskLayer(postConvLayer->getOutput(0), network);
     if (tower_ptr->apply_se) {
         // in: input [batch_size, weights_->residual_channels, board_size_, board_size_]
         // in: postConvLayer [batch_size, weights_->residual_channels, board_size_, board_size_]
@@ -1738,7 +1757,7 @@ ILayer* CudaForwardPipe::NNGraph::buildNestedBottleneckBlock(
             *postConvMaskLayer->getOutput(0),
             ElementWiseOperation::kSUM);
         // in: mergeLayer [batch_size, weights_->residual_channels, board_size_, board_size_]
-        auto outputConvLayer = buildActivationLayer(mergeLayer->getOutput(0), network);
+        auto outputConvLayer = buildActivationLayer(mergeLayer->getOutput(0), network, false);
         return outputConvLayer;
     }
 }
@@ -1767,7 +1786,7 @@ ILayer* CudaForwardPipe::NNGraph::buildMixerBlock(
     pluginVec_[1] = waightConst->getOutput(0); // const T *weights(std::vector<nvinfer1::ITensor*> <- void*)
     pluginVec_[2] = biasConst->getOutput(0);   // const T *biases
     pluginVec_[3] = inputMask_;                // const T *mask
-    auto dwActivationConvLayer = network->addPluginV3(
+    auto dwActMergeLayer = network->addPluginV3(
         pluginVec_.data(), pluginVec_.size(), nullptr, 0, *mixer_plugin_);
 #else
     auto dwConvLayer = buildConvLayer(
@@ -1780,19 +1799,24 @@ ILayer* CudaForwardPipe::NNGraph::buildMixerBlock(
         network,
         tower_ptr->dw_conv.GetOutputs(),
         tower_ptr->dw_conv.GetOutputs());
+    nvinfer1::ILayer* dwActMergeLayer;
     //  in: input [batch_size, weights_->residual_channels, board_size_, board_size_]
     //  in: dwConvLayer [batch_size, weights_->residual_channels, board_size_, board_size_]
-    auto mergeLayer = network->addElementWise(
-        *input,
-        *dwConvLayer->getOutput(0),
-        ElementWiseOperation::kSUM);
-    auto dwActivationConvLayer = buildActivationLayer(mergeLayer->getOutput(0), network);
+    if (Encoder::GetEncoderVersion(weights_->version) == 1) {
+        auto dwActivateLayer = buildActivationLayer(dwConvLayer->getOutput(0), network);
+        dwActMergeLayer = network->addElementWise(
+            *input,
+            *dwActivateLayer->getOutput(0),
+            ElementWiseOperation::kSUM);
+    } else {
+        dwActMergeLayer = buildActivationLayer(dwConvLayer->getOutput(0), network);
+    }
 #endif
     // 1st ffn conv layer
     // Class: Convolution
     //  in: dwActivationConvLayer [batch_size, weights_->residual_channels, board_size_, board_size_]
     auto firstConvLayer = buildConvLayer(
-        dwActivationConvLayer->getOutput(0),
+        dwActMergeLayer->getOutput(0),
         tower_ptr->conv1.GetFilter(),
         tower_ptr->conv1.GetWeights().size(),
         block_ptr->conv1.GetDevWeights(),
@@ -1813,7 +1837,7 @@ ILayer* CudaForwardPipe::NNGraph::buildMixerBlock(
         block_ptr->conv2.GetDevBiases(),
         network,
         tower_ptr->conv2.GetOutputs());
-    auto secondConvMaskLayer = applyMaskLayer(secondConvLayer, network);
+    auto secondConvMaskLayer = applyMaskLayer(secondConvLayer->getOutput(0), network);
     if (tower_ptr->apply_se) {
         // in: input [batch_size, weights_->residual_channels, board_size_, board_size_]
         // in: secondConvLayer [batch_size, weights_->residual_channels, board_size_, board_size_]
@@ -1899,7 +1923,7 @@ ILayer* CudaForwardPipe::NNGraph::buildSqueezeExcitationLayer(
         *biasLayer->getOutput(0),
         ElementWiseOperation::kSUM
     );
-    auto seMaskLayer = applyMaskLayer(seLayer, network);
+    auto seMaskLayer = applyMaskLayer(seLayer->getOutput(0), network);
     //  in: seMaskLayer [batch_size, weights_->residual_channels, board_size_, board_size_]
     //  in: residual [batch_size, weights_->residual_channels, board_size_, board_size_]
     auto mergeLayer = network->addElementWise(
@@ -1933,7 +1957,7 @@ void CudaForwardPipe::NNGraph::buildPolicyHead(
     // Class: FullyConnect
     //  in: p_poolLayer [batch_size, 64(weights_->policy_head_channels) * 3, 1, 1]
     // out: pol1MatMulLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
-    auto pol1ActMulLayer = buildConvLayer(
+    auto pol1MatMulLayer = buildConvLayer(
         p_poolLayer->getOutput(0),
         1,
         weights_->p_inter_fc.GetWeights().size(),
@@ -1946,10 +1970,10 @@ void CudaForwardPipe::NNGraph::buildPolicyHead(
     // in2: pol1ActMulLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
     auto pol1BiasLayer = network->addElementWise(
         *actPolicyLayer->getOutput(0),
-        *pol1ActMulLayer->getOutput(0),
+        *pol1MatMulLayer->getOutput(0),
         ElementWiseOperation::kSUM);
     //  in: pol1BiasLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
-    auto p_interMaskLayer = applyMaskLayer(pol1BiasLayer, network);
+    auto p_interMaskLayer = applyMaskLayer(pol1BiasLayer->getOutput(0), network);
     // Class: Convolution
     //  in: p_interMaskLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
     auto p_probConvLayer = buildConvLayer(
@@ -1970,9 +1994,9 @@ void CudaForwardPipe::NNGraph::buildPolicyHead(
     output_prob->setType(DataType::kFLOAT);
 
     // Class: FullyConnect
-    //  in: pol1ActMulLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
+    //  in: pol1MatMulLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
     auto pol2MatMulLayer = buildConvLayer(
-        pol1ActMulLayer->getOutput(0),
+        pol1MatMulLayer->getOutput(0),
         1,
         weights_->pass_fc.GetWeights().size(),
         graph_->p_prob_pass.GetDevWeights(),
@@ -2078,7 +2102,7 @@ void CudaForwardPipe::NNGraph::buildPolicyHeadRepLK(
         *pol1ActMulLayer->getOutput(0),
         ElementWiseOperation::kSUM);
     //  in: pol1BiasLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
-    auto p_interMaskLayer = applyMaskLayer(pol1BiasLayer, network);
+    auto p_interMaskLayer = applyMaskLayer(pol1BiasLayer->getOutput(0), network);
     // Class: Convolution
     //  in: p_interMaskLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
     auto p_probConvLayer = buildConvLayer(
@@ -2235,34 +2259,37 @@ ILayer* CudaForwardPipe::NNGraph::buildActivationLayer(
     TrtUniquePtr<INetworkDefinition>& network,
     const bool needMask) {
 
+    ITensor* maskTensor = nullptr;
     ILayer* actLayer = nullptr;
 
+    if (needMask) {
+        auto maskLayer = applyMaskLayer(input, network);
+        maskTensor = maskLayer->getOutput(0);
+    } else {
+        maskTensor = input;
+    }
     if (weights_->default_act == Activation::kIdentity) {
-        actLayer = network->addIdentity(*input);
+        actLayer = network->addIdentity(*maskTensor);
     } else if (weights_->default_act == Activation::kReLU) {
-        actLayer = network->addActivation(*input, ActivationType::kRELU);
+        actLayer = network->addActivation(*maskTensor, ActivationType::kRELU);
     } else if (weights_->default_act == Activation::kELU) {
-        actLayer = network->addActivation(*input, ActivationType::kELU);
+        actLayer = network->addActivation(*maskTensor, ActivationType::kELU);
     } else if (weights_->default_act == Activation::kSELU) {
-        actLayer = network->addActivation(*input, ActivationType::kSELU);
+        actLayer = network->addActivation(*maskTensor, ActivationType::kSELU);
     } else if (weights_->default_act == Activation::kGELU) {
-        actLayer = network->addActivation(*input, ActivationType::kGELU_TANH);
+        actLayer = network->addActivation(*maskTensor, ActivationType::kGELU_TANH);
     } else if (weights_->default_act == Activation::kMISH) {
-        auto softplusLayer = network->addActivation(*input, ActivationType::kSOFTPLUS);
+        auto softplusLayer = network->addActivation(*maskTensor, ActivationType::kSOFTPLUS);
         auto tanhLayer = network->addActivation(*softplusLayer->getOutput(0), ActivationType::kTANH);
-        actLayer = network->addElementWise(*input, *tanhLayer->getOutput(0), ElementWiseOperation::kPROD);
+        actLayer = network->addElementWise(*maskTensor, *tanhLayer->getOutput(0), ElementWiseOperation::kPROD);
     } else if (weights_->default_act == Activation::kSwish) {
-        auto sigmoidLayer = network->addActivation(*input, ActivationType::kSIGMOID);
+        auto sigmoidLayer = network->addActivation(*maskTensor, ActivationType::kSIGMOID);
         actLayer = network->addElementWise(*input, *sigmoidLayer->getOutput(0), ElementWiseOperation::kPROD);
     } else if (weights_->default_act == Activation::kHardSwish) {
-        auto sigmoidLayer = network->addActivation(*input, ActivationType::kHARD_SIGMOID);
+        auto sigmoidLayer = network->addActivation(*maskTensor, ActivationType::kHARD_SIGMOID);
         sigmoidLayer->setAlpha(3.0);
         sigmoidLayer->setBeta(6.0);
-        actLayer = network->addElementWise(*input, *sigmoidLayer->getOutput(0), ElementWiseOperation::kPROD);
-    }
-    if (needMask) {
-        auto maskLayer = applyMaskLayer(actLayer, network);
-        return maskLayer;
+        actLayer = network->addElementWise(*maskTensor, *sigmoidLayer->getOutput(0), ElementWiseOperation::kPROD);
     }
     return actLayer;
 }
@@ -2274,7 +2301,9 @@ ILayer* CudaForwardPipe::NNGraph::applyGPoolLayer(
 
     ILayer* gpoolSumLayer = nullptr;
     ILayer* gpoolMeanLayer = nullptr;
+#ifndef MASK_DEBUG
     if (GetOption<std::string>("mode") == "selfplay") {
+#endif
         gpoolSumLayer = network->addReduce(
             *input, ReduceOperation::kSUM, 1U << 2 | 1U << 3, true);
         // layer_raw_mean = torch.sum(x, dim=(2,3), keepdims=False) / div
@@ -2282,10 +2311,12 @@ ILayer* CudaForwardPipe::NNGraph::applyGPoolLayer(
             *gpoolSumLayer->getOutput(0),
             *maskSumLayer_->getOutput(0),
             ElementWiseOperation::kDIV);
+#ifndef MASK_DEBUG
     } else {
         gpoolMeanLayer =
             network->addReduce(*input, ReduceOperation::kAVG, 1U << 2 | 1U << 3, true);
     }
+#endif
 
     auto gpoolMeanScaleLayer = network->addElementWise(
         *gpoolMeanLayer->getOutput(0),
@@ -2302,7 +2333,11 @@ ILayer* CudaForwardPipe::NNGraph::applyGPoolLayer(
             *maskQuadLayer_->getOutput(0),
             ElementWiseOperation::kPROD);
         gpoolConcatInputLayer3 = gpoolMeanQuadLayer;
+#ifdef MASK_DEBUG
+    } else {
+#else
     } else if (GetOption<std::string>("mode") == "selfplay") {
+#endif
         // All activation functions we use right now are always greater than -1.0, and map 0 -> 0.
         // So off-board areas will equal 0, and then this max is mask-safe if we assign -1.0 to off-board areas.
         auto gpoolMaskShiftWeights = std::make_unique<float[]>(1);
@@ -2329,10 +2364,12 @@ ILayer* CudaForwardPipe::NNGraph::applyGPoolLayer(
             network->addReduce(
                 *gpoolMaskAddLayer->getOutput(0), ReduceOperation::kMAX, 1U << 2 | 1U << 3, true);
         gpoolConcatInputLayer3 = gpoolMaxLayer;
+#ifndef MASK_DEBUG
     } else {
         auto gpoolMaxLayer =
             network->addReduce(*input, ReduceOperation::kMAX, 1U << 2 | 1U << 3, true);
         gpoolConcatInputLayer3 = gpoolMaxLayer;
+#endif
     }
 
     ITensor* gpoolConcatInputs[] = {
@@ -2346,16 +2383,24 @@ ILayer* CudaForwardPipe::NNGraph::applyGPoolLayer(
 }
 
 ILayer* CudaForwardPipe::NNGraph::applyMaskLayer(
-    ILayer* inputLayer,
+    ITensor* input,
     TrtUniquePtr<INetworkDefinition>& network) {
 
+#ifdef NDEBUG
+#ifndef MASK_DEBUG
     if (GetOption<std::string>("mode") == "selfplay") {
+#endif
+#endif
         auto maskLayer =
             network->addElementWise(
-                *inputLayer->getOutput(0), *inputMask_, ElementWiseOperation::kPROD);
+                *input, *inputMask_, ElementWiseOperation::kPROD);
         return maskLayer;
+#ifdef NDEBUG
+#ifndef MASK_DEBUG
     } else {
-        return inputLayer;
+        return network->addIdentity(*input);
     }
+#endif
+#endif
 }
 #endif
