@@ -644,16 +644,7 @@ void CudaForwardPipe::NNGraph::SetComputationMode(cuda::CudaHandles *handles) {
 }
 
 std::vector<OutputResult> CudaForwardPipe::NNGraph::BatchForward(const std::vector<InputData> &batch_input) {
-#ifdef NDEBUG
     const auto batch_size = (int)batch_input.size();
-#else
-    //const auto batch_size = (int)batch_input.size();
-    const auto batch_size = 3;
-    std::vector<InputData> batch_input_test(batch_size);
-    batch_input_test[0].board_size = 9;
-    batch_input_test[1].board_size = 19;
-    batch_input_test[2].board_size = 7;
-#endif
 
     assert(max_batch_ >= batch_size);
 
@@ -662,16 +653,13 @@ std::vector<OutputResult> CudaForwardPipe::NNGraph::BatchForward(const std::vect
     auto batch_planes = std::vector<float>(batch_size * input_channels * num_intersections);
     auto batch_mask = std::vector<float>(batch_size * num_intersections, 1.f);
 
-#ifdef NDEBUG
     for (int b = 0; b < batch_size; ++b) {
         const int planes_bsize = batch_input[b].board_size;
         const auto& input = batch_input[b];
         for (int idx = 0; idx < input_channels * num_intersections; ++idx) {
             batch_planes[b * input_channels * num_intersections + idx] = input.planes[idx];
         }
-#ifndef USE_PLUGIN
         if (GetOption<std::string>("mode") == "selfplay") {
-#endif
             for (int idx = 0; idx < num_intersections; ++idx) {
                 const int x = idx % board_size_;
                 const int y = idx / board_size_;
@@ -679,35 +667,8 @@ std::vector<OutputResult> CudaForwardPipe::NNGraph::BatchForward(const std::vect
                     batch_mask[b * num_intersections + idx] = 0.f;
                 }
             }
-#ifndef USE_PLUGIN
-        }
-#endif
-    }
-#else
-    std::ifstream ifs("C:\\IGO\\Sayuri\\msvc\\x64\\Release\\debuginput.txt");
-    if (ifs.is_open()) {
-        std::string data;
-        int idx = 0;
-        while (std::getline(ifs, data)) {
-            if (idx >= batch_planes.size()) {
-                break;
-            }
-            batch_planes[idx] = std::stof(data);
-            idx++;
         }
     }
-    for (int b = 0; b < batch_size; ++b) {
-        const int planes_bsize = batch_input_test[b].board_size;
-        for (int idx = 0; idx < num_intersections; ++idx) {
-            const int x = idx % board_size_;
-            const int y = idx / board_size_;
-            if (x >= planes_bsize || y >= planes_bsize) {
-                batch_planes[b * num_intersections + idx] = 0.f;
-                batch_mask[b * num_intersections + idx] = 0.f;
-            }
-        }
-    }
-#endif
     auto search = context_->buffers_.find("InputFeature");
     assert(search != context_->buffers_.end());
     cuda::ReportCUDAErrors(cudaMemcpyAsync(
@@ -718,11 +679,7 @@ std::vector<OutputResult> CudaForwardPipe::NNGraph::BatchForward(const std::vect
         cudaStreamPerThread)
     );
 
-#ifndef USE_PLUGIN
-#ifndef MASK_DEBUG
     if (GetOption<std::string>("mode") == "selfplay") {
-#endif
-#endif
         search = context_->buffers_.find("InputMask");
         assert(search != context_->buffers_.end());
         cuda::ReportCUDAErrors(cudaMemcpyAsync(
@@ -732,11 +689,7 @@ std::vector<OutputResult> CudaForwardPipe::NNGraph::BatchForward(const std::vect
             cudaMemcpyHostToDevice,
             cudaStreamPerThread)
         );
-#ifndef USE_PLUGIN
-#ifndef MASK_DEBUG
     }
-#endif
-#endif
 
     const auto probabilities_channels = weights_->probabilities_channels;
     const auto pass_probability_outputs = weights_->pass_probability_outputs;
@@ -756,11 +709,7 @@ std::vector<OutputResult> CudaForwardPipe::NNGraph::BatchForward(const std::vect
             board_size_,
             board_size_)
     );
-#ifndef USE_PLUGIN
-#ifndef MASK_DEBUG
     if (GetOption<std::string>("mode") == "selfplay") {
-#endif
-#endif
         context_->execution_context_->setInputShape(
             "InputMask",
             Dims4(
@@ -769,11 +718,7 @@ std::vector<OutputResult> CudaForwardPipe::NNGraph::BatchForward(const std::vect
                 board_size_,
                 board_size_)
         );
-#ifndef USE_PLUGIN
-#ifndef MASK_DEBUG
     }
-#endif
-#endif
     context_->execution_context_->setInputShape(
         "BatchSize",
         Dims4(
@@ -1070,29 +1015,16 @@ bool CudaForwardPipe::NNGraph::build(bool dump_gpu_info,
         Dims4(max_batch_size,weights->residual_channels, 1, 1));
     profile->setDimensions("BatchSize", OptProfileSelector::kMAX,
         Dims4(max_batch_size, weights->residual_channels, 1, 1));
-#ifndef USE_PLUGIN
-#ifndef MASK_DEBUG
     if (GetOption<std::string>("mode") == "selfplay") {
-#endif
-#endif
         profile->setDimensions("InputMask", OptProfileSelector::kMIN,
             Dims4(1, 1, board_size, board_size));
         profile->setDimensions("InputMask", OptProfileSelector::kOPT,
             Dims4(max_batch_size, 1, board_size, board_size));
         profile->setDimensions("InputMask", OptProfileSelector::kMAX,
             Dims4(max_batch_size, 1, board_size, board_size));
-#ifndef USE_PLUGIN
-#ifndef MASK_DEBUG
     }
-#endif
-#endif
 
     config->addOptimizationProfile(profile);
-
-#ifdef USE_PLUGIN
-    auto pluginCreator = std::make_unique<DepthwiseConvCreator>();
-    getPluginRegistry()->registerCreator(*pluginCreator.get(), "");
-#endif
 
     nvinfer1::NetworkDefinitionCreationFlags flags = 0U;
     auto network = TrtUniquePtr<INetworkDefinition>(builder->createNetworkV2(flags));
@@ -1318,57 +1250,10 @@ bool CudaForwardPipe::NNGraph::constructNetwork(
     ITensor* inputPool = nullptr;
     ITensor* outputConv = nullptr;
 
-#ifdef USE_PLUGIN
-    uint32_t plugin_policy = 0;
-    uint32_t plugin_mixer = 1;
-    uint32_t filters_policy = weights_->p_dw_conv.GetFilter();
-    uint32_t filters_mixer = weights_->tower[0].get()->dw_conv.GetFilter();
-    uint32_t activation = static_cast<uint32_t>(weights_->default_act);
-    std::vector<nvinfer1::PluginField> const policyVecPF{
-        {"ismixer", &plugin_policy, nvinfer1::PluginFieldType::kINT32, 1},
-        {"filters", &filters_policy, nvinfer1::PluginFieldType::kINT32, 1},
-        {"activation", &activation, nvinfer1::PluginFieldType::kINT32, 1}
-    };
-    std::vector<nvinfer1::PluginField> const mixerVecPF{
-        {"ismixer", &plugin_mixer, nvinfer1::PluginFieldType::kINT32, 1},
-        {"filters", &filters_mixer, nvinfer1::PluginFieldType::kINT32, 1},
-        {"activation", &activation, nvinfer1::PluginFieldType::kINT32, 1}
-    };
-    nvinfer1::PluginFieldCollection policy_pfc{
-        static_cast<int32_t>(policyVecPF.size()), policyVecPF.data()};
-    auto policyPluginCreator = static_cast<IPluginCreatorV3One*>(
-        getPluginRegistry()->getCreator("DepthwiseConvPlugin", "0", ""));
-    policy_plugin_ = std::unique_ptr<nvinfer1::IPluginV3>(
-        policyPluginCreator->createPlugin(
-            "DepthwiseConvPlugin",
-            &policy_pfc,
-            nvinfer1::TensorRTPhase::kBUILD
-        )
-    );
-    nvinfer1::PluginFieldCollection mixer_pfc{
-        static_cast<int32_t>(mixerVecPF.size()), mixerVecPF.data()};
-    auto mixerPluginCreator = static_cast<IPluginCreatorV3One*>(
-        getPluginRegistry()->getCreator("DepthwiseConvPlugin", "0", ""));
-    mixer_plugin_ = std::unique_ptr<nvinfer1::IPluginV3>(
-        mixerPluginCreator->createPlugin(
-            "DepthwiseConvPlugin",
-            &mixer_pfc,
-            nvinfer1::TensorRTPhase::kBUILD
-        )
-    );
-    inputMask_ = network->addInput(
-        "InputMask", DataType::kFLOAT, {4, {-1, 1, board_size_, board_size_}});
-    inputMask_->setAllowedFormats(1U << static_cast<int>(TensorFormat::kLINEAR));
-#endif
-
-#ifndef MASK_DEBUG
     if (GetOption<std::string>("mode") == "selfplay") {
-#endif
-#ifndef USE_PLUGIN
         inputMask_ = network->addInput(
             "InputMask", DataType::kFLOAT, {4, {-1, 1, board_size_, board_size_}});
         inputMask_->setAllowedFormats(1U << static_cast<int>(TensorFormat::kLINEAR));
-#endif
         // mask_sum_hw = torch.sum(mask, dim=(1,2,3))
         // div = torch.reshape(mask_sum_hw, (-1,1))
         maskSumLayer_ = network->addReduce(
@@ -1416,7 +1301,6 @@ bool CudaForwardPipe::NNGraph::constructNetwork(
             {DataType::kFLOAT, nullptr, 0});
         extraWeights_.push_back(move(maskQuadWeightsShift));
         extraWeights_.push_back(move(maskQuadWeightsScale));
-#ifndef MASK_DEBUG
     } else {
         // b_diff = div_sqrt - self.b_avg(=(19 + 9) / 2)
         // layer_raw_mean * (b_diff / 10.0)
@@ -1435,7 +1319,6 @@ bool CudaForwardPipe::NNGraph::constructNetwork(
         extraWeights_.push_back(move(maskScaleLayerWeights));
         extraWeights_.push_back(move(maskQuadLayerWeights));
     }
-#endif
 
     auto batchSizeTensor = network->addInput(
         "BatchSize",
@@ -1510,11 +1393,7 @@ bool CudaForwardPipe::NNGraph::constructNetwork(
     }
     // policy head
     //  in: outputConv [batch_size, weights_->residual_channels, board_size_, board_size_]
-    if (weights_->policy_head_type == PolicyHeadType::kRepLK) {
-        buildPolicyHeadRepLK(outputConv, network);
-    } else {
-        buildPolicyHead(outputConv, network);
-    }
+    buildPolicyHead(outputConv, network);
     // value head
     //  in: outputConv [batch_size, weights_->residual_channels, board_size_, board_size_]
     buildValueHead(outputConv, network);
@@ -1770,25 +1649,6 @@ ILayer* CudaForwardPipe::NNGraph::buildMixerBlock(
     // dw conv layer
     // Class: DepthwiseConvolution
     //  in: input [batch_size, weights_->residual_channels, board_size_, board_size_]
-#ifdef USE_PLUGIN
-    auto waightConst = network->addConstant(
-        Dims{2, {1, static_cast<int64_t>(tower_ptr->dw_conv.GetWeights().size())}},
-        {DataType::kFLOAT,
-            block_ptr->dw_conv.GetDevWeights(),
-            static_cast<int64_t>(tower_ptr->dw_conv.GetWeights().size())});
-    auto biasConst = network->addConstant(
-        Dims{2, {1, static_cast<int64_t>(tower_ptr->dw_conv.GetBiases().size())}},
-        {DataType::kFLOAT,
-            block_ptr->dw_conv.GetDevBiases(),
-            static_cast<int64_t>(tower_ptr->dw_conv.GetBiases().size())});
-    auto castLayer = network->addCast(*input, DataType::kFLOAT);
-    pluginVec_[0] = castLayer->getOutput(0);   // const T *input
-    pluginVec_[1] = waightConst->getOutput(0); // const T *weights(std::vector<nvinfer1::ITensor*> <- void*)
-    pluginVec_[2] = biasConst->getOutput(0);   // const T *biases
-    pluginVec_[3] = inputMask_;                // const T *mask
-    auto dwActMergeLayer = network->addPluginV3(
-        pluginVec_.data(), pluginVec_.size(), nullptr, 0, *mixer_plugin_);
-#else
     auto dwConvLayer = buildConvLayer(
         input,
         tower_ptr->dw_conv.GetFilter(),
@@ -1811,7 +1671,6 @@ ILayer* CudaForwardPipe::NNGraph::buildMixerBlock(
     } else {
         dwActMergeLayer = buildActivationLayer(dwConvLayer->getOutput(0), network);
     }
-#endif
     // 1st ffn conv layer
     // Class: Convolution
     //  in: dwActivationConvLayer [batch_size, weights_->residual_channels, board_size_, board_size_]
@@ -1937,6 +1796,7 @@ ILayer* CudaForwardPipe::NNGraph::buildSqueezeExcitationLayer(
 
 void CudaForwardPipe::NNGraph::buildPolicyHead(
     ITensor* input, TrtUniquePtr<INetworkDefinition>& network) {
+    nvinfer1::ILayer* actPolicyLayer{nullptr};
     // policy head
     // Class: Convolution
     //  in: input [batch_size, weights_->residual_channels, board_size_, board_size_]
@@ -1949,139 +1809,44 @@ void CudaForwardPipe::NNGraph::buildPolicyHead(
         graph_->p_hd_conv.GetDevBiases(),
         network,
         weights_->p_hd_conv.GetOutputs());
-    //  in: polMaskLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
-    auto actPolicyLayer = buildActivationLayer(policyConvLayer->getOutput(0), network);
-    // Class: GlobalPooling(NormalGlobalPooling)
-    //  in: actPolicyLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
-    auto p_poolLayer = applyGPoolLayer(actPolicyLayer->getOutput(0), network);
-    // Class: FullyConnect
-    //  in: p_poolLayer [batch_size, 64(weights_->policy_head_channels) * 3, 1, 1]
-    // out: pol1MatMulLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
-    auto pol1MatMulLayer = buildConvLayer(
-        p_poolLayer->getOutput(0),
-        1,
-        weights_->p_inter_fc.GetWeights().size(),
-        graph_->p_inter.GetDevWeights(),
-        weights_->p_inter_fc.GetBiases().size(),
-        graph_->p_inter.GetDevBiases(),
-        network,
-        weights_->p_inter_fc.GetOutputs());
-    // in1: actPolicyLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
-    // in2: pol1ActMulLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
-    auto pol1BiasLayer = network->addElementWise(
-        *actPolicyLayer->getOutput(0),
-        *pol1MatMulLayer->getOutput(0),
-        ElementWiseOperation::kSUM);
-    //  in: pol1BiasLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
-    auto p_interMaskLayer = applyMaskLayer(pol1BiasLayer->getOutput(0), network);
-    // Class: Convolution
-    //  in: p_interMaskLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
-    auto p_probConvLayer = buildConvLayer(
-        p_interMaskLayer->getOutput(0),
-        1,
-        weights_->prob_conv.GetWeights().size(),
-        graph_->p_prob.GetDevWeights(),
-        weights_->prob_conv.GetBiases().size(),
-        graph_->p_prob.GetDevBiases(),
-        network,
-        weights_->prob_conv.GetOutputs());
-    // Mark the outputs for the network
-    //  in: p_probConvLayer [batch_size, 5(weights_->probabilities_channels), board_size_, board_size_]
-    auto output_prob = p_probConvLayer->getOutput(0);
-    network->markOutput(*output_prob);
-    output_prob->setName("output_prob");
-    output_prob->setAllowedFormats(1U << static_cast<int>(TensorFormat::kLINEAR));
-    output_prob->setType(DataType::kFLOAT);
-
-    // Class: FullyConnect
-    //  in: pol1MatMulLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
-    auto pol2MatMulLayer = buildConvLayer(
-        pol1MatMulLayer->getOutput(0),
-        1,
-        weights_->pass_fc.GetWeights().size(),
-        graph_->p_prob_pass.GetDevWeights(),
-        weights_->pass_fc.GetBiases().size(),
-        graph_->p_prob_pass.GetDevBiases(),
-        network,
-        weights_->pass_fc.GetOutputs());
-    // Mark the outputs for the network
-    //  in: pol2MatMulLayer [batch_size, 5(weights_->policy_head_channels), 1, 1]
-    auto output_prob_pass = pol2MatMulLayer->getOutput(0);
-    network->markOutput(*output_prob_pass);
-    output_prob_pass->setName("output_prob_pass");
-    output_prob_pass->setAllowedFormats(1U << static_cast<int>(TensorFormat::kLINEAR));
-    output_prob_pass->setType(DataType::kFLOAT);
-}
-
-void CudaForwardPipe::NNGraph::buildPolicyHeadRepLK(
-    ITensor* input, TrtUniquePtr<INetworkDefinition>& network) {
-    // policy head
-    // Class: Convolution
-    //  in: input [batch_size, weights_->residual_channels, board_size_, board_size_]
-    auto policyConvLayer = buildConvLayer(
-        input,
-        weights_->p_hd_conv.GetFilter(),
-        weights_->p_hd_conv.GetWeights().size(),
-        graph_->p_hd_conv.GetDevWeights(),
-        weights_->p_hd_conv.GetBiases().size(),
-        graph_->p_hd_conv.GetDevBiases(),
-        network,
-        weights_->p_hd_conv.GetOutputs());
-    //  in: policyConvLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
-    auto actPolicyLayer = buildActivationLayer(policyConvLayer->getOutput(0), network);
-    // Class: DepthwiseConvolution
-    //  in: actPolicyLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
-    // x = (self.conv(x) + self.rep3x3(x)) * mask
-#ifdef USE_PLUGIN
-    // Class: Plugin
-    //  in: actPolicyLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
-    // x = (self.conv(x) + self.rep3x3(x)) * mask
-    auto waightConst = network->addConstant(
-        Dims{2, {1, static_cast<int64_t>(weights_->p_dw_conv.GetWeights().size())}},
-        {DataType::kFLOAT,
+    if (weights_->policy_head_type == PolicyHeadType::kRepLK) {
+        //  in: policyConvLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
+        auto preActPolicyLayer = buildActivationLayer(policyConvLayer->getOutput(0), network);
+        // Class: DepthwiseConvolution
+        //  in: preActPolicyLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
+        // x = (self.conv(x) + self.rep3x3(x)) * mask
+        auto p_dwConvLayer = buildConvLayer(
+            preActPolicyLayer->getOutput(0),
+            weights_->p_dw_conv.GetFilter(),         // 7
+            weights_->p_dw_conv.GetWeights().size(), // 64 * 7 * 7
             graph_->p_dw_conv.GetDevWeights(),
-            static_cast<int64_t>(weights_->p_dw_conv.GetWeights().size())});
-    auto biasConst = network->addConstant(
-        Dims{2, {1, static_cast<int64_t>(weights_->p_dw_conv.GetBiases().size())}},
-        {DataType::kFLOAT,
+            weights_->p_dw_conv.GetBiases().size(),  // 64
             graph_->p_dw_conv.GetDevBiases(),
-            static_cast<int64_t>(weights_->p_dw_conv.GetBiases().size())});
-    pluginVec_[0] = actPolicyLayer->getOutput(0); // const T *input
-    pluginVec_[1] = waightConst->getOutput(0);    // const T *weights(std::vector<nvinfer1::ITensor*> <- void*)
-    pluginVec_[2] = biasConst->getOutput(0);      // const T *biases
-    pluginVec_[3] = inputMask_;                   // const T *mask
-    auto p_dwActPolicyLayer = network->addPluginV3(
-        pluginVec_.data(), pluginVec_.size(), nullptr, 0, *policy_plugin_);
-#else
-    auto p_dwConvLayer = buildConvLayer(
-        actPolicyLayer->getOutput(0),
-        weights_->p_dw_conv.GetFilter(),         // 7
-        weights_->p_dw_conv.GetWeights().size(), // 64 * 7 * 7
-        graph_->p_dw_conv.GetDevWeights(),
-        weights_->p_dw_conv.GetBiases().size(),  // 64
-        graph_->p_dw_conv.GetDevBiases(),
-        network,
-        weights_->p_dw_conv.GetOutputs(),        // 64
-        true);
-    //  in: p_dwConvLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
-    auto p_dwActPolicyLayer = buildActivationLayer(p_dwConvLayer->getOutput(0), network);
-#endif
-    // Class: Convolution
-    //  in: p_dwActPolicyLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
-    auto p_ptConvLayer = buildConvLayer(
-        p_dwActPolicyLayer->getOutput(0),
-        1,
-        weights_->p_pt_conv.GetWeights().size(),
-        graph_->p_pt_conv.GetDevWeights(),
-        weights_->p_pt_conv.GetBiases().size(),
-        graph_->p_pt_conv.GetDevBiases(),
-        network,
+            network,
+            weights_->p_dw_conv.GetOutputs(),        // 64
+            true);
+        //  in: p_dwConvLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
+        auto p_dwActPolicyLayer = buildActivationLayer(p_dwConvLayer->getOutput(0), network);
+        // Class: Convolution
+        //  in: p_dwActPolicyLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
+        auto p_ptConvLayer = buildConvLayer(
+            p_dwActPolicyLayer->getOutput(0),
+            1,
+            weights_->p_pt_conv.GetWeights().size(),
+            graph_->p_pt_conv.GetDevWeights(),
+            weights_->p_pt_conv.GetBiases().size(),
+            graph_->p_pt_conv.GetDevBiases(),
+            network,
         weights_->p_pt_conv.GetOutputs());
-    //  in: p_ptConvLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
-    auto p_ptActPolicyLayer = buildActivationLayer(p_ptConvLayer->getOutput(0), network);
+        //  in: p_ptConvLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
+        actPolicyLayer = buildActivationLayer(p_ptConvLayer->getOutput(0), network);
+    } else {
+        //  in: policyConvLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
+        actPolicyLayer = buildActivationLayer(policyConvLayer->getOutput(0), network);
+    }
     // Class: GlobalPooling(NormalGlobalPooling)
-    //  in: p_ptActPolicyLayer [batch_size, 64(weights_->policy_head_channels) * num_intersections
-    auto p_poolLayer = applyGPoolLayer(p_ptActPolicyLayer->getOutput(0), network);
+    //  in: actPolicyLayer [batch_size, 64(weights_->policy_head_channels) * num_intersections
+    auto p_poolLayer = applyGPoolLayer(actPolicyLayer->getOutput(0), network);
     // Class: FullyConnect
     //  in: p_poolLayer [batch_size, 64(weights_->policy_head_channels) * 3, 1, 1]
     auto pol1MatMulLayer = buildConvLayer(
@@ -2095,10 +1860,10 @@ void CudaForwardPipe::NNGraph::buildPolicyHeadRepLK(
         weights_->p_inter_fc.GetOutputs());
     //  in: pol1MatMulLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
     auto pol1ActMulLayer = buildActivationLayer(pol1MatMulLayer->getOutput(0), network, false);
-    // in1: p_ptActPolicyLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
+    // in1: actPolicyLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
     // in2: pol1ActMulLayer [batch_size, 64(weights_->policy_head_channels), 1, 1]
     auto pol1BiasLayer = network->addElementWise(
-        *p_ptActPolicyLayer->getOutput(0),
+        *actPolicyLayer->getOutput(0),
         *pol1ActMulLayer->getOutput(0),
         ElementWiseOperation::kSUM);
     //  in: pol1BiasLayer [batch_size, 64(weights_->policy_head_channels), board_size_, board_size_]
@@ -2301,9 +2066,7 @@ ILayer* CudaForwardPipe::NNGraph::applyGPoolLayer(
 
     ILayer* gpoolSumLayer = nullptr;
     ILayer* gpoolMeanLayer = nullptr;
-#ifndef MASK_DEBUG
-    if (GetOption<std::string>("mode") == "selfplay") {
-#endif
+    if (GetOption<std::string>("mode") == "selfplay" && !isValueHead) {
         gpoolSumLayer = network->addReduce(
             *input, ReduceOperation::kSUM, 1U << 2 | 1U << 3, true);
         // layer_raw_mean = torch.sum(x, dim=(2,3), keepdims=False) / div
@@ -2311,12 +2074,10 @@ ILayer* CudaForwardPipe::NNGraph::applyGPoolLayer(
             *gpoolSumLayer->getOutput(0),
             *maskSumLayer_->getOutput(0),
             ElementWiseOperation::kDIV);
-#ifndef MASK_DEBUG
     } else {
         gpoolMeanLayer =
             network->addReduce(*input, ReduceOperation::kAVG, 1U << 2 | 1U << 3, true);
     }
-#endif
 
     auto gpoolMeanScaleLayer = network->addElementWise(
         *gpoolMeanLayer->getOutput(0),
@@ -2327,17 +2088,13 @@ ILayer* CudaForwardPipe::NNGraph::applyGPoolLayer(
     ILayer* gpoolMaskShiftLayer = nullptr;
     ILayer* gpoolMaskScaleLayer = nullptr;
     ILayer* gpoolConcatInputLayer3 = nullptr;
-    if(isValueHead) {
+    if (isValueHead) {
         auto gpoolMeanQuadLayer = network->addElementWise(
             *gpoolMeanLayer->getOutput(0),
             *maskQuadLayer_->getOutput(0),
             ElementWiseOperation::kPROD);
         gpoolConcatInputLayer3 = gpoolMeanQuadLayer;
-#ifdef MASK_DEBUG
-    } else {
-#else
     } else if (GetOption<std::string>("mode") == "selfplay") {
-#endif
         // All activation functions we use right now are always greater than -1.0, and map 0 -> 0.
         // So off-board areas will equal 0, and then this max is mask-safe if we assign -1.0 to off-board areas.
         auto gpoolMaskShiftWeights = std::make_unique<float[]>(1);
@@ -2364,12 +2121,10 @@ ILayer* CudaForwardPipe::NNGraph::applyGPoolLayer(
             network->addReduce(
                 *gpoolMaskAddLayer->getOutput(0), ReduceOperation::kMAX, 1U << 2 | 1U << 3, true);
         gpoolConcatInputLayer3 = gpoolMaxLayer;
-#ifndef MASK_DEBUG
     } else {
         auto gpoolMaxLayer =
             network->addReduce(*input, ReduceOperation::kMAX, 1U << 2 | 1U << 3, true);
         gpoolConcatInputLayer3 = gpoolMaxLayer;
-#endif
     }
 
     ITensor* gpoolConcatInputs[] = {
@@ -2386,21 +2141,13 @@ ILayer* CudaForwardPipe::NNGraph::applyMaskLayer(
     ITensor* input,
     TrtUniquePtr<INetworkDefinition>& network) {
 
-#ifdef NDEBUG
-#ifndef MASK_DEBUG
     if (GetOption<std::string>("mode") == "selfplay") {
-#endif
-#endif
         auto maskLayer =
             network->addElementWise(
                 *input, *inputMask_, ElementWiseOperation::kPROD);
         return maskLayer;
-#ifdef NDEBUG
-#ifndef MASK_DEBUG
     } else {
         return network->addIdentity(*input);
     }
-#endif
-#endif
 }
 #endif

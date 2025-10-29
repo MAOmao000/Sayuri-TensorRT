@@ -11,31 +11,6 @@
 
 namespace cuda {
 
-const char* cublasGetErrorString(cublasStatus_t status) {
-    switch(status) {
-        case CUBLAS_STATUS_NOT_SUPPORTED: return "CUBLAS_STATUS_NOT_SUPPORTED";
-        case CUBLAS_STATUS_LICENSE_ERROR: return "CUBLAS_STATUS_LICENSE_ERROR";
-        case CUBLAS_STATUS_SUCCESS: return "CUBLAS_STATUS_SUCCESS";
-        case CUBLAS_STATUS_NOT_INITIALIZED: return "CUBLAS_STATUS_NOT_INITIALIZED";
-        case CUBLAS_STATUS_ALLOC_FAILED: return "CUBLAS_STATUS_ALLOC_FAILED";
-        case CUBLAS_STATUS_INVALID_VALUE: return "CUBLAS_STATUS_INVALID_VALUE";
-        case CUBLAS_STATUS_ARCH_MISMATCH: return "CUBLAS_STATUS_ARCH_MISMATCH";
-        case CUBLAS_STATUS_MAPPING_ERROR: return "CUBLAS_STATUS_MAPPING_ERROR";
-        case CUBLAS_STATUS_EXECUTION_FAILED: return "CUBLAS_STATUS_EXECUTION_FAILED";
-        case CUBLAS_STATUS_INTERNAL_ERROR: return "CUBLAS_STATUS_INTERNAL_ERROR";
-    }
-    return "unknown error";
-}
-
-void CublasError(cublasStatus_t status) {
-    if (status != CUBLAS_STATUS_SUCCESS) {
-        const char *cause = cublasGetErrorString(status);
-        auto err = std::ostringstream{};
-        err << "CUBLAS error: " << cause;
-        throw std::runtime_error(err.str());
-    }
-}
-
 void CudaError(cudaError_t status) {
   if (status != cudaSuccess) {
         const char *cause = cudaGetErrorString(status);
@@ -86,7 +61,6 @@ void CudaHandles::ApplyOnCurrentDevice() {
         return;
     }
 
-    ReportCUBLASErrors(cublasCreate(&cublas_handle));
 #ifdef USE_CUDNN
     ReportCUDNNErrors(cudnnCreate(&cudnn_handle));
 #endif
@@ -106,7 +80,6 @@ void CudaHandles::ApplyOnCurrentDevice() {
         fp16 = true;
     }
 #endif
-    ReportCUBLASErrors(cublasSetStream(cublas_handle, stream));
     gpu_id = GetDevice();
     initialized = true;
 }
@@ -114,7 +87,6 @@ void CudaHandles::ApplyOnCurrentDevice() {
 void CudaHandles::Release() {
     if (initialized) {
         cudaStreamDestroy(stream);
-        cublasDestroy(cublas_handle);
 #ifdef USE_CUDNN
         cudnnDestroy(cudnn_handle);
 #endif
@@ -237,13 +209,6 @@ void MallocAndCopy(bool fp16, void **cude_op, const std::vector<float> &weights)
         ReportCUDAErrors(cudaMemcpy(
             *cude_op, weights.data(), op_size, cudaMemcpyHostToDevice));
     }
-}
-
-void MallocAndHostCopy(void **cude_op, const std::vector<float> &weights) {
-    size_t wsize = weights.size();
-    size_t op_size = wsize * sizeof(float);
-    ReportCUDAErrors(cudaHostAlloc(&(*cude_op), op_size, cudaHostAllocMapped));
-    memcpy(*cude_op, (float *)weights.data(), weights.size() * sizeof(float));
 }
 
 } // namespace cuda

@@ -91,17 +91,10 @@ DepthwiseConvolution::DepthwiseConvolution(CudaHandles *handles,
 
 DepthwiseConvolution::~DepthwiseConvolution() {
     if (loaded_) {
-#ifdef USE_PLUGIN
-        ReportCUDAErrors(cudaFreeHost(cuda_weights_));
-        if (cuda_biases_) {
-            ReportCUDAErrors(cudaFreeHost(cuda_biases_));
-        }
-#else
         ReportCUDAErrors(cudaFree(cuda_weights_));
         if (cuda_biases_) {
             ReportCUDAErrors(cudaFree(cuda_biases_));
         }
-#endif
     }
 }
 
@@ -110,11 +103,7 @@ void DepthwiseConvolution::LoadWeights(const std::vector<float> &weights,
     if (loaded_) {
         return;
     }
-#ifdef USE_PLUGIN
-    MallocAndHostCopy(&cuda_biases_, biases);
-#else
     MallocAndCopy(fp16_, &cuda_biases_, biases);
-#endif
     LoadWeights(weights);
 }
 
@@ -122,11 +111,7 @@ void DepthwiseConvolution::LoadWeights(const std::vector<float> &weights) {
     if (loaded_) {
         return;
     }
-#ifdef USE_PLUGIN
-    MallocAndHostCopy(&cuda_weights_, weights);
-#else
     MallocAndCopy(fp16_, &cuda_weights_, weights);
-#endif
     loaded_ = true;
 }
 
