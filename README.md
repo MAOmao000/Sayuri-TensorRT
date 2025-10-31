@@ -5,6 +5,66 @@
     <h3>Sayuri</h3>
 </div>
 
+## TensorRT backend test results
+
+~~~
+$ bash simple.sh
+
+./sayuri --mode selfplay --config configs/selfplay-config.txt -g 0 --target-directory selfplay --weights-dir weights
+
+Network Version: 5
+Input Channels: 43
+Residual Blocks: 6
+Residual Channels: 96
+  block 1: ResidualBlock
+  block 2: ResidualBlock
+  block 3: ResidualBlock-SE
+  block 4: ResidualBlock
+  block 5: ResidualBlock
+  block 6: ResidualBlock-SE
+Policy Head Type: RepLK
+Policy Head Channels: 24
+Value Head Channels: 24
+Done! Load the weights file in 0.03 sec.
+CUDA version: Major 13, Minor 0
+Use cuDNN: No
+Number of CUDA devices: 1
+=== Device: 0 ===
+  Name: NVIDIA GeForce RTX 5060
+  Compute capability: 12.0
+  Enable the FP16
+  Enable the tensor cores
+Done constructing network.
+Allocated 400.00 MiB memory for NN cache (141509 entries).
+============================================
+Hash value: 31EC9DC9306CCCBC
+Number of parallel games: 64
+Target self-play games: 5000
+Directory for saving: selfplay
+
+                cuda backend   TensorRT baxkend
+                       (best)          (best)
+steps            200K    172K    200K    168K
+samples        51200K  44032K  51200K  43008K
+games            250K    215K    250K    210K
+all            4.9080  4.8768  4.8171  4.7905
+prob           1.9292  1.9324  1.8882  1.9130
+aux prob       0.4362  0.4337  0.4308  0.4301
+soft prob      0.5047  0.5044  0.5018  0.5016
+soft aux prob  0.0791  0.0790  0.0785  0.0783
+optimistic     0.2675  0.2689  0.2592  0.2616
+ownership      0.7263  0.7049  0.7208  0.6887
+wdl            0.6096  0.6017  0.5845  0.5763
+Q value        0.1676  0.1637  0.1593  0.1550
+scores         0.1777  0.1783  0.1858  0.1781
+errors         0.0102  0.0097  0.0082  0.0078
+time           121.4(h)        54.0(h)
+~~~
+
+![all loss](./img/trt_cuda_loss.png)
+![wdl loss](./img/trt_cuda_loss_wdl.png)
+![run time](./img/trt_cuda_loss_time.png)
+
 ## Let's ROCK!
 
 **Sayuri** is a GTP-compliant Go engine built on Deep Convolutional Neural Networks and Monte Carlo Tree Search. It learns to play Go from scratch using an AlphaZero-style algorithm, without any handcrafted human strategies. Inspired heavily by **Leela Zero** and **KataGo**, Sayuri initially borrowed its board data structures, search algorithms, and network format from Leela Zero. In later versions, the engine follows KataGo's research and now supports variable rulesets, komi settings, and board sizes.
