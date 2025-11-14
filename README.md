@@ -16,12 +16,28 @@ Network Version: 5
 Input Channels: 43
 Residual Blocks: 6
 Residual Channels: 96
+(Residual Block)
   block 1: ResidualBlock
   block 2: ResidualBlock
   block 3: ResidualBlock-SE
   block 4: ResidualBlock
   block 5: ResidualBlock
   block 6: ResidualBlock-SE
+(Nested Bottleneck Block)
+  block 1: NestedBottleneckBlock
+  block 2: NestedBottleneckBlock
+  block 3: NestedBottleneckBlock-SE
+  block 4: NestedBottleneckBlock
+  block 5: NestedBottleneckBlock
+  block 6: NestedBottleneckBlock-SE
+(Residual + Mixer Block)
+  block 1: ResidualBlock
+  block 2: ResidualBlock
+  block 3: ResidualBlock-SE
+  block 4: ResidualBlock
+  block 5: ResidualBlock
+  block 6: ResidualBlock
+  block 7: MixerBlock-SE-SE
 Policy Head Type: RepLK
 Policy Head Channels: 24
 Value Head Channels: 24
@@ -42,28 +58,30 @@ Number of parallel games: 64
 Target self-play games: 5000
 Directory for saving: selfplay
 
-                cuda backend   TensorRT baxkend
-                       (best)          (best)
-steps            200K    172K    200K    168K
-samples        51200K  44032K  51200K  43008K
-games            250K    215K    250K    210K
-all            4.9080  4.8768  4.8171  4.7905
-prob           1.9292  1.9324  1.8882  1.9130
-aux prob       0.4362  0.4337  0.4308  0.4301
-soft prob      0.5047  0.5044  0.5018  0.5016
-soft aux prob  0.0791  0.0790  0.0785  0.0783
-optimistic     0.2675  0.2689  0.2592  0.2616
-ownership      0.7263  0.7049  0.7208  0.6887
-wdl            0.6096  0.6017  0.5845  0.5763
-Q value        0.1676  0.1637  0.1593  0.1550
-scores         0.1777  0.1783  0.1858  0.1781
-errors         0.0102  0.0097  0.0082  0.0078
-time           121.4(h)        54.0(h)
+                cuda backend   TensorRT backend  Nested bottleneck  residual+mixer
+                       (best)          (best)           (best)           (best)
+steps            200K    172K    200K    168K     200K    220K     200K    164K
+samples        51200K  44032K  51200K  43008K   51200K  56320K   51200K  41984K 
+games            250K    215K    250K    210K     250K    275K     250K    205K
+all            4.9080  4.8768  4.8171  4.7905   4.8537  4.8446   4.8872  4.8677
+prob           1.9292  1.9324  1.8882  1.9130   1.8775  1.8617   1.8916  1.9164
+aux prob       0.4362  0.4337  0.4308  0.4301   0.4295  0.4290   0.4317  0.4307
+soft prob      0.5047  0.5044  0.5018  0.5016   0.5012  0.5014   0.5019  0.5021
+soft aux prob  0.0791  0.0790  0.0785  0.0783   0.0784  0.0785   0.0786  0.0784
+optimistic     0.2675  0.2689  0.2592  0.2616   0.2587  0.2544   0.2582  0.2656
+ownership      0.7263  0.7049  0.7208  0.6887   0.7525  0.7665   0.7745  0.7473
+wdl            0.6096  0.6017  0.5845  0.5763   0.5850  0.5828   0.5841  0.5675
+Q value        0.1676  0.1637  0.1593  0.1550   0.1594  0.1589   0.1584  0.1544
+scores         0.1777  0.1783  0.1858  0.1781   0.2025  0.2028   0.2005  0.1980
+errors         0.0102  0.0097  0.0082  0.0078   0.0090  0.0085   0.0076  0.0075
+time           121.4(h)        54.0(h)          64.2(h) 70.2(h)  60.4(h) 49.6(h)
 ~~~
 
 ![all loss](./img/trt_cuda_loss.png)
 ![wdl loss](./img/trt_cuda_loss_wdl.png)
 ![run time](./img/trt_cuda_loss_time.png)
+![all0 loss](./img/all_loss.png)
+![wdl0 loss](./img/wdl_loss.png)
 
 ## Let's ROCK!
 
