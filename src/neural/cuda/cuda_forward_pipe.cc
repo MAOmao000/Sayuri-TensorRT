@@ -1658,19 +1658,14 @@ ILayer* CudaForwardPipe::NNGraph::buildMixerBlock(
         block_ptr->dw_conv.GetDevBiases(),
         network,
         tower_ptr->dw_conv.GetOutputs(),
-        tower_ptr->dw_conv.GetOutputs());
-    nvinfer1::ILayer* dwActMergeLayer;
+        true);
     //  in: input [batch_size, weights_->residual_channels, board_size_, board_size_]
     //  in: dwConvLayer [batch_size, weights_->residual_channels, board_size_, board_size_]
-    if (Encoder::GetEncoderVersion(weights_->version) == 1) {
-        auto dwActivateLayer = buildActivationLayer(dwConvLayer->getOutput(0), network);
-        dwActMergeLayer = network->addElementWise(
-            *input,
-            *dwActivateLayer->getOutput(0),
-            ElementWiseOperation::kSUM);
-    } else {
-        dwActMergeLayer = buildActivationLayer(dwConvLayer->getOutput(0), network);
-    }
+    auto dwActivateLayer = buildActivationLayer(dwConvLayer->getOutput(0), network);
+    auto dwActMergeLayer = network->addElementWise(
+        *input,
+        *dwActivateLayer->getOutput(0),
+        ElementWiseOperation::kSUM);
     // 1st ffn conv layer
     // Class: Convolution
     //  in: dwActivationConvLayer [batch_size, weights_->residual_channels, board_size_, board_size_]
@@ -1698,20 +1693,20 @@ ILayer* CudaForwardPipe::NNGraph::buildMixerBlock(
         tower_ptr->conv2.GetOutputs());
     auto secondConvMaskLayer = applyMaskLayer(secondConvLayer->getOutput(0), network);
     if (tower_ptr->apply_se) {
-        // in: input [batch_size, weights_->residual_channels, board_size_, board_size_]
+        // in: dwActMergeLayer [batch_size, weights_->residual_channels, board_size_, board_size_]
         // in: secondConvLayer [batch_size, weights_->residual_channels, board_size_, board_size_]
         auto outputConvLayer = buildSqueezeExcitationLayer(
-            input,
+            dwActMergeLayer->getOutput(0),
             secondConvMaskLayer->getOutput(0),
             tower_ptr,
             block_ptr,
             network);
         return outputConvLayer;
     } else {
-        // in: input [batch_size, weights_->residual_channels, board_size_, board_size_]
+        // in: dwActMergeLayer [batch_size, weights_->residual_channels, board_size_, board_size_]
         // in: secondConvLayer [batch_size, weights_->residual_channels, board_size_, board_size_]
         auto mergeLayer = network->addElementWise(
-            *input,
+            *dwActMergeLayer->getOutput(0),
             *secondConvMaskLayer->getOutput(0),
             ElementWiseOperation::kSUM);
         // in: mergeLayer [batch_size, weights_->residual_channels, board_size_, board_size_]
