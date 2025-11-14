@@ -97,15 +97,17 @@ def plot_process(args):
                       file_tail, file_tail, fixed_file_tail))
             file_tail = fixed_file_tail
         existing_names.add(file_tail)
-        if args.comp_filename == None:
+        if args.comp_filename1 == None:
             plt.plot(xx, yy, linestyle="-", linewidth=1, label="{}".format(file_tail))
+        elif args.comp_filename2 == None:
+            plt.plot(xx, yy, linestyle="-", linewidth=1, label="Residual")
         else:
-            plt.plot(xx, yy, linestyle="-", linewidth=1, label="TensorRT backend")
+            plt.plot(xx, yy, linestyle="-", linewidth=1, label="Residual")
 
-    if args.comp_filename != None:
+    if args.comp_filename1 != None and args.comp_filename2 != None:
         base_graph_info_list = list()
         base_existing_names = set()
-        for filename in args.comp_filename:
+        for filename in args.comp_filename1:
             lines = readfile(filename)
             base_graph_info_list.append(
                 (get_graph_info(lines), os.path.split(filename)[-1])
@@ -125,7 +127,54 @@ def plot_process(args):
                           file_tail, file_tail, fixed_file_tail))
                 file_tail = fixed_file_tail
             base_existing_names.add(file_tail)
-            plt.plot(xx, yy, linestyle="-", linewidth=1, label="cuda backend")
+            plt.plot(xx, yy, linestyle="-", linewidth=1, label="Nested Bottleneck")
+            base_graph_info_list1 = list()
+            base_existing_names1 = set()
+            for filename in args.comp_filename2:
+                lines = readfile(filename)
+                base_graph_info_list1.append(
+                    (get_graph_info(lines), os.path.split(filename)[-1])
+                )
+            for graph_info, file_tail in base_graph_info_list1:
+                xx, yy = graph_info.get_xy_plot(
+                    x_axis = args.x_axis,
+                    y_axis = args.y_axis,
+                    cut_first = args.cut_first
+                )
+                if len(xx) <= 1:
+                    print("Not enough lines in the \"{}\", skipping it...".format(file_tail))
+                    continue
+                while file_tail in base_existing_names1:
+                    fixed_file_tail = file_tail + "-{}".format(len(base_existing_names1))
+                    print("The file, \"{}\", is already in the list, replacing \"{}\" with \"{}\"".format(
+                          file_tail, file_tail, fixed_file_tail))
+                    file_tail = fixed_file_tail
+                base_existing_names1.add(file_tail)
+                plt.plot(xx, yy, linestyle="-", linewidth=1, label="Residual + Mixer")
+    elif args.comp_filename1 != None:
+        base_graph_info_list = list()
+        base_existing_names = set()
+        for filename in args.comp_filename1:
+            lines = readfile(filename)
+            base_graph_info_list.append(
+                (get_graph_info(lines), os.path.split(filename)[-1])
+            )
+        for graph_info, file_tail in base_graph_info_list:
+            xx, yy = graph_info.get_xy_plot(
+                x_axis = args.x_axis,
+                y_axis = args.y_axis,
+                cut_first = args.cut_first
+            )
+            if len(xx) <= 1:
+                print("Not enough lines in the \"{}\", skipping it...".format(file_tail))
+                continue
+            while file_tail in base_existing_names:
+                fixed_file_tail = file_tail + "-{}".format(len(base_existing_names))
+                print("The file, \"{}\", is already in the list, replacing \"{}\" with \"{}\"".format(
+                          file_tail, file_tail, fixed_file_tail))
+                file_tail = fixed_file_tail
+            base_existing_names.add(file_tail)
+            plt.plot(xx, yy, linestyle="-", linewidth=1, label="Nested Bottleneck")
 
     plt.ylabel("{} loss".format(args.y_axis))
     plt.xlabel(args.x_axis)
@@ -169,7 +218,9 @@ if __name__ == "__main__":
                         help="Loss type in {}.".format("/".join([y for y in Y_AXIS_TYPE_LIST])))
     parser.add_argument("--x-axis", metavar="<str>", default="steps",
                         help="X axis type in {}.".format("/".join([x for x in X_AXIS_TYPE_LIST])))
-    parser.add_argument("--comp-filename", nargs="+", metavar="<str>",
+    parser.add_argument("--comp-filename1", nargs="+", metavar="<str>",
+                        help="The input file name(s).", type=str)
+    parser.add_argument("--comp-filename2", nargs="+", metavar="<str>",
                         help="The input file name(s).", type=str)
     args = parser.parse_args()
     if check(args):
