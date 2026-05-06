@@ -1,18 +1,18 @@
 #pragma once
 
-#include "neural/activation.h"
-
 #include <cmath>
+#include <memory>
 #include <string>
 #include <vector>
-#include <memory>
+
+#include "neural/activation.h"
 
 class LinearLayer {
 public:
     void Set(int inputs, int outputs);
 
-    void LoadWeights(std::vector<float> &load_weights);
-    void LoadBiases(std::vector<float> &load_weights);
+    void LoadWeights(std::vector<float>& load_weights);
+    void LoadBiases(std::vector<float>& load_weights);
 
     int GetInputs() const;
     int GetOutputs() const;
@@ -32,8 +32,8 @@ class BatchNormLayer {
 public:
     void Set(int channels);
 
-    void LoadMeans(std::vector<float> &load_weights);
-    void LoadStddevs(std::vector<float> &load_weights, bool is_v1);
+    void LoadMeans(std::vector<float>& load_weights);
+    void LoadStddevs(std::vector<float>& load_weights, bool is_v1);
 
     std::vector<float>& GetMeans();
     std::vector<float>& GetStddevs();
@@ -41,16 +41,14 @@ public:
     int GetChannels() const;
 
 private:
-    template <typename container>
-    void ProcessVariance(container &weights) {
+    template <typename container> void ProcessVariance(container& weights) {
         static constexpr float epsilon = 1e-5f;
-        for (auto &&w : weights) {
+        for (auto&& w : weights) {
             w = 1.0f / std::sqrt(w + epsilon);
         }
     }
-    template <typename container>
-    void ProcessStddev(container &weights) {
-        for (auto &&w : weights) {
+    template <typename container> void ProcessStddev(container& weights) {
+        for (auto&& w : weights) {
             w = 1.0f / w;
         }
     }
@@ -65,18 +63,21 @@ class ConvLayer {
 public:
     void Set(int inputs, int outputs, int filter);
 
-    void LoadWeights(std::vector<float> &load_weights);
-    void LoadBiases(std::vector<float> &load_weights);
+    void LoadWeights(std::vector<float>& load_weights);
+    void LoadBiases(std::vector<float>& load_weights);
+    void TransformF();
 
     int GetInputs() const;
     int GetOutputs() const;
     int GetFilter() const;
 
     std::vector<float>& GetWeights();
+    std::vector<float>& GetTransformF();
     std::vector<float>& GetBiases();
 
 private:
     std::vector<float> weights_;
+    std::vector<float> transformed_f_;
     std::vector<float> biases_;
 
     int inputs_{0};
@@ -86,19 +87,21 @@ private:
 
 class BlockBasic {
 public:
-    enum Type {
-        kUnknown,
-        kResidualBlock,
-        kBottleneckBlock,
-        kNestedBottleneckBlock,
-        kMixerBlock
-    };
+    enum Type { kUnknown, kResidualBlock, kBottleneckBlock, kNestedBottleneckBlock, kMixerBlock };
     BlockBasic() = default;
 
-    bool IsResidualBlock() { return type == Type::kResidualBlock; }
-    bool IsBottleneckBlock() { return type == Type::kBottleneckBlock; }
-    bool IsNestedBottleneckBlock() { return type == Type::kNestedBottleneckBlock; }
-    bool IsMixerBlock() { return type == Type::kMixerBlock; }
+    bool IsResidualBlock() {
+        return type == Type::kResidualBlock;
+    }
+    bool IsBottleneckBlock() {
+        return type == Type::kBottleneckBlock;
+    }
+    bool IsNestedBottleneckBlock() {
+        return type == Type::kNestedBottleneckBlock;
+    }
+    bool IsMixerBlock() {
+        return type == Type::kMixerBlock;
+    }
 
     Type type{kUnknown};
 
@@ -130,28 +133,33 @@ public:
 
 class ResidualBlock : public BlockBasic {
 public:
-    ResidualBlock() { type = Type::kResidualBlock; }
+    ResidualBlock() {
+        type = Type::kResidualBlock;
+    }
 };
 
 class BottleneckBlock : public BlockBasic {
 public:
-    BottleneckBlock() { type = Type::kBottleneckBlock; }
+    BottleneckBlock() {
+        type = Type::kBottleneckBlock;
+    }
 };
 
 class NestedBottleneckBlock : public BlockBasic {
 public:
-    NestedBottleneckBlock() { type = Type::kNestedBottleneckBlock; }
+    NestedBottleneckBlock() {
+        type = Type::kNestedBottleneckBlock;
+    }
 };
 
 class MixerBlock : public BlockBasic {
 public:
-    MixerBlock() { type = Type::kMixerBlock; }
+    MixerBlock() {
+        type = Type::kMixerBlock;
+    }
 };
 
-enum class PolicyHeadType {
-    kNormal,
-    kRepLK
-};
+enum class PolicyHeadType { kNormal, kRepLK };
 
 class DNNWeights {
 public:
@@ -160,7 +168,6 @@ public:
 
     bool loaded{false};
     bool winograd{false};
-    bool winograd_initialized{false};
 
     int input_channels{0};
 

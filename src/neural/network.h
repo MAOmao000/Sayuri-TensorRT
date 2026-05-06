@@ -1,22 +1,20 @@
 #pragma once
 
-#include "neural/network_basic.h"
-#include "neural/description.h"
-#include "game/game_state.h"
-#include "utils/cache.h"
-
-#include <memory>
-#include <array>
 #include <algorithm>
-#include <cmath>
-#include <string>
+#include <array>
 #include <atomic>
+#include <cmath>
+#include <memory>
+#include <string>
+
+#include "game/game_state.h"
+#include "neural/description.h"
+#include "neural/network_basic.h"
+#include "utils/cache.h"
 
 class Network {
 public:
-    enum Ensemble {
-        kDirect, kRandom, kAverage
-    };
+    enum Ensemble { kDirect, kRandom, kAverage };
 
     using Inputs = InputData;
     using Result = OutputResult;
@@ -25,21 +23,16 @@ public:
     using Cache = HashKeyCache<Result>;
     using PolicyVertexPair = std::pair<float, int>;
 
-    void Initialize(const std::string &weights);
+    void Initialize(const std::string& weights);
     void Destroy();
     bool Valid() const;
 
-    int GetVertexWithPolicy(const GameState &state,
-                            const float temperature,
-                            const bool allow_pass);
+    int GetVertexWithPolicy(const GameState& state, const float temperature, const bool allow_pass);
 
-    Network::Result GetOutput(const GameState &state,
-                              const Ensemble ensemble,
-                              Network::Query = {});
+    Network::Result GetOutput(const GameState& state, const Ensemble ensemble, Network::Query = {});
 
-    std::string GetOutputString(const GameState &state,
-                                const Ensemble ensemble,
-                                Network::Query = {});
+    std::string
+    GetOutputString(const GameState& state, const Ensemble ensemble, Network::Query = {});
 
     void Reconstruct(const Network::Option option);
 
@@ -48,24 +41,29 @@ public:
     void ClearCache();
 
     std::string GetName() const;
-    void ResetNumQueries(size_t q=0);
+    void ResetNumQueries(size_t q = 0);
     size_t GetNumQueries() const;
 
     PolicyBufferOffset GetDefaultPolicyOffset() const;
     int GetVersion() const;
+    int GetNumWorkers() const;
 
 private:
-    void ActivatePolicy(Network::Result &result, const float temperature) const;
+    void SelfCheck(Network::Result result, Network::Result ref);
+    void TransformResult(Network::Result& result, const int symmetry);
+    void ActivatePolicy(Network::Result& result, const float temperature) const;
 
-    bool ProbeCache(const GameState &state, Network::Result &result);
+    bool ProbeCache(const GameState& state, Network::Result& result);
 
-    Network::Result GetOutputInternal(const GameState &state,
-                                      const int symmetry,
-                                      PolicyBufferOffset offset);
+    Network::Result
+    GetOutputInternal(const GameState& state, const int symmetry, PolicyBufferOffset offset);
 
     Network::Result DummyForward(const Network::Inputs& inputs) const;
 
     std::unique_ptr<NetworkForwardPipe> pipe_{nullptr};
+#ifdef SELF_CHECK
+    std::unique_ptr<NetworkForwardPipe> cpu_pipe_{nullptr};
+#endif
     Cache nn_cache_;
 
     PolicyBufferOffset default_policy_offset_;

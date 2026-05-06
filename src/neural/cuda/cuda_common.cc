@@ -1,34 +1,74 @@
 #ifdef USE_CUDA
 
 #include "neural/cuda/cuda_common.h"
-#include "utils/half.h"
+
 #include <cstdio>
 #include <cstdlib>
-#include <iostream>
-#include <stdexcept>
-#include <sstream>
 #include <cstring>
+#include <iostream>
+#include <sstream>
+#include <stdexcept>
+
+#ifdef USE_TENSORRT
+#include <NvInferVersion.h>
+#endif
+
+#include "utils/half.h"
 
 namespace cuda {
 
+const char* cublasGetErrorString(cublasStatus_t status) {
+    switch (status) {
+        case CUBLAS_STATUS_NOT_SUPPORTED:
+            return "CUBLAS_STATUS_NOT_SUPPORTED";
+        case CUBLAS_STATUS_LICENSE_ERROR:
+            return "CUBLAS_STATUS_LICENSE_ERROR";
+        case CUBLAS_STATUS_SUCCESS:
+            return "CUBLAS_STATUS_SUCCESS";
+        case CUBLAS_STATUS_NOT_INITIALIZED:
+            return "CUBLAS_STATUS_NOT_INITIALIZED";
+        case CUBLAS_STATUS_ALLOC_FAILED:
+            return "CUBLAS_STATUS_ALLOC_FAILED";
+        case CUBLAS_STATUS_INVALID_VALUE:
+            return "CUBLAS_STATUS_INVALID_VALUE";
+        case CUBLAS_STATUS_ARCH_MISMATCH:
+            return "CUBLAS_STATUS_ARCH_MISMATCH";
+        case CUBLAS_STATUS_MAPPING_ERROR:
+            return "CUBLAS_STATUS_MAPPING_ERROR";
+        case CUBLAS_STATUS_EXECUTION_FAILED:
+            return "CUBLAS_STATUS_EXECUTION_FAILED";
+        case CUBLAS_STATUS_INTERNAL_ERROR:
+            return "CUBLAS_STATUS_INTERNAL_ERROR";
+    }
+    return "unknown error";
+}
+
+void CublasError(cublasStatus_t status) {
+    if (status != CUBLAS_STATUS_SUCCESS) {
+        const char* cause = cublasGetErrorString(status);
+        auto err = std::ostringstream{};
+        err << "CUBLAS error: " << cause;
+        throw std::runtime_error(err.str());
+    }
+}
+
 void CudaError(cudaError_t status) {
-  if (status != cudaSuccess) {
-        const char *cause = cudaGetErrorString(status);
+    if (status != cudaSuccess) {
+        const char* cause = cudaGetErrorString(status);
         auto err = std::ostringstream{};
         err << "CUDA error: " << cause;
         throw std::runtime_error(err.str());
-  }
+    }
 }
 
 #ifdef USE_CUDNN
 cudnnDataType_t GetCudnnDataType(bool fp16) {
-    return fp16 ? CUDNN_DATA_HALF :
-                      CUDNN_DATA_FLOAT;
+    return fp16 ? CUDNN_DATA_HALF : CUDNN_DATA_FLOAT;
 }
 
 void CudnnError(cudnnStatus_t status) {
     if (status != CUDNN_STATUS_SUCCESS) {
-        const char *cause = cudnnGetErrorString(status);
+        const char* cause = cudnnGetErrorString(status);
         auto err = std::ostringstream{};
         err << "CUDNN error: " << cause;
         throw std::runtime_error(err.str());
@@ -61,6 +101,7 @@ void CudaHandles::ApplyOnCurrentDevice() {
         return;
     }
 
+    ReportCUBLASErrors(cublasCreate(&cublas_handle));
 #ifdef USE_CUDNN
     ReportCUDNNErrors(cudnnCreate(&cudnn_handle));
 #endif
@@ -74,12 +115,11 @@ void CudaHandles::ApplyOnCurrentDevice() {
     cudaDeviceProp dev_prop = GetDeviceProp();
     if (dev_prop.major >= 7) {
         fp16 = has_tensor_cores = true;
-    } else if (dev_prop.major == 6 ||
-                   (dev_prop.major == 5 &&
-                    dev_prop.minor >= 3)) {
+    } else if (dev_prop.major == 6 || (dev_prop.major == 5 && dev_prop.minor >= 3)) {
         fp16 = true;
     }
 #endif
+    ReportCUBLASErrors(cublasSetStream(cublas_handle, stream));
     gpu_id = GetDevice();
     initialized = true;
 }
@@ -87,6 +127,7 @@ void CudaHandles::ApplyOnCurrentDevice() {
 void CudaHandles::Release() {
     if (initialized) {
         cudaStreamDestroy(stream);
+        cublasDestroy(cublas_handle);
 #ifdef USE_CUDNN
         cudnnDestroy(cudnn_handle);
 #endif
@@ -94,26 +135,22 @@ void CudaHandles::Release() {
     }
 }
 
-std::string OutputSpec(const cudaDeviceProp &dev_prop) {
+std::string OutputSpec(const cudaDeviceProp& dev_prop) {
     auto out = std::ostringstream{};
 
-    out << "  Device name: "             << dev_prop.name                       << '\n';
-    out << "  Device memory(MiB): "      << dev_prop.totalGlobalMem/(1024*1024) << '\n';
-    out << "  Memory per-block(KiB): "   << dev_prop.sharedMemPerBlock/1024     << '\n';
-    out << "  Register per-block(KiB): " << dev_prop.regsPerBlock/1024          << '\n';
-    out << "  Warp size: "               << dev_prop.warpSize                   << '\n';
-    out << "  Memory pitch(MiB): "       << dev_prop.memPitch/(1024*1024)       << '\n';
-    out << "  Constant Memory(KiB): "    << dev_prop.totalConstMem/1024         << '\n';
-    out << "  Max thread per-block: "    << dev_prop.maxThreadsPerBlock         << '\n';
-    out << "  Max thread dim: ("
-            << dev_prop.maxThreadsDim[0] << ", "
-            << dev_prop.maxThreadsDim[1] << ", "
-            << dev_prop.maxThreadsDim[2] << ")\n";
-    out << "  Max grid size: ("
-            << dev_prop.maxGridSize[0] << ", "
-            << dev_prop.maxGridSize[1] << ", "
-            << dev_prop.maxGridSize[2] << ")\n";
-    out << "  Clock: "             << dev_prop.clockRate/1000   << "(kHz)" << '\n';
+    out << "  Device name: " << dev_prop.name << '\n';
+    out << "  Device memory(MiB): " << dev_prop.totalGlobalMem / (1024 * 1024) << '\n';
+    out << "  Memory per-block(KiB): " << dev_prop.sharedMemPerBlock / 1024 << '\n';
+    out << "  Register per-block(KiB): " << dev_prop.regsPerBlock / 1024 << '\n';
+    out << "  Warp size: " << dev_prop.warpSize << '\n';
+    out << "  Memory pitch(MiB): " << dev_prop.memPitch / (1024 * 1024) << '\n';
+    out << "  Constant Memory(KiB): " << dev_prop.totalConstMem / 1024 << '\n';
+    out << "  Max thread per-block: " << dev_prop.maxThreadsPerBlock << '\n';
+    out << "  Max thread dim: (" << dev_prop.maxThreadsDim[0] << ", " << dev_prop.maxThreadsDim[1]
+        << ", " << dev_prop.maxThreadsDim[2] << ")\n";
+    out << "  Max grid size: (" << dev_prop.maxGridSize[0] << ", " << dev_prop.maxGridSize[1]
+        << ", " << dev_prop.maxGridSize[2] << ")\n";
+    out << "  Clock: " << dev_prop.clockRate / 1000 << "(kHz)" << '\n';
     out << "  Texture Alignment: " << dev_prop.textureAlignment << '\n';
 
     return out.str();
@@ -130,25 +167,24 @@ std::string GetBackendInfo() {
     int cuda_version;
     cudaDriverGetVersion(&cuda_version);
     {
-        const auto major = cuda_version/1000;
-        const auto minor = (cuda_version - major * 1000)/10;
+        const auto major = cuda_version / 1000;
+        const auto minor = (cuda_version - major * 1000) / 10;
         out << "CUDA version:"
-                << " Major " << major
-                << ", Minor " << minor << '\n';
+            << " Major " << major << ", Minor " << minor << '\n';
     }
 
     {
-        out << "Use cuDNN: ";
-#ifdef USE_CUDNN
-        out << "Yes\n";
-        const auto cudnn_version = cudnnGetVersion();
-        const auto major = cudnn_version/1000;
-        const auto minor = (cudnn_version -  major * 1000)/100;
-        out << "cuDNN version:"
-                << " Major " << major
-                << ", Minor " << minor << '\n';
+        out << "Blas backend: ";
+#ifdef USE_TENSORRT
+        out << "TensorRT\n";
+        out << "TensorRT version: " << NV_TENSORRT_MAJOR << '.' << NV_TENSORRT_MINOR << '.'
+            << NV_TENSORRT_PATCH << '\n';
+#elif defined(USE_CUDNN)
+        out << "cuDNN\n";
+        out << "cuDNN version: " << CUDNN_MAJOR << '.' << CUDNN_MINOR << '.' << CUDNN_PATCHLEVEL
+            << '\n';
 #else
-        out << "No\n";
+        out << "CUDA\n";
 #endif
     }
 
@@ -163,16 +199,14 @@ cudaDeviceProp GetDeviceProp() {
     return dev_prop;
 }
 
-std::string GetCurrentDeviceInfo(CudaHandles *handles) {
+std::string GetCurrentDeviceInfo(CudaHandles* handles) {
     auto out = std::stringstream{};
 
     cudaDeviceProp dev_prop = GetDeviceProp();
-    out << "=== Device: " << GetDevice() <<" ===\n";
+    out << "=== Device: " << GetDevice() << " ===\n";
 
     out << "  Name: " << dev_prop.name << '\n';
-    out << "  Compute capability: "
-            << dev_prop.major << "."
-            << dev_prop.minor << '\n';
+    out << "  Compute capability: " << dev_prop.major << "." << dev_prop.minor << '\n';
     if (handles->fp16) {
         out << "  Enable the FP16\n";
     } else {
@@ -188,11 +222,10 @@ std::string GetCurrentDeviceInfo(CudaHandles *handles) {
 }
 
 size_t GetCudaTypeSize(bool fp16) {
-    return fp16 ? sizeof(half_float_t) :
-                      sizeof(float);
+    return fp16 ? sizeof(half_float_t) : sizeof(float);
 }
 
-void MallocAndCopy(bool fp16, void **cude_op, const std::vector<float> &weights) {
+void MallocAndCopy(bool fp16, void** cude_op, const std::vector<float>& weights) {
     size_t wsize = weights.size();
     if (fp16) {
         auto buf = std::vector<half_float_t>(wsize);
@@ -201,13 +234,171 @@ void MallocAndCopy(bool fp16, void **cude_op, const std::vector<float> &weights)
         }
         size_t op_size = wsize * sizeof(half_float_t);
         ReportCUDAErrors(cudaMalloc(&(*cude_op), op_size));
-        ReportCUDAErrors(cudaMemcpy(
-            *cude_op, buf.data(), op_size, cudaMemcpyHostToDevice));
+        ReportCUDAErrors(cudaMemcpy(*cude_op, buf.data(), op_size, cudaMemcpyHostToDevice));
     } else {
         size_t op_size = wsize * sizeof(float);
         ReportCUDAErrors(cudaMalloc(&(*cude_op), op_size));
-        ReportCUDAErrors(cudaMemcpy(
-            *cude_op, weights.data(), op_size, cudaMemcpyHostToDevice));
+        ReportCUDAErrors(cudaMemcpy(*cude_op, weights.data(), op_size, cudaMemcpyHostToDevice));
+    }
+}
+
+void MallocCudaOp(bool fp16, void** cude_op, size_t size) {
+    size_t op_size = size;
+    if (fp16) {
+        op_size *= sizeof(half_float_t);
+    } else {
+        op_size *= sizeof(float);
+    }
+    ReportCUDAErrors(cudaMalloc(&(*cude_op), op_size));
+}
+
+void ZeroCopyToCuda(bool fp16, void** host_op, const std::vector<float>& inputs) {
+    size_t in_size = inputs.size();
+    if (fp16) {
+        auto buf = std::vector<half_float_t>(in_size);
+        for (size_t i = 0; i < in_size; ++i) {
+            buf[i] = GetFp16(inputs[i]); // aussume it is the normal number
+        }
+        size_t op_size = in_size * sizeof(half_float_t);
+        std::memcpy(*host_op, buf.data(), op_size);
+    } else {
+        size_t op_size = in_size * sizeof(float);
+        std::memcpy(*host_op, inputs.data(), op_size);
+    }
+}
+
+void ZeroCopyToHost(bool fp16, std::vector<float>& outputs, void** host_op) {
+    size_t out_size = outputs.size();
+    if (fp16) {
+        auto buf = std::vector<half_float_t>(out_size);
+        size_t op_size = out_size * sizeof(half_float_t);
+        std::memcpy(buf.data(), *host_op, op_size);
+
+        for (size_t i = 0; i < out_size; ++i) {
+            outputs[i] = GetFp32(buf[i]);
+        }
+    } else {
+        size_t op_size = out_size * sizeof(float);
+        std::memcpy(outputs.data(), *host_op, op_size);
+    }
+}
+
+void CopyToCudaOp(bool fp16, void** cude_op, const std::vector<float>& inputs, void** pinned_op) {
+    size_t in_size = inputs.size();
+    if (fp16) {
+        auto buf = std::vector<half_float_t>(in_size);
+        for (size_t i = 0; i < in_size; ++i) {
+            buf[i] = GetFp16(inputs[i]); // aussume it is the normal number
+        }
+        size_t op_size = in_size * sizeof(half_float_t);
+
+        if (pinned_op) {
+            std::memcpy(*pinned_op, buf.data(), op_size);
+            ReportCUDAErrors(cudaMemcpy(*cude_op, *pinned_op, op_size, cudaMemcpyHostToDevice));
+        } else {
+            ReportCUDAErrors(cudaMemcpy(*cude_op, buf.data(), op_size, cudaMemcpyHostToDevice));
+        }
+    } else {
+        size_t op_size = in_size * sizeof(float);
+        if (pinned_op) {
+            std::memcpy(*pinned_op, inputs.data(), op_size);
+            ReportCUDAErrors(cudaMemcpy(*cude_op, *pinned_op, op_size, cudaMemcpyHostToDevice));
+        } else {
+            ReportCUDAErrors(cudaMemcpy(*cude_op, inputs.data(), op_size, cudaMemcpyHostToDevice));
+        }
+    }
+}
+
+void CopyToCudaOpAsync(bool fp16,
+                       void** cude_op,
+                       const std::vector<float>& inputs,
+                       cudaStream_t stream,
+                       void** pinned_op) {
+    size_t in_size = inputs.size();
+    if (fp16) {
+        auto buf = std::vector<half_float_t>(in_size);
+        for (size_t i = 0; i < in_size; ++i) {
+            buf[i] = GetFp16(inputs[i]); // assume it is the normal number
+        }
+        size_t op_size = in_size * sizeof(half_float_t);
+
+        if (pinned_op) {
+            std::memcpy(*pinned_op, buf.data(), op_size);
+            ReportCUDAErrors(
+                cudaMemcpyAsync(*cude_op, *pinned_op, op_size, cudaMemcpyHostToDevice, stream));
+        } else {
+            ReportCUDAErrors(
+                cudaMemcpyAsync(*cude_op, buf.data(), op_size, cudaMemcpyHostToDevice, stream));
+        }
+    } else {
+        size_t op_size = in_size * sizeof(float);
+        if (pinned_op) {
+            std::memcpy(*pinned_op, inputs.data(), op_size);
+            ReportCUDAErrors(
+                cudaMemcpyAsync(*cude_op, *pinned_op, op_size, cudaMemcpyHostToDevice, stream));
+        } else {
+            ReportCUDAErrors(
+                cudaMemcpyAsync(*cude_op, inputs.data(), op_size, cudaMemcpyHostToDevice, stream));
+        }
+    }
+}
+
+void CopyToHostOp(bool fp16, std::vector<float>& outputs, void** cude_op, void** pinned_op) {
+    size_t out_size = outputs.size();
+    if (fp16) {
+        size_t op_size = out_size * sizeof(half_float_t);
+        auto buf = std::vector<half_float_t>(out_size);
+        if (pinned_op) {
+            ReportCUDAErrors(cudaMemcpy(*pinned_op, *cude_op, op_size, cudaMemcpyDeviceToHost));
+            std::memcpy(buf.data(), *pinned_op, op_size);
+        } else {
+            ReportCUDAErrors(cudaMemcpy(buf.data(), *cude_op, op_size, cudaMemcpyDeviceToHost));
+        }
+        for (size_t i = 0; i < out_size; ++i) {
+            outputs[i] = GetFp32(buf[i]);
+        }
+    } else {
+        size_t op_size = out_size * sizeof(float);
+        if (pinned_op) {
+            ReportCUDAErrors(cudaMemcpy(*pinned_op, *cude_op, op_size, cudaMemcpyDeviceToHost));
+            std::memcpy(outputs.data(), *pinned_op, op_size);
+        } else {
+            ReportCUDAErrors(cudaMemcpy(outputs.data(), *cude_op, op_size, cudaMemcpyDeviceToHost));
+        }
+    }
+}
+
+void CopyToHostOpAsync(
+    bool fp16, std::vector<float>& outputs, void** cude_op, cudaStream_t stream, void** pinned_op) {
+    size_t out_size = outputs.size();
+    if (fp16) {
+        size_t op_size = out_size * sizeof(half_float_t);
+        auto buf = std::vector<half_float_t>(out_size);
+        if (!pinned_op) {
+            ReportCUDAErrors(
+                cudaMemcpyAsync(buf.data(), *cude_op, op_size, cudaMemcpyDeviceToHost, stream));
+            WaitToFinish(stream);
+        } else {
+            ReportCUDAErrors(
+                cudaMemcpyAsync(*pinned_op, *cude_op, op_size, cudaMemcpyDeviceToHost, stream));
+            WaitToFinish(stream);
+            std::memcpy(buf.data(), *pinned_op, op_size);
+        }
+        for (size_t i = 0; i < out_size; ++i) {
+            outputs[i] = GetFp32(buf[i]);
+        }
+    } else {
+        size_t op_size = out_size * sizeof(float);
+        if (pinned_op) {
+            ReportCUDAErrors(
+                cudaMemcpyAsync(*pinned_op, *cude_op, op_size, cudaMemcpyDeviceToHost, stream));
+            WaitToFinish(stream);
+            std::memcpy(outputs.data(), *pinned_op, op_size);
+        } else {
+            ReportCUDAErrors(
+                cudaMemcpyAsync(outputs.data(), *cude_op, op_size, cudaMemcpyDeviceToHost, stream));
+            WaitToFinish(stream);
+        }
     }
 }
 

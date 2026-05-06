@@ -3,8 +3,9 @@
 #ifdef USE_CUDA
 
 #include <cstdio>
-#include <cuda_runtime.h>
+#include <cublas_v2.h>
 #include <cuda.h>
+#include <cuda_runtime.h>
 #include <vector>
 
 #ifdef ENABLE_FP16
@@ -15,73 +16,22 @@
 #include <cudnn.h>
 #endif
 
-#include <string>
 #include <sstream>
-#include <iostream>
-
-#include "NvInfer.h"
-
-#include "utils/format.h"
+#include <string>
 
 namespace cuda {
 
-// Logger for TensorRT
-class Logger : public nvinfer1::ILogger {
-public:
-    Logger(Severity severity = Severity::kERROR)
-        : mReportableSeverity(severity) {}
-    void log(ILogger::Severity severity, const char* msg) noexcept override {
-        // suppress information level log
-        if (severity <= mReportableSeverity) {
-            switch (severity) {
-                case Severity::kINTERNAL_ERROR:
-                    std::cerr << "[F] " << msg << std::endl;
-                    break;
-                case Severity::kERROR:
-                    std::cerr << "[E] " << msg << std::endl;
-                    break;
-                case Severity::kWARNING:
-                    std::cerr << "[W] " << msg << std::endl;
-                    break;
-                case Severity::kINFO:
-                    std::cerr << "[I] " << msg << std::endl;
-                    break;
-                case Severity::kVERBOSE:
-                    std::cerr << "[V] " << msg << std::endl;
-                    break;
-                default:
-                    std::cerr << "[?] " << msg << std::endl;
-            }
-        }
-    }
-    nvinfer1::ILogger& getTRTLogger() noexcept {
-        return *this;
-    }
-    void setReportableSeverity(Severity severity) noexcept {
-        mReportableSeverity = severity;
-    }
-private:
-    Severity mReportableSeverity;
-};
-
 #define KBLOCKSIZE 256
-
-#define ASSERT(condition)                                           \
-    {                                                               \
-        if (!(condition)) {                                         \
-            LOGGING << Format("Assertion failure %s(%d): %s\n",     \
-                __FILE__, __LINE__, #condition);                    \
-            throw std::runtime_error("TensorRT error");             \
-        }                                                           \
-    }
 
 #ifdef USE_CUDNN
 cudnnDataType_t GetCudnnDataType(bool fp16);
 void CudnnError(cudnnStatus_t status);
 #define ReportCUDNNErrors(status) CudnnError(status)
 #endif
+void CublasError(cublasStatus_t status);
 void CudaError(cudaError_t status);
 
+#define ReportCUBLASErrors(status) CublasError(status)
 #define ReportCUDAErrors(status) CudaError(status)
 
 size_t GetCudaTypeSize(bool fp16);
@@ -91,12 +41,15 @@ int GetDevice();
 void SetDevice(int n);
 void WaitToFinish(cudaStream_t s);
 
-inline int DivUp(int a, int b) { return (a + b - 1) / b; }
+inline int DivUp(int a, int b) {
+    return (a + b - 1) / b;
+}
 
 struct CudaHandles {
 #ifdef USE_CUDNN
     cudnnHandle_t cudnn_handle;
 #endif
+    cublasHandle_t cublas_handle;
 
     cudaStream_t stream;
 
@@ -111,10 +64,47 @@ struct CudaHandles {
 };
 
 std::string GetBackendInfo();
-std::string GetCurrentDeviceInfo(CudaHandles *handles);
+std::string GetCurrentDeviceInfo(CudaHandles* handles);
 
-void MallocAndCopy(bool fp16, void **cude_op,
-                   const std::vector<float> &weights);
+void MallocAndCopy(bool fp16, void** cude_op, const std::vector<float>& weights);
+
+void MallocCudaOp(bool fp16, void** cude_op, size_t size);
+
+void ZeroCopyToCuda(bool fp16, void** host_op, const std::vector<float>& inputs);
+
+void ZeroCopyToHost(bool fp16, std::vector<float>& outputs, void** host_op);
+
+// Copy the 'inputs' data to 'cude_op'. Use the
+// pinned memory if we provide the 'pinned_op'.
+// Otherwise, set it as null pointer.
+void CopyToCudaOp(bool fp16,
+                  void** cude_op,
+                  const std::vector<float>& inputs,
+                  void** pinned_op = nullptr);
+
+// Same as CopyToCudaOp, but enqueues host-to-device copy
+// on the given CUDA stream.
+void CopyToCudaOpAsync(bool fp16,
+                       void** cude_op,
+                       const std::vector<float>& inputs,
+                       cudaStream_t stream,
+                       void** pinned_op = nullptr);
+
+// Copy the 'cude_op' data to 'outputs'. Use the
+// pinned memory if we provide the 'pinned_op'.
+// Otherwise, set it as null pointer.
+void CopyToHostOp(bool fp16,
+                  std::vector<float>& outputs,
+                  void** cude_op,
+                  void** pinned_op = nullptr);
+
+// Enqueues device-to-host copy on the given CUDA stream and
+// converts fp16 output to fp32 within this function.
+void CopyToHostOpAsync(bool fp16,
+                       std::vector<float>& outputs,
+                       void** cude_op,
+                       cudaStream_t stream,
+                       void** pinned_op = nullptr);
 
 } // namespace cuda
 

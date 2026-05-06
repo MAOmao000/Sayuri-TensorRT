@@ -1,5 +1,8 @@
-#include <stdexcept>
 #include "neural/description.h"
+
+#include <stdexcept>
+
+#include "neural/winograd_helper.h"
 #include "utils/format.h"
 
 void LinearLayer::Set(int inputs, int outputs) {
@@ -7,24 +10,27 @@ void LinearLayer::Set(int inputs, int outputs) {
     outputs_ = outputs;
 }
 
-void LinearLayer::LoadWeights(std::vector<float> &load_weights) {
+void LinearLayer::LoadWeights(std::vector<float>& load_weights) {
     const int weights_size = load_weights.size();
     const int expected_size = GetInputs() * GetOutputs();
     if (weights_size != expected_size) {
-        throw std::runtime_error{
-            Format("the weights size of linear layer is not acceptable, expect [%d, %d] but we get %d",
-                       GetInputs(), GetOutputs(), weights_size)};
+        throw std::runtime_error{Format(
+            "the weights size of linear layer is not acceptable, expect [%d, %d] but we get %d",
+            GetInputs(),
+            GetOutputs(),
+            weights_size)};
     }
     weights_ = load_weights;
 }
 
-void LinearLayer::LoadBiases(std::vector<float> &load_weights) {
+void LinearLayer::LoadBiases(std::vector<float>& load_weights) {
     const int weights_size = load_weights.size();
     const int expected_size = GetOutputs();
     if (weights_size != expected_size) {
         throw std::runtime_error{
             Format("the biases size of linear layer is not acceptable, expect %d but we get %d",
-                       expected_size, weights_size)};
+                   expected_size,
+                   weights_size)};
     }
     biases_ = load_weights;
 }
@@ -49,24 +55,26 @@ void BatchNormLayer::Set(int channels) {
     channels_ = channels;
 }
 
-void BatchNormLayer::LoadMeans(std::vector<float> &load_weights){
+void BatchNormLayer::LoadMeans(std::vector<float>& load_weights) {
     const int weights_size = load_weights.size();
     const int expected_size = GetChannels();
     if (weights_size != expected_size) {
-        throw std::runtime_error{
-            Format("the means size of batch normalization layer is not acceptable, expect %d but we get %d",
-                       expected_size, weights_size)};
+        throw std::runtime_error{Format("the means size of batch normalization layer is not "
+                                        "acceptable, expect %d but we get %d",
+                                        expected_size,
+                                        weights_size)};
     }
     means_ = load_weights;
 }
 
-void BatchNormLayer::LoadStddevs(std::vector<float> &load_weights, bool is_v1){
+void BatchNormLayer::LoadStddevs(std::vector<float>& load_weights, bool is_v1) {
     const int weights_size = load_weights.size();
     const int expected_size = GetChannels();
     if (weights_size != expected_size) {
-        throw std::runtime_error{
-            Format("the stddev size of batch normalization layer is not acceptable, expect %d but we get %d",
-                       expected_size, weights_size)};
+        throw std::runtime_error{Format("the stddev size of batch normalization layer is not "
+                                        "acceptable, expect %d but we get %d",
+                                        expected_size,
+                                        weights_size)};
     }
     if (is_v1) {
         ProcessVariance(load_weights); // variance -> 1/stddev
@@ -94,26 +102,39 @@ void ConvLayer::Set(int inputs, int outputs, int filter) {
     filter_ = filter;
 }
 
-void ConvLayer::LoadWeights(std::vector<float> &load_weights) {
+void ConvLayer::LoadWeights(std::vector<float>& load_weights) {
     const int weights_size = load_weights.size();
     const int expected_size = GetInputs() * GetOutputs() * GetFilter() * GetFilter();
     if (weights_size != expected_size) {
-        throw std::runtime_error{
-            Format("the weights size of convolutional layer is not acceptable, expect [%d, %d, %d, %d] but we get %d",
-                       GetInputs(), GetOutputs(), GetFilter(), GetFilter(), weights_size)};
+        throw std::runtime_error{Format("the weights size of convolutional layer is not "
+                                        "acceptable, expect [%d, %d, %d, %d] but we get %d",
+                                        GetInputs(),
+                                        GetOutputs(),
+                                        GetFilter(),
+                                        GetFilter(),
+                                        weights_size)};
     }
     weights_ = load_weights;
 }
 
-void ConvLayer::LoadBiases(std::vector<float> &load_weights) {
+void ConvLayer::LoadBiases(std::vector<float>& load_weights) {
     const int weights_size = load_weights.size();
     const int expected_size = GetOutputs();
     if (weights_size != expected_size) {
-        throw std::runtime_error{
-            Format("the biases size of convolutional layer is not acceptable, expect %d but we get %d",
-                       expected_size, weights_size)};
+        throw std::runtime_error{Format(
+            "the biases size of convolutional layer is not acceptable, expect %d but we get %d",
+            expected_size,
+            weights_size)};
     }
     biases_ = load_weights;
+}
+
+void ConvLayer::TransformF() {
+    const int filter = GetFilter();
+    if (filter != 3) {
+        throw std::runtime_error{Format("Winograd only supports 3x3 filter size, not %d", filter)};
+    }
+    transformed_f_ = WinogradTransformF(weights_, GetOutputs(), GetInputs());
 }
 
 int ConvLayer::GetInputs() const {
@@ -130,6 +151,10 @@ int ConvLayer::GetFilter() const {
 
 std::vector<float>& ConvLayer::GetWeights() {
     return weights_;
+}
+
+std::vector<float>& ConvLayer::GetTransformF() {
+    return transformed_f_;
 }
 
 std::vector<float>& ConvLayer::GetBiases() {
