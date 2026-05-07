@@ -55,6 +55,9 @@ class Config:
         self.renorm_max_r = train.get("RenormMaxR", 1)
         self.renorm_max_d = train.get("RenormMaxD", 0)
         self.policy_surprise_factor = train.get("PolicySurpriseFactor", 0.0)
+        self.mode = train.get("BatchNormMode", "renorm")
+        self.export_onnx = train.get("ExportONNX", False)
+        self.use_compile = train.get("UseCompile", False)
 
         assert self.train_dir != None, ""
         assert self.store_path != None, ""

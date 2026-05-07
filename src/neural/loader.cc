@@ -3,6 +3,8 @@
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
+#include <filesystem>
+#include <onnxruntime_cxx_api.h>
 
 #include "config.h"
 #include "neural/activation.h"
@@ -40,6 +42,190 @@ void DNNLoader::FromFile(std::shared_ptr<DNNWeights> weights, std::string filena
 
     if (!file.is_open()) {
         LOGGING << Format("Couldn't open weights file from %s!", filename.c_str()) << std::endl;
+        return;
+    }
+
+    weights_->weights_file = filename;
+    int ext_i = filename.find_last_of(".");
+    std::string extname = filename.substr(ext_i, filename.size() - ext_i);
+    if (extname == ".onnx") {
+        file.close();
+        auto pathvec = SplitPath(filename);
+        if (!pathvec.empty()) {
+            weights->name = *std::rbegin(pathvec);
+        } else {
+            weights->name = "network";
+        }
+        weights_->file_type = "onnx";
+        // get meta data.
+        Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "LoadMetadata");
+        Ort::SessionOptions session_options;
+        const std::wstring model_path = std::filesystem::path(filename).wstring();
+
+        Ort::Session session(env, model_path.data(), session_options);
+        Ort::ModelMetadata metadata = session.GetModelMetadata();
+        Ort::AllocatorWithDefaultOptions allocator;
+
+        weights_->version = 1;
+        Ort::AllocatedStringPtr version
+            = metadata.LookupCustomMetadataMapAllocated("Version", allocator);
+        if (version != nullptr) {
+            std::string s_version = static_cast<char*>(version.get());
+            weights_->version = std::stoi(s_version);
+        }
+        if (weights_->version >= 6) {
+            throw std::runtime_error{"do not support this version"};
+        } else if (weights_->version >= 3) {
+            // v5 ~ v3
+            weights_->input_channels = 43;
+            weights_->probabilities_channels = 5;
+            weights_->pass_probability_outputs = 5;
+            weights_->ownership_channels = 1;
+            weights_->value_misc_outputs = 15;
+        } else {
+            // v2 ~ v1
+            weights_->input_channels = 38;
+            weights_->probabilities_channels = 1;
+            weights_->pass_probability_outputs = 1;
+            weights_->ownership_channels = 1;
+            weights_->value_misc_outputs = 5;
+        }
+
+        Ort::AllocatedStringPtr residual_blocks
+            = metadata.LookupCustomMetadataMapAllocated("ResidualBlocks", allocator);
+        if (residual_blocks == nullptr) {
+            throw std::runtime_error{"ResidualBlocks is zero."};
+        } else {
+            std::string s_residual_blocks = static_cast<char*>(residual_blocks.get());
+            weights_->residual_blocks = std::stoi(s_residual_blocks);
+        }
+
+        Ort::AllocatedStringPtr residual_channels
+            = metadata.LookupCustomMetadataMapAllocated("ResidualChannels", allocator);
+        if (residual_channels == nullptr) {
+            throw std::runtime_error{"ResidualChannels is zero."};
+        } else {
+            std::string s_residual_channels = static_cast<char*>(residual_channels.get());
+            weights_->residual_channels = std::stoi(s_residual_channels);
+        }
+
+        std::vector<std::string> vec_stack;
+        Ort::AllocatedStringPtr stack_name
+            = metadata.LookupCustomMetadataMapAllocated("StackName", allocator);
+        if (stack_name != nullptr) {
+            std::string s_stack_name = static_cast<char*>(stack_name.get());
+            std::stringstream ss{s_stack_name};
+            std::string buf;
+            while (std::getline(ss, buf, ',')) {
+                vec_stack.push_back(buf);
+            }
+        }
+
+        Ort::AllocatedStringPtr policy_head_type
+            = metadata.LookupCustomMetadataMapAllocated("PolicyHeadType", allocator);
+        if (policy_head_type == nullptr) {
+            weights_->policy_head_type = PolicyHeadType::kNormal;
+        } else {
+            std::string s_policy_head_type = static_cast<char*>(policy_head_type.get());
+            for (char &c: s_policy_head_type) {
+                c = std::tolower(c);
+            }
+            if (s_policy_head_type == "normal") {
+                weights_->policy_head_type = PolicyHeadType::kNormal;
+            } else if (s_policy_head_type == "replk") {
+                weights_->policy_head_type = PolicyHeadType::kRepLK;
+            } else {
+                throw std::runtime_error{"unknown policy head type"};
+            }
+        }
+
+        Ort::AllocatedStringPtr policy_head_channels
+            = metadata.LookupCustomMetadataMapAllocated("PolicyHeadChannels", allocator);
+        if (policy_head_channels == nullptr) {
+            throw std::runtime_error{"PolicyHeadChannels is zero."};
+        } else {
+            std::string s_policy_head_channels = static_cast<char*>(policy_head_channels.get());
+            weights_->policy_head_channels = std::stoi(s_policy_head_channels);
+        }
+
+        Ort::AllocatedStringPtr value_head_channels
+            = metadata.LookupCustomMetadataMapAllocated("ValueHeadChannels", allocator);
+        if (value_head_channels == nullptr) {
+            throw std::runtime_error{"ValueHeadChannels is zero."};
+        } else {
+            std::string s_value_head_channels = static_cast<char*>(value_head_channels.get());
+            weights_->value_head_channels = std::stoi(s_value_head_channels);
+        }
+
+        /*
+        Ort::AllocatedStringPtr c_act
+            = metadata.LookupCustomMetadataMapAllocated("ActivationFunction", allocator);
+        if (c_act == nullptr) {
+            weights_->is_pre_act = false;
+            weights_->default_act = Activation::kReLU;
+        } else {
+            std::string act_func = static_cast<char*>(c_act.get());
+            for (auto &c: act_func) {
+                if (c == '-') {
+                    c = ' ';
+                } else {
+                    c = std::tolower(c);
+                }
+            }
+            const auto spt = Splitter(act_func);
+            if (spt.GetCount() == 1) {
+                const auto component = spt.GetWord(0)->Get<>();
+                weights_->default_act = StringToAct(component);
+                weights_->is_pre_act = false;
+            } else if (spt.GetCount() == 2) {
+                const auto place_act = spt.GetWord(0)->Get<>();
+                if (place_act == "pre") {
+                    weights_->is_pre_act = true;
+                } else if (place_act == "post") {
+                    weights_->is_pre_act = false;
+                } else {
+                    throw std::runtime_error{
+                              Format("do not support this activation type [%s]", act_func.c_str())};
+                }
+                const auto act = spt.GetWord(1)->Get<>();
+                weights_->default_act = StringToAct(act);
+            } else {
+                throw std::runtime_error{
+                          Format("do not support this activation type [%s]", act_func.c_str())};
+            }
+        }
+
+        Ort::AllocatedStringPtr bn_mode
+            = metadata.LookupCustomMetadataMapAllocated("BatchNormMode", allocator);
+        if (bn_mode == nullptr) {
+            weights_->use_batch_norm = true;
+            weights_->batchnorm_mode = "renorm";
+        } else {
+            std::string batchnorm_mode = static_cast<char*>(bn_mode.get());
+            for (char &c: batchnorm_mode) {
+                c = std::tolower(c);
+            }
+            if (batchnorm_mode == "renorm") {
+                weights_->use_batch_norm = true;
+                weights_->batchnorm_mode = "renorm";
+            } else if (batchnorm_mode == "norm") {
+                weights_->use_batch_norm = true;
+                weights_->batchnorm_mode = "norm";
+            } else if (batchnorm_mode == "fixup") {
+                weights_->use_batch_norm = false;
+                weights_->batchnorm_mode = "fixup";
+            } else if (batchnorm_mode == "fixscale") {
+                weights_->use_batch_norm = false;
+                weights_->batchnorm_mode = "fixscale";
+            } else {
+                throw std::runtime_error{"unknown batchnorm mode"};
+            }
+        }
+        */
+
+        weights_->loaded = true;
+        DumpInfo(&vec_stack);
+        LOGGING << Format("Load the ONNX model file from: %s.", filename.c_str()) << std::endl;
         return;
     }
 
@@ -315,7 +501,7 @@ void DNNLoader::CheckMisc(NetInfo& netinfo, NetStack& netstack, NetStruct& netst
     }
 }
 
-void DNNLoader::DumpInfo() const {
+void DNNLoader::DumpInfo(std::vector<std::string> *vec_stack) const {
     auto out = std::ostringstream{};
 
     out << "Network Version: " << weights_->version << '\n';
@@ -323,25 +509,32 @@ void DNNLoader::DumpInfo() const {
     out << "Residual Blocks: " << weights_->residual_blocks << '\n';
     out << "Residual Channels: " << weights_->residual_channels << '\n';
 
-    for (int i = 0; i < weights_->residual_blocks; ++i) {
-        auto tower_ptr = weights_->tower[i].get();
+    if (vec_stack == nullptr) {
+        for (int i = 0; i < weights_->residual_blocks; ++i) {
+            auto tower_ptr = weights_->tower[i].get();
 
-        out << "  block " << i + 1 << ": ";
-        if (tower_ptr->IsResidualBlock()) {
-            out << "ResidualBlock";
-        } else if (tower_ptr->IsBottleneckBlock()) {
-            out << "BottleneckBlock";
-        } else if (tower_ptr->IsNestedBottleneckBlock()) {
-            out << "NestedBottleneckBlock";
-        } else if (tower_ptr->IsMixerBlock()) {
-            out << "MixerBlock";
-        } else {
-            continue; // unknown block
+            out << "  block " << i + 1 << ": ";
+            if (tower_ptr->IsResidualBlock()) {
+                out << "ResidualBlock";
+            } else if (tower_ptr->IsBottleneckBlock()) {
+                out << "BottleneckBlock";
+            } else if (tower_ptr->IsNestedBottleneckBlock()) {
+                out << "NestedBottleneckBlock";
+            } else if (tower_ptr->IsMixerBlock()) {
+                out << "MixerBlock";
+            } else {
+                continue; // unknown block
+            }
+            if (tower_ptr->apply_se) {
+                out << "-SE";
+            }
+            out << '\n';
         }
-        if (tower_ptr->apply_se) {
-            out << "-SE";
+    } else {
+        for (size_t i = 0; i < vec_stack->size(); ++i) {
+            auto stack_name = (*vec_stack)[i];
+            out << "  block " << i+1 << ": " << stack_name << '\n';
         }
-        out << '\n';
     }
 
     auto pol_head_type = std::string{"Normal"};

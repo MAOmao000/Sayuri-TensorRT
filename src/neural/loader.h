@@ -25,7 +25,7 @@ private:
     void ParseStack(NetStack& netstack, std::istream& buffer) const;
     void ParseStruct(NetStruct& netstruct, std::istream& buffer) const;
     void CheckMisc(NetInfo& netinfo, NetStack& netstack, NetStruct& netstruct);
-    void DumpInfo() const;
+    void DumpInfo(std::vector<std::string> *vec_stack=nullptr) const;
 
     void FillWeights(NetInfo& netinfo,
                      NetStack& netstack,

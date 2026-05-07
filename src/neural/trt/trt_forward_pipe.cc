@@ -18,6 +18,8 @@
 #include <utility>
 #include <vector>
 
+#include "NvOnnxParser.h"
+
 #include "neural/encoder.h"
 #include "utils/format.h"
 #include "utils/log.h"
@@ -157,7 +159,7 @@ bool TrtForwardPipe::TrtEngine::Build(bool dump_gpu_info,
 
     board_size_ = board_size;
     max_batch_ = max_batch_size;
-    weights_file_ = GetOption<std::string>("weights_file");
+    weights_file_ = weights_->weights_file; // weights_file_ = GetOption<std::string>("weights_file");
 
     cuda::SetDevice(gpu);
     handles_.ApplyOnCurrentDevice();
@@ -202,24 +204,26 @@ bool TrtForwardPipe::TrtEngine::Build(bool dump_gpu_info,
         "InputFeature",
         nvinfer1::OptProfileSelector::kMAX,
         nvinfer1::Dims4(max_batch_, weights_->input_channels, board_size_, board_size_));
-    profile->setDimensions("InputMask",
+    if (weights_->file_type == "weights") {
+        profile->setDimensions("InputMask",
                            nvinfer1::OptProfileSelector::kMIN,
                            nvinfer1::Dims4(1, 1, board_size_, board_size_));
-    profile->setDimensions("InputMask",
+        profile->setDimensions("InputMask",
                            nvinfer1::OptProfileSelector::kOPT,
                            nvinfer1::Dims4(max_batch_, 1, board_size_, board_size_));
-    profile->setDimensions("InputMask",
+        profile->setDimensions("InputMask",
                            nvinfer1::OptProfileSelector::kMAX,
                            nvinfer1::Dims4(max_batch_, 1, board_size_, board_size_));
-    profile->setDimensions("BatchSize",
+        profile->setDimensions("BatchSize",
                            nvinfer1::OptProfileSelector::kMIN,
                            nvinfer1::Dims4(1, weights_->residual_channels, 1, 1));
-    profile->setDimensions("BatchSize",
+        profile->setDimensions("BatchSize",
                            nvinfer1::OptProfileSelector::kOPT,
                            nvinfer1::Dims4(max_batch_, weights_->residual_channels, 1, 1));
-    profile->setDimensions("BatchSize",
+        profile->setDimensions("BatchSize",
                            nvinfer1::OptProfileSelector::kMAX,
                            nvinfer1::Dims4(max_batch_, weights_->residual_channels, 1, 1));
+    }
     config->addOptimizationProfile(profile);
 
     auto network = trt::InferPtr<nvinfer1::INetworkDefinition>(builder->createNetworkV2(0U));
@@ -229,9 +233,21 @@ bool TrtForwardPipe::TrtEngine::Build(bool dump_gpu_info,
     }
 
     network->setName(weights_file_.c_str());
-    if (!BuildNetwork(network)) {
-        LOGGING << "TensorRT backend: failed to build network.\n";
-        return false;
+    if (weights_->file_type == "weights") {
+        if (!BuildNetwork(network)) {
+            LOGGING << "TensorRT backend: failed to build network.\n";
+            return false;
+        }
+    } else {
+        auto parser = nvonnxparser::createParser(*network, logger);
+        if (!parser) {
+            LOGGING << "TensorRT backend: failed to create ONNX parser.\n";
+            return false;
+        }
+        if (!parser->parseFromFile(weights_file_.c_str(), static_cast<int>(nvinfer1::ILogger::Severity::kERROR))) {
+            LOGGING << "TensorRT backend: failed to parse ONNX model.\n";
+            return false;
+        }
     }
 
     const auto dev_prop = cuda::GetDeviceProp();
@@ -1113,19 +1129,19 @@ TrtForwardPipe::TrtEngine::BatchForward(const std::vector<InputData>& batch_inpu
                   std::begin(input.planes) + input_channels * num_intersections,
                   std::begin(batch_planes) + b * input_channels * num_intersections);
 
-        for (int idx = 0; idx < num_intersections; ++idx) {
-            const int x = idx % max_board_size;
-            const int y = idx / max_board_size;
-            if (x < input.board_size && y < input.board_size) {
-                batch_mask[b * num_intersections + idx] = 1.0f;
+        if (weights_->file_type == "weights") {
+            for (int idx = 0; idx < num_intersections; ++idx) {
+                const int x = idx % max_board_size;
+                const int y = idx / max_board_size;
+                if (x < input.board_size && y < input.board_size) {
+                    batch_mask[b * num_intersections + idx] = 1.0f;
+                }
             }
         }
     }
 
     auto input_feature_it = context_->buffers_.find("InputFeature");
-    auto input_mask_it = context_->buffers_.find("InputMask");
     assert(input_feature_it != context_->buffers_.end());
-    assert(input_mask_it != context_->buffers_.end());
 
     cuda::ReportCUDAErrors(cudaMemcpyAsync(input_feature_it->second,
                                            batch_planes.data(),
@@ -1133,20 +1149,26 @@ TrtForwardPipe::TrtEngine::BatchForward(const std::vector<InputData>& batch_inpu
                                                num_intersections * sizeof(float),
                                            cudaMemcpyHostToDevice,
                                            cudaStreamPerThread));
-    cuda::ReportCUDAErrors(
-        cudaMemcpyAsync(input_mask_it->second,
+    if (weights_->file_type == "weights") {
+        auto input_mask_it = context_->buffers_.find("InputMask");
+        assert(input_mask_it != context_->buffers_.end());
+        cuda::ReportCUDAErrors(
+            cudaMemcpyAsync(input_mask_it->second,
                         batch_mask.data(),
                         static_cast<size_t>(batch_size) * num_intersections * sizeof(float),
                         cudaMemcpyHostToDevice,
                         cudaStreamPerThread));
+    }
 
     TRT_ASSERT(context_->execution_context_->setInputShape(
         "InputFeature",
         nvinfer1::Dims4(batch_size, input_channels, max_board_size, max_board_size)));
-    TRT_ASSERT(context_->execution_context_->setInputShape(
-        "InputMask", nvinfer1::Dims4(batch_size, 1, max_board_size, max_board_size)));
-    TRT_ASSERT(context_->execution_context_->setInputShape(
-        "BatchSize", nvinfer1::Dims4(batch_size, weights_->residual_channels, 1, 1)));
+    if (weights_->file_type == "weights") {
+        TRT_ASSERT(context_->execution_context_->setInputShape(
+            "InputMask", nvinfer1::Dims4(batch_size, 1, max_board_size, max_board_size)));
+        TRT_ASSERT(context_->execution_context_->setInputShape(
+            "BatchSize", nvinfer1::Dims4(batch_size, weights_->residual_channels, 1, 1)));
+    }
     TRT_ASSERT(context_->execution_context_->allInputDimensionsSpecified());
     TRT_ASSERT(context_->execution_context_->enqueueV3(cudaStreamPerThread));
 

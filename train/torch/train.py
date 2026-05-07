@@ -1,5 +1,6 @@
 import torch
 import torch.nn.functional as F
+import torch.distributed as dist
 import numpy as np
 import random, time, math, os, glob, io, gzip, sys
 import argparse
@@ -19,6 +20,307 @@ def stderr_write(val):
 def stdout_write(val):
     sys.stdout.write(val)
     sys.stdout.flush()
+
+def zeropower_via_newtonschulz5(G, steps: int):
+    """
+    Newton-Schulz iteration to compute the zeroth power / orthogonalization of G. We opt to use a
+    quintic iteration whose coefficients are selected to maximize the slope at zero. For the purpose
+    of minimizing steps, it turns out to be empirically effective to keep increasing the slope at
+    zero even beyond the point where the iteration no longer converges all the way to one everywhere
+    on the interval. This iteration therefore does not produce UV^T but rather something like US'V^T
+    where S' is diagonal with S_{ii}' ~ Uniform(0.5, 1.5), which turns out not to hurt model
+    performance at all relative to UV^T, where USV^T = G is the SVD.
+    """
+    assert G.ndim >= 2 # batched Muon implementation by @scottjmaddox, and put into practice in the record by @YouJiacheng
+    a, b, c = (3.4445, -4.7750,  2.0315)
+    X = G.bfloat16()
+    if G.size(-2) > G.size(-1):
+        X = X.mT
+
+    # Ensure spectral norm is at most 1
+    X = X / (X.norm(dim=(-2, -1), keepdim=True) + 1e-7)
+    # Perform the NS iterations
+    for _ in range(steps):
+        A = X @ X.mT
+        B = b * A + c * A @ A # quintic computation strategy adapted from suggestion by @jxbz, @leloykun, and @YouJiacheng
+        X = a * X + B @ X
+
+    if G.size(-2) > G.size(-1):
+        X = X.mT
+    return X
+
+def muon_update(grad, momentum, beta=0.95, ns_steps=5, nesterov=True, adjust_lr_fn="match_rms_adamw"):
+    momentum.lerp_(grad, 1 - beta)
+    update = grad.lerp_(momentum, beta) if nesterov else momentum
+    if update.ndim == 4: # for the case of conv filters
+        update = update.view(len(update), -1)
+    update = zeropower_via_newtonschulz5(update, steps=ns_steps)
+
+    if adjust_lr_fn == "match_rms_adamw":
+        update *= 0.2 * max(update.size(-2), update.size(-1))**0.5
+    elif adjust_lr_fn == "original":
+        update *= max(1, update.size(-2) / update.size(-1))**0.5
+    else:
+        raise AssertionError(f"Unexpected value {adjust_lr_fn=}")
+    return update
+
+class Muon(torch.optim.Optimizer):
+    """
+    Muon - MomentUm Orthogonalized by Newton-schulz
+
+    https://kellerjordan.github.io/posts/muon/
+
+    Muon internally runs standard SGD-momentum, and then performs an orthogonalization post-
+    processing step, in which each 2D parameter's update is replaced with the nearest orthogonal
+    matrix. For efficient orthogonalization we use a Newton-Schulz iteration, which has the
+    advantage that it can be stably run in bfloat16 on the GPU.
+
+    Muon should only be used for hidden weight layers. The input embedding, final output layer,
+    and any internal gains or biases should be optimized using a standard method such as AdamW.
+    Hidden convolutional weights can be trained using Muon by viewing them as 2D and then
+    collapsing their last 3 dimensions.
+
+    Arguments:
+        lr: The learning rate, in units of spectral norm per update.
+        weight_decay: The AdamW-style weight decay.
+        momentum: The momentum. A value of 0.95 here is usually fine.
+        adjust_lr_fn: Either "original" or "match_rms_adamw"
+    """
+    def __init__(self, params, lr=0.02, weight_decay=0, momentum=0.95, adjust_lr_fn="match_rms_adamw"):
+        defaults = dict(lr=lr, weight_decay=weight_decay, momentum=momentum, adjust_lr_fn=adjust_lr_fn)
+        assert isinstance(params, list) and len(params) >= 1 and isinstance(params[0], torch.nn.Parameter)
+        params = sorted(params, key=lambda x: x.size(), reverse=True)
+        super().__init__(params, defaults)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
+        for group in self.param_groups:
+            params = group["params"]
+            params_pad = params + [torch.empty_like(params[-1])] * (dist.get_world_size() - len(params) % dist.get_world_size())
+            for base_i in range(len(params))[::dist.get_world_size()]:
+                if base_i + dist.get_rank() < len(params):
+                    p = params[base_i + dist.get_rank()]
+                    if p.grad is None:
+                        # continue
+                        p.grad = torch.zeros_like(p)  # Force synchronization
+                    state = self.state[p]
+                    if len(state) == 0:
+                        state["momentum_buffer"] = torch.zeros_like(p)
+                    update = muon_update(p.grad, state["momentum_buffer"], beta=group["momentum"], adjust_lr_fn=group["adjust_lr_fn"])
+                    p.mul_(1 - group["lr"] * group["weight_decay"])
+                    p.add_(update.reshape(p.shape), alpha=-group["lr"])
+                dist.all_gather(params_pad[base_i:base_i + dist.get_world_size()], params_pad[base_i + dist.get_rank()])
+
+        return loss
+
+class SingleDeviceMuon(torch.optim.Optimizer):
+    """
+    Muon variant for usage in non-distributed settings.
+    """
+    def __init__(self, params, lr=0.02, weight_decay=0, momentum=0.95, adjust_lr_fn="match_rms_adamw"):
+        defaults = dict(lr=lr, weight_decay=weight_decay, momentum=momentum, adjust_lr_fn=adjust_lr_fn)
+        super().__init__(params, defaults)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
+        for group in self.param_groups:
+            for p in group["params"]:
+                if p.grad is None:
+                    # continue
+                    p.grad = torch.zeros_like(p)  # Force synchronization
+                state = self.state[p]
+                if len(state) == 0:
+                    state["momentum_buffer"] = torch.zeros_like(p)
+                update = muon_update(p.grad, state["momentum_buffer"], beta=group["momentum"], adjust_lr_fn=group["adjust_lr_fn"])
+                p.mul_(1 - group["lr"] * group["weight_decay"])
+                p.add_(update.reshape(p.shape), alpha=-group["lr"])
+
+        return loss
+
+def adam_update(grad, buf1, buf2, step, betas, eps):
+    buf1.lerp_(grad, 1 - betas[0])
+    buf2.lerp_(grad.square(), 1 - betas[1])
+    buf1c = buf1 / (1 - betas[0]**step)
+    buf2c = buf2 / (1 - betas[1]**step)
+    return buf1c / (buf2c.sqrt() + eps)
+
+class MuonWithAuxAdam(torch.optim.Optimizer):
+    """
+    Distributed Muon variant that can be used for all parameters in the network, since it runs an
+    internal AdamW for the parameters that are not compatible with Muon. The user must manually
+    specify which parameters shall be optimized with Muon and which with Adam by passing in a
+    list of param_groups with the `use_muon` flag set.
+
+    The point of this class is to allow the user to have a single optimizer in their code, rather
+    than having both a Muon and an Adam which each need to be stepped.
+
+    You can see an example usage below:
+
+    https://github.com/KellerJordan/modded-nanogpt/blob/master/records/052525_MuonWithAuxAdamExample/b01550f9-03d8-4a9c-86fe-4ab434f1c5e0.txt#L470
+    ```
+    hidden_matrix_params = [p for n, p in model.blocks.named_parameters() if p.ndim >= 2 and "embed" not in n]
+    embed_params = [p for n, p in model.named_parameters() if "embed" in n]
+    scalar_params = [p for p in model.parameters() if p.ndim < 2]
+    head_params = [model.lm_head.weight]
+
+    from muon import MuonWithAuxAdam
+    adam_groups = [dict(params=head_params, lr=0.22), dict(params=embed_params, lr=0.6), dict(params=scalar_params, lr=0.04)]
+    adam_groups = [dict(**g, betas=(0.8, 0.95), eps=1e-10, use_muon=False) for g in adam_groups]
+    muon_group = dict(params=hidden_matrix_params, lr=0.05, momentum=0.95, use_muon=True)
+    param_groups = [*adam_groups, muon_group]
+    optimizer = MuonWithAuxAdam(param_groups)
+    ```
+    """
+    def __init__(self, param_groups, adjust_lr_fn="match_rms_adamw", adam_betas=(0.95, 0.995), adam_eps=1e-6):
+        for group in param_groups:
+            assert "use_muon" in group
+            if group["use_muon"]:
+                group["params"] = sorted(group["params"], key=lambda x: x.size(), reverse=True)
+                # defaults
+                group["lr"] = group.get("lr", 0.02)
+                group["momentum"] = group.get("momentum", 0.95)
+                group["weight_decay"] = group.get("weight_decay", 0)
+                group["adjust_lr_fn"] = group.get("adjust_lr_fn", adjust_lr_fn)
+            else:
+                # defaults
+                group["lr"] = group.get("lr", 3e-4)
+                group["betas"] = group.get("betas", adam_betas)
+                group["eps"] = group.get("eps", adam_eps)
+                group["weight_decay"] = group.get("weight_decay", 0)
+        super().__init__(param_groups, dict())
+
+    @torch.no_grad()
+    def step(self, closure=None):
+
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
+        for group in self.param_groups:
+            if group["use_muon"]:
+                params = group["params"]
+                params_pad = params + [torch.empty_like(params[-1])] * (dist.get_world_size() - len(params) % dist.get_world_size())
+                for base_i in range(len(params))[::dist.get_world_size()]:
+                    if base_i + dist.get_rank() < len(params):
+                        p = params[base_i + dist.get_rank()]
+                        if p.grad is None:
+                            # continue
+                            p.grad = torch.zeros_like(p)  # Force synchronization
+                        state = self.state[p]
+                        if len(state) == 0:
+                            state["momentum_buffer"] = torch.zeros_like(p)
+                        update = muon_update(p.grad, state["momentum_buffer"], beta=group["momentum"], adjust_lr_fn=group["adjust_lr_fn"])
+                        p.mul_(1 - group["lr"] * group["weight_decay"])
+                        p.add_(update.reshape(p.shape), alpha=-group["lr"])
+                    dist.all_gather(params_pad[base_i:base_i + dist.get_world_size()], params_pad[base_i + dist.get_rank()])
+            else:
+                for p in group["params"]:
+                    if p.grad is None:
+                        # continue
+                        p.grad = torch.zeros_like(p)  # Force synchronization
+                    state = self.state[p]
+                    if len(state) == 0:
+                        state["exp_avg"] = torch.zeros_like(p)
+                        state["exp_avg_sq"] = torch.zeros_like(p)
+                        state["step"] = 0
+                    state["step"] += 1
+                    update = adam_update(p.grad, state["exp_avg"], state["exp_avg_sq"],
+                                         state["step"], group["betas"], group["eps"])
+                    p.mul_(1 - group["lr"] * group["weight_decay"])
+                    p.add_(update, alpha=-group["lr"])
+
+        return loss
+
+class SingleDeviceMuonWithAuxAdam(torch.optim.Optimizer):
+    """
+    Non-distributed variant of MuonWithAuxAdam.
+    """
+    def __init__(self, param_groups, adjust_lr_fn="match_rms_adamw", adam_betas=(0.95, 0.995), adam_eps=1e-6):
+        for group in param_groups:
+            assert "use_muon" in group
+            if group["use_muon"]:
+                # defaults
+                group["lr"] = group.get("lr", 0.02)
+                group["momentum"] = group.get("momentum", 0.95)
+                group["weight_decay"] = group.get("weight_decay", 0)
+                group["adjust_lr_fn"] = group.get("adjust_lr_fn", adjust_lr_fn)
+            else:
+                # defaults
+                group["lr"] = group.get("lr", 3e-4)
+                group["betas"] = group.get("betas", adam_betas)
+                group["eps"] = group.get("eps", adam_eps)
+                group["weight_decay"] = group.get("weight_decay", 0)
+        super().__init__(param_groups, dict())
+
+    @torch.no_grad()
+    def step(self, closure=None):
+
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
+        for group in self.param_groups:
+            if group["use_muon"]:
+                for p in group["params"]:
+                    if p.grad is None:
+                        # continue
+                        p.grad = torch.zeros_like(p)  # Force synchronization
+                    state = self.state[p]
+                    if len(state) == 0:
+                        state["momentum_buffer"] = torch.zeros_like(p)
+                    update = muon_update(p.grad, state["momentum_buffer"], beta=group["momentum"], adjust_lr_fn=group["adjust_lr_fn"])
+                    p.mul_(1 - group["lr"] * group["weight_decay"])
+                    p.add_(update.reshape(p.shape), alpha=-group["lr"])
+            else:
+                for p in group["params"]:
+                    if p.grad is None:
+                        # continue
+                        p.grad = torch.zeros_like(p)  # Force synchronization
+                    state = self.state[p]
+                    if len(state) == 0:
+                        state["exp_avg"] = torch.zeros_like(p)
+                        state["exp_avg_sq"] = torch.zeros_like(p)
+                        state["step"] = 0
+                    state["step"] += 1
+                    update = adam_update(p.grad, state["exp_avg"], state["exp_avg_sq"],
+                                         state["step"], group["betas"], group["eps"])
+                    p.mul_(1 - group["lr"] * group["weight_decay"])
+                    p.add_(update, alpha=-group["lr"])
+
+        return loss
+
+class ONNXExportWrapper(torch.nn.Module):
+    """
+    Wrapper class to handle the model's forward pass for ONNX export.
+    This handles the complex output structure and makes it ONNX-compatible.
+    """
+    def __init__(self, model):
+        super(ONNXExportWrapper, self).__init__()
+        self.model = model
+    
+    def forward(self, input_feature: torch.Tensor):
+        """
+        Forward pass that returns a flattened tuple of outputs for ONNX compatibility.
+        """
+        # Call the original model
+        outputs = self.model(input_feature)
+        outputs = outputs[0]
+        pruned_outputs = tuple([outputs[i] for i in [0, 1, 2, 3]])
+        return pruned_outputs
 
 def gather_filenames(root, num_chunks=None, sort_key_fn=None):
     def gather_recursive_files(root):
@@ -309,13 +611,18 @@ class TrainingPipe():
         self._setup()
 
     def _setup(self):
-        self.module = self.net # linking
-
-        if self.use_gpu:
+        if self.cfg.use_compile
             self.net = self.net.to(self.device)
-            self.net = DataParallel(self.net) 
-            self.module  = self.net.module
+            self.module = self.net # linking
+            self.net = torch.compile(self.net)
             self.swa_net = self.swa_net.to(self.device)
+        else:
+            self.module = self.net # linking
+            if self.use_gpu:
+                self.net = self.net.to(self.device)
+                self.net = DataParallel(self.net) 
+                self.module  = self.net.module
+                self.swa_net = self.swa_net.to(self.device)
 
         # Copy the initial weights.
         self.swa_net.accumulate_swa(self.module, 0)
@@ -331,6 +638,8 @@ class TrainingPipe():
                 lr=init_lr,
                 weight_decay=self.weight_decay,
             )
+        elif self.opt_name == "Muon":
+            self.opt = SingleDeviceMuonWithAuxAdam(self._get_param_groups())
         elif self.opt_name == "SGD" or not self.opt_name in ["Adam", "SGD"]:
             # Recommanded optimizer, the SGD is better than Adam
             # in this kind of training task.
@@ -366,6 +675,118 @@ class TrainingPipe():
             "soft" : self.cfg.soft_loss_weight
         }
 
+    def _get_is_muon_suitable(self, group_name):
+        if group_name == "normal":
+            return True
+        elif group_name in ["normal_gamma", "noreg", "output", "output_noreg", "input", "input_noreg"]:
+            return False
+        else:
+            assert False
+
+    def _get_weight_decay(self, group_name):
+        effective_lr_scale = 1.0 # 8.0
+        is_muon_suitable = self._get_is_muon_suitable(group_name=group_name)
+        if self.opt_name == "Muon":
+            batch_scaling = math.sqrt(self.batchsize / 256.0)
+        else:
+            batch_scaling = self.batchsize / 256.0
+        if self.cfg.mode == "fixup":
+            if (
+                group_name == "input" or
+                group_name == "normal" or
+                group_name == "normal_gamma" or
+                group_name == "output"
+            ):
+                if self.opt_name == "Muon":
+                    return 0.005000 * batch_scaling
+                else:
+                    return 0.000001 * batch_scaling
+            elif group_name == "input_noreg" or group_name == "noreg":
+                return 0.00000001 * batch_scaling
+            elif group_name == "output_noreg":
+                return 0.00000001 * batch_scaling
+            else:
+                assert False
+        elif self.cfg.mode == "renorm" or self.cfg.mode == "norm":
+            warmup_scale = self._get_lr_schedule(self.current_steps) / self.lr_schedule[-1][1]
+            adaptive_scale = 1.0
+            if (group_name == "input" or group_name == "normal" or group_name == "normal_gamma"):
+                if self.opt_name == "Muon":
+                    wd_with_lr_scale = math.pow(effective_lr_scale * warmup_scale, 0.70) * adaptive_scale
+                else:
+                    wd_with_lr_scale = math.pow(effective_lr_scale * warmup_scale, 0.75) * adaptive_scale
+
+                if group_name == "input":
+                    # Branch here is mostly preserving inconsistent historical behavior, there's not
+                    # a great reason these should be different.
+                    if self.opt_name == "Muon":
+                        wd_group_factor = 2.0 / 3.0
+                    else:
+                        wd_group_factor = 1.0
+                elif group_name == "normal":
+                    wd_group_factor = 1.0
+                elif group_name == "normal_gamma":
+                    # Batch norm gammas can be regularized a bit less,
+                    # doing them just as much empirically seemed to be a bit more unstable
+                    if self.opt_name == "Muon":
+                        wd_group_factor = 0.25
+                    else:
+                        wd_group_factor = 0.125
+                else:
+                    assert False
+
+                if self.opt_name == "Muon" and not is_muon_suitable:
+                    return 0.00900 * batch_scaling * wd_with_lr_scale * wd_group_factor
+                elif self.opt_name == "Muon":
+                    return 0.02000 * batch_scaling * wd_with_lr_scale * wd_group_factor
+                else:
+                    return 0.00125 * batch_scaling * wd_with_lr_scale * wd_group_factor
+
+            elif group_name == "output":
+                if self.opt_name == "Muon" and not is_muon_suitable:
+                    return 0.00400 * batch_scaling
+                elif self.opt_name == "Muon":
+                    assert False
+                else:
+                    return 0.000001 * batch_scaling
+            elif group_name == "input_noreg" or group_name == "noreg":
+                return 0.000001 * batch_scaling * math.pow(effective_lr_scale * warmup_scale, 0.75)
+            elif group_name == "output_noreg":
+                if self.opt_name == "Muon" and not is_muon_suitable:
+                    return 0.000001 * batch_scaling
+                elif self.opt_name == "Muon":
+                    assert False
+                else:
+                    return 0.00000001 * batch_scaling
+            else:
+                assert False
+        else:
+            assert False
+
+    def _get_param_groups(self):
+        reg_dict : Dict[str,List] = {}
+        self.module.add_reg_dict(reg_dict)
+        param_groups = []
+        num_reg_dict_params = 0
+        for group_name in reg_dict:
+            if len(reg_dict[group_name]) > 0:
+                param_groups.append({
+                    "params": reg_dict[group_name],
+                    "group_name": group_name,
+                })
+                num_reg_dict_params += len(reg_dict[group_name])
+
+        for group in param_groups:
+            group["weight_decay"] = self._get_weight_decay(group_name=group["group_name"])
+            group["use_muon"] = self._get_is_muon_suitable(group_name=group["group_name"])
+
+        num_params = 0
+        for param in self.net.parameters():
+            if param.requires_grad:
+                num_params += 1
+        assert num_params == num_reg_dict_params, "Reg dict does not have entries for all params in model"
+        return param_groups
+
     def _get_lr_schedule(self, num_steps):
         # Get the current learning rate from schedule.
         curr_lr = 0.2
@@ -396,11 +817,23 @@ class TrainingPipe():
         self.module.update_parameters(self.current_steps)
 
         self.swa_count = self._status_dict.fancy_get(StatusDict.SWA_COUNT_KEY)
+
         curr_lr = self._get_lr_schedule(self.current_steps)
 
-        for param in self.opt.param_groups:
-            param["lr"] = curr_lr
-            param["weight_decay"] = self.weight_decay
+        if self.opt_name == "Muon":
+            for param in self.opt.param_groups:
+                if param["group_name"] == "normal":
+                    param["lr"] = curr_lr * 2.0
+                elif param["group_name"] == "output" or param["group_name"] == "output_noreg":
+                    param["lr"] = curr_lr * 0.5
+                else:
+                    param["lr"] = curr_lr
+                param["weight_decay"] = self._get_weight_decay(group_name=param["group_name"])
+        else:
+            for param in self.opt.param_groups:
+                param["lr"] = curr_lr
+                param["weight_decay"] = self.weight_decay
+
         self.max_steps = self.max_steps_per_running + self.current_steps
         stdout_write("Current steps is {}. Will stop the training at {}.\n".format(self.current_steps, self.max_steps))
 
@@ -422,19 +855,87 @@ class TrainingPipe():
         self._status_dict.fancy_set(StatusDict.JSON_KEY, self.cfg.json_str)
         self._status_dict.save(checkpoint)
 
-        weights_name = os.path.join(
-            self.weights_path, "{}.bin.txt".format(status))
-        cpu_module = self.module.to("cpu")
-        cpu_module.transfer_to_bin(weights_name)
+        if self.cfg.export_onnx:
+            onnx_model_name = os.path.join(
+                self.swa_weights_path, "{}-swa.onnx".format(status))
+            # Set model to evaluation mode
+            self.swa_net.eval()
+            # Create wrapper for ONNX export
+            wrapper = ONNXExportWrapper(self.swa_net)
+            wrapper.eval()
+            # Create dummy inputs
+            batch_size = 8 
+            input_feature = torch.randn(
+                batch_size,
+                self.cfg.input_channels,
+                self.cfg.boardsize,
+                self.cfg.boardsize,
+                dtype=torch.float32,
+                device=self.device
+            )
+            input_feature[:,0,:,:]=1.0
+            # Prepare inputs and input names
+            inputs = [input_feature]
+            input_names = ['InputFeature']
+            output_names = ['output_prob', 'output_prob_pass', 'output_val', 'output_ownership']
+            dynamic_axes = {}
+            for name in input_names:
+                dynamic_axes[name] = {0: 'batch_size'}
+            for name in output_names:
+                dynamic_axes[name] = {0: 'batch_size'}
+            with torch.no_grad():
+                torch.onnx.export(
+                    wrapper,
+                    tuple(inputs),
+                    onnx_model_name,
+                    export_params=True,
+                    opset_version=20,
+                    do_constant_folding=True,
+                    input_names=input_names,
+                    output_names=output_names,
+                    dynamic_axes=dynamic_axes,
+                    dynamic_shapes=None,
+                    verbose=False,
+                    dynamo=False,
+                    report=False
+                )
+            # Add metadata to the ONNX model
+            try:
+                import onnx
+                from onnx import helper
+                onnx_model = onnx.load(onnx_model_name)
+                # Add metadata_props
+                cpu_swa_net = self.swa_net.to("cpu")
+                meta = cpu_swa_net.get_meta_data()
+                # Clear existing metadata if any to avoid duplicates
+                if hasattr(onnx_model, "metadata_props"):
+                    del onnx_model.metadata_props[:]
+                for key, value in meta.items():
+                    meta_entry = onnx_model.metadata_props.add()
+                    meta_entry.key = key
+                    meta_entry.value = value
+                # Save the model with metadata
+                onnx.save(onnx_model, onnx_model_name)
+                if self.use_gpu:
+                    self.swa_net = self.swa_net.to(self.device)
+            except ImportError:
+                raise AssertionError(f"onnx package not installed, skipping metadata addition.")
+            except Exception as e:
+                raise AssertionError(f"Failed to add metadata: {e}")
+        else:
+            weights_name = os.path.join(
+                self.weights_path, "{}.bin.txt".format(status))
+            cpu_module = self.module.to("cpu")
+            cpu_module.transfer_to_bin(weights_name)
 
-        swa_weights_name = os.path.join(
-            self.swa_weights_path, "{}-swa.bin.txt".format(status))
-        cpu_swa_net = self.swa_net.to("cpu")
-        cpu_swa_net.transfer_to_bin(swa_weights_name)
+            swa_weights_name = os.path.join(
+                self.swa_weights_path, "{}-swa.bin.txt".format(status))
+            cpu_swa_net = self.swa_net.to("cpu")
+            cpu_swa_net.transfer_to_bin(swa_weights_name)
 
-        if self.use_gpu:
-            self.module = self.module.to(self.device)
-            self.swa_net = self.swa_net.to(self.device)
+            if self.use_gpu:
+                self.module = self.module.to(self.device)
+                self.swa_net = self.swa_net.to(self.device)
 
     def _init_loader(self):
         def compute_window_size(N, c=5000, scale=1.0, alpha=0.75, beta=0.4):
@@ -602,12 +1103,25 @@ class TrainingPipe():
         with torch.no_grad():
             for _ in range(total_steps):
                 planes, target = self._gather_data_from_loader(False)
-                _, all_loss_dict = self.net(
-                    planes,
-                    target=target,
-                    use_symm=True,
-                    loss_weight_dict=self._loss_weight_dict
-                )
+                if self.cfg.use_compile:
+                    planes = planes.to(self.device)
+                    target_to = ()
+                    for batch_dict in target:
+                        batch_dict = batch_dict.to(self.device)
+                        target_to += (batch_dict, )
+                    _, all_loss_dict = self.net(
+                        planes,
+                        target=target_to,
+                        use_symm=True,
+                        loss_weight_dict=self._loss_weight_dict
+                    )
+                else:
+                    _, all_loss_dict = self.net(
+                        planes,
+                        target=target,
+                        use_symm=True,
+                        loss_weight_dict=self._loss_weight_dict
+                    )
                 _, all_loss_dict = self._handle_loss(all_loss_dict)
 
                 if len(running_loss_dict) == 0:
@@ -637,12 +1151,24 @@ class TrainingPipe():
 
                 # forward and backward for loss
                 with torch.amp.autocast("cuda", enabled=self.use_fp16):
-                    _, all_loss_dict = self.net(
-                        planes,
-                        target=target,
-                        use_symm=True,
-                        loss_weight_dict=self._loss_weight_dict
-                    )
+                    if self.cfg.use_compile:
+                        planes = planes.to(self.device)
+                        target_to = ()
+                        _, all_loss_dict = self.net(
+                            planes,
+                            target=target_to,
+                            use_symm=True,
+                            loss_weight_dict=self._loss_weight_dict
+                        )
+                    else:
+                        planes = planes.to(self.device)
+                        target_to = ()
+                        _, all_loss_dict = self.net(
+                            planes,
+                            target=target,
+                            use_symm=True,
+                            loss_weight_dict=self._loss_weight_dict
+                        )
                     loss, all_loss_dict = self._handle_loss(all_loss_dict)
 
                 if self.use_fp16:
@@ -664,7 +1190,20 @@ class TrainingPipe():
 
                 if macro_steps % self.macrofactor == 0:
                     # clip grad
-                    gnorm = torch.nn.utils.clip_grad_norm_(self.net.parameters(), 10000.0)
+                    if self.opt_name != "Muon" and (self.cfg.mode == "renorm" or self.cfg.mode == "norm"):
+                        gnorm = torch.nn.utils.clip_grad_norm_(
+                            self.net.parameters(), 10000.0).detach().cpu().item()
+                    else:
+                        if self.opt_name == "Muon":
+                            gnorm_cap = 11000.0
+                        elif self.cfg.mode == "fixup":
+                            gnorm_cap = 2500.0
+                        else:
+                            gnorm_cap = 5500.0
+                        gnorm_cap *= math.sqrt(self.batchsize / 256.0)
+                        # gnorm_cap /= math.sqrt(8.0)
+                        gnorm = torch.nn.utils.clip_grad_norm_(
+                            self.net.parameters(), max_norm=gnorm_cap).detach().cpu().item()
 
                     # update network parameters
                     if self.use_fp16:
@@ -694,8 +1233,22 @@ class TrainingPipe():
                         self.swa_net.accumulate_swa(self.module, self.swa_count)
 
                     # update learning rate
-                    for param in self.opt.param_groups:
-                        param["lr"] = self._get_lr_schedule(self.current_steps)
+                    # for param in self.opt.param_groups:
+                    #     param["lr"] = self._get_lr_schedule(self.current_steps)
+                    curr_lr = self._get_lr_schedule(self.current_steps)
+                    if self.opt_name == "Adam" or self.opt_name == "SGD":
+                        for param in self.opt.param_groups:
+                            param["lr"] = curr_lr
+                    else:
+                        for param in self.opt.param_groups:
+                            if param["group_name"] == "normal":
+                                param["lr"] = curr_lr * 2.0
+                            elif param["group_name"] == "output" or param["group_name"] == "output_noreg":
+                                param["lr"] = curr_lr * 0.5
+                            else:
+                                param["lr"] = curr_lr
+                            if self.cfg.mode == "renorm" or self.cfg.mode == "norm":
+                                param["weight_decay"] = self._get_weight_decay(group_name=param["group_name"])
 
                 # stop the training if achieving max steps
                 if self.current_steps >= self.max_steps:
