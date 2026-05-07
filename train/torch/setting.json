@@ -1,0 +1,52 @@
+{
+    "NeuralNetwork" : {
+        "NNType" : "Residual",
+        "MaxBoardSize" : 19,
+        "ResidualChannels" : 64,
+        "PolicyExtract" : 16,
+        "ValueExtract" : 16,
+        "SeRatio": 2,
+        "Activation" : "relu",
+
+        "Stack" : [
+            "ResidualBlock",
+            "ResidualBlock-SE"
+        ]
+    },
+
+    "Train" : {
+        "UseGPU" : null,
+        "UseFp16" : true,
+        "Optimizer" : "SGD",
+        "StepsPerEpoch" : 1000,
+        "ValidationSteps": 100,
+        "VerboseSteps" : 1000,
+        "MaxStepsPerRunning" : 2048000,
+        "Workers" : 4,
+        "BatchSize" : 256,
+        "BufferSize" : 524288,
+        "DownSampleRate" : 16,
+        "MacroFactor" : 1,
+        "WeightDecay" : 1e-4,
+        "SoftLossWeight" : 0.1,
+        "SwaMaxCount" : 16,
+        "SwaSteps" : 100,
+        "WarmUpSteps" : 20000,
+        "PolicySurpriseFactor" : 0.0,
+        "RenormMaxR" : 1,
+        "RenormMaxD" : 0,
+
+        "LearningRateSchedule" : [
+            [0,       1e-2],
+            [128000,  3e-3],
+            [256000,  1e-3],
+            [384000,  3e-4],
+            [512000,  1e-4],
+            [768000,  3e-5],
+            [1024000, 1e-5]
+         ],
+
+        "TrainDirectory" : "train-dir",
+        "StorePath" : "workspace"
+    }
+}
