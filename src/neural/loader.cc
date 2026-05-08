@@ -60,9 +60,13 @@ void DNNLoader::FromFile(std::shared_ptr<DNNWeights> weights, std::string filena
         // get meta data.
         Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "LoadMetadata");
         Ort::SessionOptions session_options;
+#ifdef WIN32
         const std::wstring model_path = std::filesystem::path(filename).wstring();
-
         Ort::Session session(env, model_path.data(), session_options);
+#else
+        const char* model_path = filename.c_str();
+        Ort::Session session(env, model_path, session_options);
+#endif
         Ort::ModelMetadata metadata = session.GetModelMetadata();
         Ort::AllocatorWithDefaultOptions allocator;
 

@@ -236,8 +236,8 @@ class SqueezeAndExcitation(nn.Module):
             self.pre_bias_excite = CustomIdentity()
 
     def initialize(self, scale, xavier_init):
-        self.squeeze.initialize(scale=scale, xavier_init=xavier_init, bias_scale=0.0)
-        self.excite.initialize(scale=scale, xavier_init=xavier_init, bias_scale=0.0)
+        self.squeeze.initialize(scale=scale, xavier_init=xavier_init)
+        self.excite.initialize(scale=scale, xavier_init=xavier_init)
 
     def add_reg_dict(self, reg_dict):
         self.squeeze.add_reg_dict(reg_dict)
@@ -323,18 +323,15 @@ class BatchNorm2d(nn.Module):
         if placement == "in_block":
             if self.use_gamma:
                 reg_dict["normal_gamma"].append(self.gamma)
-            if self.use_beta:
-                reg_dict["noreg"].append(self.beta)
+            reg_dict["noreg"].append(self.beta)
         elif placement == "before_block":
             if self.use_gamma:
                 reg_dict["input"].append(self.gamma)
-            if self.use_beta:
-                reg_dict["input_noreg"].append(self.beta)
+            reg_dict["input_noreg"].append(self.beta)
         else:
             if self.use_gamma:
                 reg_dict["output"].append(self.gamma)
-            if self.use_beta:
-                reg_dict["output_noreg"].append(self.beta)
+            reg_dict["output_noreg"].append(self.beta)
 
     def get_merged_params(self):
         bn_mean = torch.zeros(self.num_features)
@@ -572,30 +569,25 @@ class Convolve(nn.Module):
         if collector is not None:
             collector.append(self)
 
-    def initialize(self, scale, xavier_init):
+    def initialize(self, scale, xavier_init, bias_scale=0.2):
         if xavier_init:
             nn.init.xavier_normal_(
                 self.conv.weight, gain=compute_gain(self.activation))
-            if self.bias:
-                nn.init.zeros_(self.conv.bias)
+            nn.init.zeros_(self.conv.bias)
         else:
             init_weights(self.conv.weight, self.activation, scale=scale)
-            if self.bias:
-                init_weights(self.conv.bias, self.activation, scale=0.2, fan_tensor=self.conv.weight)
+            init_weights(self.conv.bias, self.activation, scale=bias_scale, fan_tensor=self.conv.weight)
 
     def add_reg_dict(self, reg_dict, placement="in_block"):
         if placement == "in_block":
             reg_dict["normal"].append(self.conv.weight)
-            if self.bias:
-                reg_dict["noreg"].append(self.conv.bias)
+            reg_dict["noreg"].append(self.conv.bias)
         elif placement == "before_block":
             reg_dict["input"].append(self.conv.weight)
-            if self.bias:
-                reg_dict["input_noreg"].append(self.conv.bias)
+            reg_dict["input_noreg"].append(self.conv.bias)
         else:
             reg_dict["output"].append(self.conv.weight)
-            if self.bias:
-                reg_dict["output_noreg"].append(self.conv.bias)
+            reg_dict["output_noreg"].append(self.conv.bias)
 
     def shape_to_text(self):
         return conv_to_text(self.in_channels, self.out_channels, self.kernel_size)
@@ -769,8 +761,8 @@ class DepthwiseConvBlock(nn.Module):
             nn.init.xavier_normal_(
                 self.rep3x3.weight, gain=compute_gain(self.activation))
         else:
-            init_weights(self.conv.weight, self.activation, scale=scale)
-            init_weights(self.rep3x3.weight, self.activation, scale=scale)
+            init_weights(self.conv.weight, self.activation, scale=scale * 0.8)
+            init_weights(self.rep3x3.weight, self.activation, scale=scale * 0.6)
 
     def add_reg_dict(self, reg_dict, placement="in_block"):
         self.conv.add_reg_dict(reg_dict, placement)
@@ -778,7 +770,7 @@ class DepthwiseConvBlock(nn.Module):
         self.bn.add_reg_dict(reg_dict, placement)
         if not isinstance(self.pre_bias1, CustomIdentity):
             self.pre_bias1.add_reg_dict(reg_dict, placement)
-        if not isinstance(self.post_bias2, CustomIdentity):
+        if not isinstance(self.pre_bias2, CustomIdentity):
             self.pre_bias2.add_reg_dict(reg_dict, placement)
 
     def tensors_to_text(self, use_bin):
@@ -1320,17 +1312,17 @@ class Network(nn.Module):
                     block.initialize(fixup_scale=fixup_scale,
                         se_fixup_scale=fixup_scale, xavier_init=self.xavier_init)
 
-            self.policy_conv.initialize(scale=1.0, xavier_init=self.xavier_init)
+            self.policy_conv.initialize(scale=0.8, xavier_init=self.xavier_init)
             if self.policy_head_type["Type"] == "RepLK":
                 self.policy_depthwise_conv.initialize(scale=1.0, xavier_init=self.xavier_init)
                 self.policy_pointwise_conv.initialize(scale=1.0, xavier_init=self.xavier_init)
-            self.policy_intermediate_fc.initialize(scale=1.0, xavier_init=self.xavier_init)
-            self.pol_misc.initialize(scale=1.0, xavier_init=self.xavier_init)
-            self.pol_misc_pass_fc.initialize(scale=1.0, xavier_init=self.xavier_init)
+            self.policy_intermediate_fc.initialize(scale=0.6, xavier_init=self.xavier_init)
+            self.pol_misc.initialize(scale=0.3, xavier_init=self.xavier_init)
+            self.pol_misc_pass_fc.initialize(scale=0.3, xavier_init=self.xavier_init)
             self.value_conv.initialize(scale=1.0, xavier_init=self.xavier_init)
             self.value_intermediate_fc.initialize(scale=1.0, xavier_init=self.xavier_init)
-            self.ownership_conv.initialize(scale=1.0, xavier_init=self.xavier_init)
-            self.value_misc_fc.initialize(scale=1.0, xavier_init=self.xavier_init)
+            self.ownership_conv.initialize(scale=0.2, xavier_init=self.xavier_init)
+            self.value_misc_fc.initialize(scale=0.2, xavier_init=self.xavier_init)
 
     def create_policy_head(self):
         self.policy_conv = ConvBlock(
@@ -1799,7 +1791,7 @@ class Network(nn.Module):
         info += "Value misc size: {valuemisc}\n".format(valuemisc=self.value_misc)
         info += "Policy Head Type: {polheadtype}\n".format(polheadtype=self.policy_head_type["Type"])
         info += "Default activation: {act}\n".format(act=self.activation)
-        info += "Batchnorm Mode: {mode}\n".format(bn_mode=self.mode)
+        info += "Batchnorm Mode: {mode}\n".format(mode=self.mode)
         return info
 
     def get_name(self):

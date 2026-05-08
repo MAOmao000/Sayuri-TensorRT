@@ -1,4 +1,7 @@
+import warnings
+warnings.filterwarnings('ignore', message='.*You are using the legacy TorchScript-based ONNX export.*')
 import torch
+torch.set_float32_matmul_precision('high')
 import torch.nn.functional as F
 import torch.distributed as dist
 import numpy as np
@@ -611,10 +614,17 @@ class TrainingPipe():
         self._setup()
 
     def _setup(self):
-        if self.cfg.use_compile
+        if self.cfg.use_compile:
             self.net = self.net.to(self.device)
             self.module = self.net # linking
-            self.net = torch.compile(self.net)
+            self.net = torch.compile(
+                self.net,
+                backend="inductor",
+                options={
+                    "triton.autotune_cublasLt": False,  # Disable GEMM auto-tuning
+                    "triton.cudagraphs": True  # Keep CUDA Graphs enabled to maintain performance
+                }
+            )
             self.swa_net = self.swa_net.to(self.device)
         else:
             self.module = self.net # linking
@@ -1154,6 +1164,9 @@ class TrainingPipe():
                     if self.cfg.use_compile:
                         planes = planes.to(self.device)
                         target_to = ()
+                        for batch_dict in target:
+                            batch_dict = batch_dict.to(self.device)
+                            target_to += (batch_dict, )
                         _, all_loss_dict = self.net(
                             planes,
                             target=target_to,
@@ -1161,8 +1174,6 @@ class TrainingPipe():
                             loss_weight_dict=self._loss_weight_dict
                         )
                     else:
-                        planes = planes.to(self.device)
-                        target_to = ()
                         _, all_loss_dict = self.net(
                             planes,
                             target=target,

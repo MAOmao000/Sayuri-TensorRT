@@ -274,100 +274,116 @@ bool TrtForwardPipe::TrtEngine::CreatePlan(trt::InferPtr<nvinfer1::INetworkDefin
                                            trt::InferPtr<nvinfer1::IBuilder>& builder,
                                            int max_batch_size,
                                            trt::Logger& logger) {
-    auto GetNetworkCacheName = [](const std::filesystem::path& filepath) {
-        auto network_name = filepath.filename().string();
-        const auto dot_pos = network_name.find('.');
-        if (dot_pos != std::string::npos) {
-            network_name.erase(dot_pos);
-        }
-        return network_name;
-    };
-
-    std::string model_data;
-    if (!ReadFileBinary(weights_file_, model_data)) {
-        LOGGING << "Unable to read weights file for TensorRT plan cache.\n";
-        return false;
-    }
-
-    const std::string model_hash = sha256::GetDigest(model_data);
-    const auto dev_prop = cuda::GetDeviceProp();
-    const std::string device_ident = GetDeviceIdent(dev_prop.name);
-    const std::string precision = handles_.fp16 ? "half" : "single";
-    const auto network_name = GetNetworkCacheName(std::filesystem::path(network->getName()));
-    const auto trt_version = getInferLibVersion();
-
-    const std::string plan_cache_file = Format("trt-%d_gpu-%s_net-%s_%dx%d_batch%d_%s",
-                                               trt_version,
-                                               device_ident.c_str(),
-                                               network_name.c_str(),
-                                               board_size_,
-                                               board_size_,
-                                               max_batch_size,
-                                               precision.c_str());
-    const std::string param_str = Format("_%d_%s_%d_%d_%d_%s",
-                                         trt_version,
-                                         device_ident.c_str(),
-                                         board_size_,
-                                         board_size_,
-                                         max_batch_size,
-                                         precision.c_str());
-
     std::string plan;
-    {
-        std::lock_guard<std::mutex> lock(tune_mutex_);
+    if (GetOption<std::string>("mode") == "selfplay") {
+        LOGGING << "Building TensorRT backend engine for ONNX...\n";
+        auto planBuffer = trt::InferPtr<nvinfer1::IHostMemory>(
+            builder->buildSerializedNetwork(*network, *config));
+        if (!planBuffer) {
+            LOGGING << "TensorRT backend: failed to build nference engine.\n";
+            return false;
+        }
+        plan.insert(
+            plan.end(),
+            static_cast<char*>(planBuffer->data()),
+            static_cast<char*>(planBuffer->data()) + planBuffer->size()
+        );
+    } else {
+        auto GetNetworkCacheName = [](const std::filesystem::path& filepath) {
+            auto network_name = filepath.filename().string();
+            const auto dot_pos = network_name.find('.');
+            if (dot_pos != std::string::npos) {
+                network_name.erase(dot_pos);
+            }
+            return network_name;
+        };
 
-        std::string cache_file_data;
-        if (ReadFileBinary(plan_cache_file, cache_file_data)) {
-            const auto model_hash_len = sha256::GetHexDigestLength();
-            if (cache_file_data.size() < model_hash_len + param_str.size()) {
-                LOGGING << "Could not parse plan, unexpected size in " << plan_cache_file << ".\n";
-                cache_file_data.clear();
-            } else {
-                const auto cached_param =
-                    cache_file_data.substr(cache_file_data.size() - param_str.size());
-                const auto cached_model_hash = cache_file_data.substr(
-                    cache_file_data.size() - model_hash_len - param_str.size(), model_hash_len);
+        std::string model_data;
+        if (!ReadFileBinary(weights_file_, model_data)) {
+            LOGGING << "Unable to read weights file for TensorRT plan cache.\n";
+            return false;
+        }
 
-                if (cached_model_hash != model_hash) {
-                    LOGGING << "Plan cache is corrupted or is for the wrong model in "
-                            << plan_cache_file << ".\n";
-                    cache_file_data.clear();
-                } else if (cached_param != param_str) {
-                    LOGGING << "Plan cache is corrupted or is for the wrong parameters in "
-                            << plan_cache_file << ".\n";
+        const std::string model_hash = sha256::GetDigest(model_data);
+        const auto dev_prop = cuda::GetDeviceProp();
+        const std::string device_ident = GetDeviceIdent(dev_prop.name);
+        const std::string precision = handles_.fp16 ? "half" : "single";
+        const auto network_name = GetNetworkCacheName(std::filesystem::path(network->getName()));
+        const auto trt_version = getInferLibVersion();
+
+        const std::string plan_cache_file = Format("trt-%d_gpu-%s_net-%s_%dx%d_batch%d_%s",
+                                                   trt_version,
+                                                   device_ident.c_str(),
+                                                   network_name.c_str(),
+                                                   board_size_,
+                                                   board_size_,
+                                                   max_batch_size,
+                                                   precision.c_str());
+        const std::string param_str = Format("_%d_%s_%d_%d_%d_%s",
+                                             trt_version,
+                                             device_ident.c_str(),
+                                             board_size_,
+                                             board_size_,
+                                             max_batch_size,
+                                             precision.c_str());
+
+        // std::string plan;
+        {
+            std::lock_guard<std::mutex> lock(tune_mutex_);
+
+            std::string cache_file_data;
+            if (ReadFileBinary(plan_cache_file, cache_file_data)) {
+                const auto model_hash_len = sha256::GetHexDigestLength();
+                if (cache_file_data.size() < model_hash_len + param_str.size()) {
+                    LOGGING << "Could not parse plan, unexpected size in " << plan_cache_file << ".\n";
                     cache_file_data.clear();
                 } else {
-                    plan = cache_file_data.substr(
-                        0, cache_file_data.size() - model_hash_len - param_str.size());
-                    LOGGING << "Using existing plan cache at " << plan_cache_file << ".\n";
+                    const auto cached_param =
+                        cache_file_data.substr(cache_file_data.size() - param_str.size());
+                    const auto cached_model_hash = cache_file_data.substr(
+                        cache_file_data.size() - model_hash_len - param_str.size(), model_hash_len);
+
+                    if (cached_model_hash != model_hash) {
+                        LOGGING << "Plan cache is corrupted or is for the wrong model in "
+                                << plan_cache_file << ".\n";
+                        cache_file_data.clear();
+                    } else if (cached_param != param_str) {
+                        LOGGING << "Plan cache is corrupted or is for the wrong parameters in "
+                                << plan_cache_file << ".\n";
+                        cache_file_data.clear();
+                    } else {
+                        plan = cache_file_data.substr(
+                            0, cache_file_data.size() - model_hash_len - param_str.size());
+                        LOGGING << "Using existing plan cache at " << plan_cache_file << ".\n";
+                    }
                 }
             }
-        }
 
-        if (plan.empty()) {
-            LOGGING << "Creating new plan cache...\n";
+            if (plan.empty()) {
+                LOGGING << "Creating new plan cache...\n";
 
-            auto plan_buffer = trt::InferPtr<nvinfer1::IHostMemory>(
-                builder->buildSerializedNetwork(*network, *config));
-            if (!plan_buffer) {
-                LOGGING << "TensorRT backend: failed to create plan.\n";
-                return false;
-            }
+                auto plan_buffer = trt::InferPtr<nvinfer1::IHostMemory>(
+                    builder->buildSerializedNetwork(*network, *config));
+                if (!plan_buffer) {
+                    LOGGING << "TensorRT backend: failed to create plan.\n";
+                    return false;
+                }
 
-            plan.assign(static_cast<const char*>(plan_buffer->data()),
-                        static_cast<const char*>(plan_buffer->data()) + plan_buffer->size());
+                plan.assign(static_cast<const char*>(plan_buffer->data()),
+                            static_cast<const char*>(plan_buffer->data()) + plan_buffer->size());
 
-            auto cache_payload = plan;
-            cache_payload.append(model_hash);
-            cache_payload.append(param_str);
+                auto cache_payload = plan;
+                cache_payload.append(model_hash);
+                cache_payload.append(param_str);
 
 #ifdef NDEBUG
-            if (!WriteFileBinary(plan_cache_file, cache_payload)) {
-                LOGGING << "Unable to save TensorRT plan cache to " << plan_cache_file << ".\n";
-            } else {
-                LOGGING << "Saved new plan cache to " << plan_cache_file << ".\n";
-            }
+                if (!WriteFileBinary(plan_cache_file, cache_payload)) {
+                    LOGGING << "Unable to save TensorRT plan cache to " << plan_cache_file << ".\n";
+                } else {
+                    LOGGING << "Saved new plan cache to " << plan_cache_file << ".\n";
+                }
 #endif
+            }
         }
     }
 

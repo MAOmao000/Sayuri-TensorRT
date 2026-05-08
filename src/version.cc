@@ -50,7 +50,7 @@ const std::vector<std::string> kSanketsuGirl = {
 };
 
 constexpr bool kDevVersion = false;
-constexpr size_t kVersionMajor = 0;
+constexpr size_t kVersionMajor = 9;
 constexpr size_t kVersionMinor = 10;
 constexpr size_t kVersionPatch = 0;
 
