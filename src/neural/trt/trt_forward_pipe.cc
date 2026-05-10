@@ -159,7 +159,7 @@ bool TrtForwardPipe::TrtEngine::Build(bool dump_gpu_info,
 
     board_size_ = board_size;
     max_batch_ = max_batch_size;
-    weights_file_ = weights_->weights_file; // weights_file_ = GetOption<std::string>("weights_file");
+    weights_file_ = GetOption<std::string>("weights_file");
 
     cuda::SetDevice(gpu);
     handles_.ApplyOnCurrentDevice();

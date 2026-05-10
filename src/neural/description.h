@@ -164,7 +164,6 @@ enum class PolicyHeadType { kNormal, kRepLK };
 class DNNWeights {
 public:
     std::string name;
-    std::string weights_file;
     std::string file_type{"weights"};
     int version{-1};
 

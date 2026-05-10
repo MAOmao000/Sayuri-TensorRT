@@ -45,7 +45,6 @@ void DNNLoader::FromFile(std::shared_ptr<DNNWeights> weights, std::string filena
         return;
     }
 
-    weights_->weights_file = filename;
     int ext_i = filename.find_last_of(".");
     std::string extname = filename.substr(ext_i, filename.size() - ext_i);
     if (extname == ".onnx") {

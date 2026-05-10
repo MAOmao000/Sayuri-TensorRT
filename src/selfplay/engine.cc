@@ -28,6 +28,7 @@ void Engine::Initialize() {
         network_ = std::make_unique<Network>();
     }
     curr_weights_name_ = SelectWeights();
+    SetOption("weights_file", curr_weights_name_);
     network_->Initialize(curr_weights_name_);
 
     if (network_->GetName().find("random") != std::string::npos) {
