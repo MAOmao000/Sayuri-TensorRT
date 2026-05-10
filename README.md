@@ -1,87 +1,44 @@
 
+# TensorRT backend for ONNX
+
+This is a prototype of the TensorRT backend for ONNX (onnx-tensorrt) designed for Sayuri.
+AQ already adopted this method (using UFF instead of ONNX) in 2018, but there were still many restrictions at that time, so it was not adopted in the Go engine for a while.
+Also added the following features:
+* Muon+AdamW optimizer
+* torch.compile
+* Fixup Initialize
+
+## Requirements
+
+Additional features require the following installation:
+
+* c++ engine: onnx runtime (Used onnxruntime-linux-x64-1.25.1 to check the operation)
+* python: pip install onnxruntime-gpu onnx onnxscript
+
+## Running the training
+
+You can check these features by setting the following in selfplay-setting.json.
+```
+   "Train" : {
+        "Optimizer" : "Muon", ... "Adam", "SGD" (default) to use the conventional function
+        "LearningRateSchedule" : [
+            [0,     3.2e-4] ... For Muon, operation has been confirmed with 3.2e-4 (default:0.2)
+        "BatchNormMode" : "fixup", ... "renorm"(default), "norm" to use the conventional function
+        "ExportONNX" : true, ... New key(default:false)
+        "UseCompile" : true, ... New key(default:false)
+```
+
+## Test results for the b3xc96 model
+
+In the renorm testing, starting with version 520K, the "RenormMaxD" value in selfplay-setting.json has been changed from 4 to 5.
+
+![all loss](./img/muon_onnx_renorm_fixup_loss.png)
+
 <div id="sayuri-art" align="center">
     </br>
     <img src="./img/sayuri-art.PNG" alt="Sayuri Art" width="768"/>
     <h3>Sayuri</h3>
 </div>
-
-## TensorRT backend test results
-
-~~~
-$ bash simple.sh
-
-./sayuri --mode selfplay --config configs/selfplay-config.txt -g 0 --target-directory selfplay --weights-dir weights
-
-Network Version: 5
-Input Channels: 43
-Residual Blocks: 6
-Residual Channels: 96
-(Residual Block)
-  block 1: ResidualBlock
-  block 2: ResidualBlock
-  block 3: ResidualBlock-SE
-  block 4: ResidualBlock
-  block 5: ResidualBlock
-  block 6: ResidualBlock-SE
-(Nested Bottleneck Block)
-  block 1: NestedBottleneckBlock
-  block 2: NestedBottleneckBlock
-  block 3: NestedBottleneckBlock-SE
-  block 4: NestedBottleneckBlock
-  block 5: NestedBottleneckBlock
-  block 6: NestedBottleneckBlock-SE
-(Residual + Mixer Block)
-  block 1: ResidualBlock
-  block 2: ResidualBlock
-  block 3: ResidualBlock-SE
-  block 4: ResidualBlock
-  block 5: ResidualBlock
-  block 6: ResidualBlock
-  block 7: MixerBlock-SE-SE
-Policy Head Type: RepLK
-Policy Head Channels: 24
-Value Head Channels: 24
-Done! Load the weights file in 0.03 sec.
-CUDA version: Major 13, Minor 0
-Use cuDNN: No
-Number of CUDA devices: 1
-=== Device: 0 ===
-  Name: NVIDIA GeForce RTX 5060
-  Compute capability: 12.0
-  Enable the FP16
-  Enable the tensor cores
-Done constructing network.
-Allocated 400.00 MiB memory for NN cache (141509 entries).
-============================================
-Hash value: 31EC9DC9306CCCBC
-Number of parallel games: 64
-Target self-play games: 5000
-Directory for saving: selfplay
-
-                cuda backend   TensorRT backend  Nested bottleneck  residual+mixer
-                       (best)          (best)           (best)           (best)
-steps            200K    172K    200K    168K     200K    220K     200K    164K
-samples        51200K  44032K  51200K  43008K   51200K  56320K   51200K  41984K 
-games            250K    215K    250K    210K     250K    275K     250K    205K
-all            4.9080  4.8768  4.8171  4.7905   4.8537  4.8446   4.8872  4.8677
-prob           1.9292  1.9324  1.8882  1.9130   1.8775  1.8617   1.8916  1.9164
-aux prob       0.4362  0.4337  0.4308  0.4301   0.4295  0.4290   0.4317  0.4307
-soft prob      0.5047  0.5044  0.5018  0.5016   0.5012  0.5014   0.5019  0.5021
-soft aux prob  0.0791  0.0790  0.0785  0.0783   0.0784  0.0785   0.0786  0.0784
-optimistic     0.2675  0.2689  0.2592  0.2616   0.2587  0.2544   0.2582  0.2656
-ownership      0.7263  0.7049  0.7208  0.6887   0.7525  0.7665   0.7745  0.7473
-wdl            0.6096  0.6017  0.5845  0.5763   0.5850  0.5828   0.5841  0.5675
-Q value        0.1676  0.1637  0.1593  0.1550   0.1594  0.1589   0.1584  0.1544
-scores         0.1777  0.1783  0.1858  0.1781   0.2025  0.2028   0.2005  0.1980
-errors         0.0102  0.0097  0.0082  0.0078   0.0090  0.0085   0.0076  0.0075
-time           121.4(h)        54.0(h)          64.2(h) 70.2(h)  60.4(h) 49.6(h)
-~~~
-
-![all loss](./img/trt_cuda_loss.png)
-![wdl loss](./img/trt_cuda_loss_wdl.png)
-![run time](./img/trt_cuda_loss_time.png)
-![all0 loss](./img/all_loss.png)
-![wdl0 loss](./img/wdl_loss.png)
 
 ## Let's ROCK!
 
@@ -134,6 +91,10 @@ Sayuri is a highly efficient self-play learning system for the game of Go that f
 For details on how to run the self-play loop, please refer to this [guide](./bash/README.md).
 
 ![sayuri-vs-kata](./img/sayurivskata-v7.png)
+
+## Acknowledge
+
+TensorRT Backend: The TensorRT backend has now been implemented in this project. Special thanks to [MAOmao000](https://github.com/MAOmao000) for providing a fully functional [TensorRT version](https://github.com/MAOmao000/Sayuri-TensorRT) and verifying that it delivers approximately 1.5x the performance of the original CUDA backend. Much of the TensorRT backend implementation in this project was adapted from that version and integrated to match the coding style of Sayuri.
 
 ## Other Resources
 
