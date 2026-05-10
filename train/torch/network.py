@@ -1477,6 +1477,7 @@ class Network(nn.Module):
                 "bottleneck_channels" : None,
                 "version" : 1,
                 "activation" : self.activation,
+                "renorm_clipping" : self.renorm_clipping,
                 "mode" : self.mode,
                 "collector" : self.layers_collector
             }
