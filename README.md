@@ -30,7 +30,7 @@ You can check these features by setting the following in selfplay-setting.json.
 
 ## Test results for the b3xc96 model
 
-In the renorm testing, starting with version 520K, the "RenormMaxD" value in selfplay-setting.json has been changed from 4 to 5.
+In the renorm test, after step 520K, the value of "RenormMaxD" in selfplay-setting.json was changed from 4 to 5.
 
 ![all loss](./img/muon_onnx_renorm_fixup_loss.png)
 
