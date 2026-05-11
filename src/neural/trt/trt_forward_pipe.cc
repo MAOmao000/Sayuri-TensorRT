@@ -276,7 +276,11 @@ bool TrtForwardPipe::TrtEngine::CreatePlan(trt::InferPtr<nvinfer1::INetworkDefin
                                            trt::Logger& logger) {
     std::string plan;
     if (GetOption<std::string>("mode") == "selfplay") {
-        LOGGING << "Building TensorRT backend engine for ONNX...\n";
+        if (weights_->file_type == "onnx") {
+            LOGGING << "Building TensorRT backend engine for ONNX...\n";
+        } else {
+            LOGGING << "Building TensorRT backend engine...\n";
+        }
         auto planBuffer = trt::InferPtr<nvinfer1::IHostMemory>(
             builder->buildSerializedNetwork(*network, *config));
         if (!planBuffer) {
@@ -446,6 +450,9 @@ void TrtForwardPipe::TrtEngine::SetComputationMode(cuda::CudaHandles* handles) {
 
     if (!handles->fp16) {
         handles->has_tensor_cores = false;
+    }
+    if (weights_->file_type == "onnx") {
+        handles->fp16 = false;
     }
 }
 
