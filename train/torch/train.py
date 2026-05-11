@@ -1,5 +1,3 @@
-import warnings
-warnings.filterwarnings('ignore', message='.*You are using the legacy TorchScript-based ONNX export.*')
 import torch
 torch.set_float32_matmul_precision('high')
 import torch.nn.functional as F
@@ -686,7 +684,7 @@ class TrainingPipe():
         }
 
     def _get_is_muon_suitable(self, group_name):
-        if group_name == "normal":
+        if group_name == "normal" or group_name == "normal_attn":
             return True
         elif group_name in ["normal_gamma", "noreg", "output", "output_noreg", "input", "input_noreg"]:
             return False
@@ -694,7 +692,7 @@ class TrainingPipe():
             assert False
 
     def _get_weight_decay(self, group_name):
-        effective_lr_scale = 1.0 # 8.0
+        effective_lr_scale = 1.0
         is_muon_suitable = self._get_is_muon_suitable(group_name=group_name)
         if self.opt_name == "Muon":
             batch_scaling = math.sqrt(self.batchsize / 256.0)
@@ -711,6 +709,11 @@ class TrainingPipe():
                     return 0.005000 * batch_scaling
                 else:
                     return 0.000001 * batch_scaling
+            elif group_name == "normal_attn":
+                if self.opt_name == "Muon":
+                    return 0.005000 * 0.5 * wd_scaling
+                else:
+                    return 0.000001 * 0.5 * wd_scaling
             elif group_name == "input_noreg" or group_name == "noreg":
                 return 0.00000001 * batch_scaling
             elif group_name == "output_noreg":
@@ -720,7 +723,7 @@ class TrainingPipe():
         elif self.cfg.mode == "renorm" or self.cfg.mode == "norm":
             warmup_scale = self._get_lr_schedule(self.current_steps) / self.lr_schedule[-1][1]
             adaptive_scale = 1.0
-            if (group_name == "input" or group_name == "normal" or group_name == "normal_gamma"):
+            if (group_name == "input" or group_name == "normal" or group_name == "normal_attn" or group_name == "normal_gamma"):
                 if self.opt_name == "Muon":
                     wd_with_lr_scale = math.pow(effective_lr_scale * warmup_scale, 0.70) * adaptive_scale
                 else:
@@ -735,6 +738,8 @@ class TrainingPipe():
                         wd_group_factor = 1.0
                 elif group_name == "normal":
                     wd_group_factor = 1.0
+                elif group_name == "normal_attn":
+                    wd_group_factor = 0.5
                 elif group_name == "normal_gamma":
                     # Batch norm gammas can be regularized a bit less,
                     # doing them just as much empirically seemed to be a bit more unstable
@@ -832,7 +837,7 @@ class TrainingPipe():
 
         if self.opt_name == "Muon":
             for param in self.opt.param_groups:
-                if param["group_name"] == "normal":
+                if param["group_name"] == "normal" or param["group_name"] == "normal_attn":
                     param["lr"] = curr_lr * 2.0
                 elif param["group_name"] == "output" or param["group_name"] == "output_noreg":
                     param["lr"] = curr_lr * 0.5
@@ -888,11 +893,11 @@ class TrainingPipe():
             inputs = [input_feature]
             input_names = ['InputFeature']
             output_names = ['output_prob', 'output_prob_pass', 'output_val', 'output_ownership']
-            dynamic_axes = {}
-            for name in input_names:
-                dynamic_axes[name] = {0: 'batch_size'}
-            for name in output_names:
-                dynamic_axes[name] = {0: 'batch_size'}
+            # For dynamo, we need to provide dynamic_shapes as a dict or tuple
+            # Now that forward has explicit arguments, we can use a dict matching input names
+            dynamic_shapes = {'input_feature': {0: "batch_size"}}
+            dynamic_axes = None # dynamo uses dynamic_shapes
+            # print(f'onnx_model_name: {onnx_model_name}')
             with torch.no_grad():
                 torch.onnx.export(
                     wrapper,
@@ -904,9 +909,9 @@ class TrainingPipe():
                     input_names=input_names,
                     output_names=output_names,
                     dynamic_axes=dynamic_axes,
-                    dynamic_shapes=None,
+                    dynamic_shapes=dynamic_shapes,
                     verbose=False,
-                    dynamo=False,
+                    dynamo=True,
                     report=False
                 )
             # Add metadata to the ONNX model
@@ -1252,7 +1257,7 @@ class TrainingPipe():
                             param["lr"] = curr_lr
                     else:
                         for param in self.opt.param_groups:
-                            if param["group_name"] == "normal":
+                            if param["group_name"] == "normal" or param["group_name"] == "normal_attn":
                                 param["lr"] = curr_lr * 2.0
                             elif param["group_name"] == "output" or param["group_name"] == "output_noreg":
                                 param["lr"] = curr_lr * 0.5
