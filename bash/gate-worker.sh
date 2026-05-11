@@ -35,7 +35,7 @@ function main_loop()
 
         # TODO: We should implement gate engine to pick self-play weights.
         if [ "$srcweights" != "$tgtweights" ]; then
-            cp -p $WEIGHTS_SOURCE/$srcweights $WEIGHTS_DIR
+            cp -p $WEIGHTS_SOURCE/$srcweights* $WEIGHTS_DIR
         fi
 
         if (($EXECUTE_LOOP == 0)); then

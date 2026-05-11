@@ -28,6 +28,13 @@ void Engine::Initialize() {
         network_ = std::make_unique<Network>();
     }
     curr_weights_name_ = SelectWeights();
+    if (curr_weights_name_.size() > 5) {
+        int ext_i = curr_weights_name_.find_last_of(".");
+        std::string extname = curr_weights_name_.substr(ext_i, curr_weights_name_.size() - ext_i);
+        if (extname == ".data") {
+            curr_weights_name_.erase(curr_weights_name_.size() -5, 5);
+        }
+    }
     SetOption("weights_file", curr_weights_name_);
     network_->Initialize(curr_weights_name_);
 
@@ -82,7 +89,6 @@ std::string Engine::SelectWeights() const {
                   });
         select_weights = ConcatPath(weights_dir, weights_list[0]);
     }
-
     return select_weights;
 }
 
