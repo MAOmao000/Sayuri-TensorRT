@@ -217,9 +217,6 @@ void DNNLoader::FromFile(std::shared_ptr<DNNWeights> weights, std::string filena
             } else if (batchnorm_mode == "fixup") {
                 weights_->use_batch_norm = false;
                 weights_->batchnorm_mode = "fixup";
-            } else if (batchnorm_mode == "fixscale") {
-                weights_->use_batch_norm = false;
-                weights_->batchnorm_mode = "fixscale";
             } else {
                 throw std::runtime_error{"unknown batchnorm mode"};
             }
@@ -534,9 +531,17 @@ void DNNLoader::DumpInfo(std::vector<std::string> *vec_stack) const {
             out << '\n';
         }
     } else {
-        for (size_t i = 0; i < vec_stack->size(); ++i) {
+        for (size_t i = 0, serial_number = 0; i < vec_stack->size(); ++i) {
             auto stack_name = (*vec_stack)[i];
-            out << "  block " << i+1 << ": " << stack_name << '\n';
+            if (stack_name == "ResidualBlock" ||
+                stack_name == "BottleneckBlock" ||
+                stack_name == "NestedBottleneckBlock" ||
+                stack_name == "MixerBlock" ||
+                stack_name == "TransformerBlock"
+            ) {
+                serial_number++;
+                out << "  block " << serial_number << ": " << stack_name << '\n';
+            }
         }
     }
 
