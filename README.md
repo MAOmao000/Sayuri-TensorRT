@@ -7,6 +7,7 @@ Also added the following features:
 * Muon+AdamW optimizer
 * torch.compile
 * Fixup Initialize
+* Transformer model for demonstration purposes
 
 ## Requirements
 
@@ -19,11 +20,37 @@ Additional features require the following installation:
 
 You can check these features by setting the following in selfplay-setting.json.
 ```
-   "Train" : {
+    "NeuralNetwork" : {
+        "BatchNormMode" : "fixup", ... "renorm"(default), "norm" to use the conventional function
+        "IsPreAct" : true, ... Set to true if using a Transformer model, otherwise set to false.
+        "Stack" : [
+            { "Block": "TransformerBlock",
+              "Args": {
+                  "use_rope" : true,
+                  "rope_theta" : 100.0,
+                  "learnable_rope" : false,
+                  "attention_qk_norm" : false,
+                  "use_gab" : false,
+                  "gab_d1" : 16,
+                  "gab_d2" : 16,
+                  "gab_num_templates" : 32,
+                  "use_tab" : true,
+                  "tab_num_templates" : 32,
+                  "transformer_heads" : 3,
+                  "transformer_kv_heads" : 3,
+                  "attention_query_head_dim" : 32,
+                  "attention_value_head_dim" : 32,
+                  "transformer_ffn_channels" : 256,
+                  "use_swiglu" : true,
+                  "transformer_ffn_depthwise_conv" : false
+              }
+            },
+            ...
+    "Train" : {
         "Optimizer" : "Muon", ... "Adam", "SGD" (default) to use the conventional function
         "LearningRateSchedule" : [
-            [0,     3.2e-4] ... For Muon, operation has been confirmed with 3.2e-4 (default:0.2)
-        "BatchNormMode" : "fixup", ... "renorm"(default), "norm" to use the conventional function
+            [0,     3.2e-4 or 3.2e-5] ... For Muon, operation has been confirmed with 3.2e-4 (default:0.2)
+                                          When using the Transformer model, used 3.2e-5.
         "ExportONNX" : true, ... New key(default:false)
         "UseCompile" : true, ... New key(default:false)
 ```
@@ -33,6 +60,11 @@ You can check these features by setting the following in selfplay-setting.json.
 In the renorm test, after step 520K, the value of "RenormMaxD" in selfplay-setting.json was changed from 4 to 5.
 
 ![all loss](./img/muon_onnx_renorm_fixup_loss.png)
+
+## About the Transformer model
+
+The Transformer model currently implemented is merely a prototype for demonstration purposes.
+Various improvements are needed to make it more powerful.
 
 <div id="sayuri-art" align="center">
     </br>
