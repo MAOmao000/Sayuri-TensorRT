@@ -711,9 +711,9 @@ class TrainingPipe():
                     return 0.000001 * batch_scaling
             elif group_name == "normal_attn":
                 if self.opt_name == "Muon":
-                    return 0.005000 * 0.5 * wd_scaling
+                    return 0.005000 * 0.5 * batch_scaling
                 else:
-                    return 0.000001 * 0.5 * wd_scaling
+                    return 0.000001 * 0.5 * batch_scaling
             elif group_name == "input_noreg" or group_name == "noreg":
                 return 0.00000001 * batch_scaling
             elif group_name == "output_noreg":
@@ -897,7 +897,6 @@ class TrainingPipe():
             # Now that forward has explicit arguments, we can use a dict matching input names
             dynamic_shapes = {'input_feature': {0: "batch_size"}}
             dynamic_axes = None # dynamo uses dynamic_shapes
-            # print(f'onnx_model_name: {onnx_model_name}')
             with torch.no_grad():
                 torch.onnx.export(
                     wrapper,
