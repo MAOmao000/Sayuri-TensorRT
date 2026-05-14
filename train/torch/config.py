@@ -55,7 +55,6 @@ class Config:
         self.renorm_max_r = train.get("RenormMaxR", 1)
         self.renorm_max_d = train.get("RenormMaxD", 0)
         self.policy_surprise_factor = train.get("PolicySurpriseFactor", 0.0)
-        self.mode = train.get("BatchNormMode", "renorm")
         self.export_onnx = train.get("ExportONNX", False)
         self.use_compile = train.get("UseCompile", False)
 
@@ -81,6 +80,8 @@ class Config:
         self.se_ratio = network.get("SeRatio", 2)
         self.stack = network.get("Stack", [])
         self.netname_postfix = network.get("NamePostfix", "")
+        self.mode = network.get("BatchNormMode", "renorm")
+        self.is_pre_act = network.get("IsPreAct", False)
 
         assert self.input_channels != None, ""
         assert self.residual_channels != None, ""
