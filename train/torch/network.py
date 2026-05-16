@@ -626,11 +626,14 @@ class ConvBlock(nn.Module):
                        placement,
                        renorm_clipping,
                        activation,
+                       is_pre_act=False,
                        collector=None):
         super(ConvBlock, self).__init__()
 
         self.in_channels = in_channels
         self.out_channels = out_channels
+        self.is_pre_act = is_pre_act
+        self.activation = activation
         self.kernel_size = kernel_size
         self.conv = nn.Conv2d(
             in_channels,
@@ -640,24 +643,44 @@ class ConvBlock(nn.Module):
             bias=False,
         )
 
-        if mode == "fixup" and placement == "in_block":
+        if is_pre_act:
+            self.pre_bias = BatchNorm2d(
+                num_features=in_channels,
+                use_gamma=use_gamma,
+                mode=mode,
+                renorm_clipping=renorm_clipping,
+                momentum_basic_batchsize=256
+            )
+            self.bn = CustomIdentity()
+            self.pre_act = activation_func(self.activation, inplace=True)
+            self.post_act = nn.Identity()
+        elif mode == "fixup" and placement == "in_block":
             self.pre_bias = BatchNorm2d(
                 num_features=in_channels,
                 use_gamma=False,
                 mode=mode
             )
+            self.bn = BatchNorm2d(
+                num_features=out_channels,
+                use_gamma=use_gamma,
+                mode=mode,
+                renorm_clipping=renorm_clipping,
+                momentum_basic_batchsize=256
+            )
+            self.pre_act = nn.Identity()
+            self.post_act = activation_func(self.activation, inplace=True)
         else:
             self.pre_bias = CustomIdentity()
-
-        self.bn = BatchNorm2d(
-            num_features=out_channels,
-            use_gamma=use_gamma,
-            mode=mode,
-            renorm_clipping=renorm_clipping,
-            momentum_basic_batchsize=256
-        )
-        self.activation = activation
-        self.act = activation_func(self.activation, inplace=True)
+            self.bn = BatchNorm2d(
+                num_features=out_channels,
+                use_gamma=use_gamma,
+                mode=mode,
+                renorm_clipping=renorm_clipping,
+                momentum_basic_batchsize=256
+            )
+            self.pre_act = nn.Identity()
+            self.post_act = activation_func(self.activation, inplace=True)
+        # self.act = activation_func(self.activation, inplace=True)
         self._try_collect(collector)
 
     def _try_collect(self, collector):
@@ -678,7 +701,8 @@ class ConvBlock(nn.Module):
             reg_dict["input"].append(self.conv.weight)
         else:
             reg_dict["normal"].append(self.conv.weight)
-        self.bn.add_reg_dict(reg_dict, placement)
+        if not isinstance(self.bn, CustomIdentity):
+            self.bn.add_reg_dict(reg_dict, placement)
         if not isinstance(self.pre_bias, CustomIdentity):
             self.pre_bias.add_reg_dict(reg_dict, placement)
 
@@ -703,9 +727,10 @@ class ConvBlock(nn.Module):
 
     def forward(self, x, mask):
         x = self.pre_bias(x, mask)
+        x = self.pre_act(x)
         x = self.conv(x) * mask
         x = self.bn(x, mask)
-        x = self.act(x)
+        x = self.post_act(x)
         return x
 
 class DepthwiseConvBlock(nn.Module):
@@ -833,6 +858,7 @@ class ResidualBlock(nn.Module):
         self.renorm_clipping = kwargs.get("renorm_clipping", {"rmax" : 1, "dmax" : 0})
         self.se_size = kwargs.get("se_size", None)
         self.mode = kwargs.get("mode", "renorm")
+        self.is_pre_act = kwargs.get("is_pre_act", False)
         collector = kwargs.get("collector", None)
 
         self.channels = channels
@@ -843,6 +869,7 @@ class ResidualBlock(nn.Module):
             kernel_size=3,
             use_gamma=False,
             mode=self.mode,
+            is_pre_act=self.is_pre_act,
             placement="in_block",
             renorm_clipping=self.renorm_clipping,
             activation=self.activation,
@@ -854,9 +881,10 @@ class ResidualBlock(nn.Module):
             kernel_size=3,
             use_gamma=True,
             mode=self.mode,
+            is_pre_act=self.is_pre_act,
             placement="in_block",
             renorm_clipping=self.renorm_clipping,
-            activation="identity",
+            activation=self.activation if self.is_pre_act else "identity",
             collector=collector
         )
         if self.use_se:
@@ -867,7 +895,11 @@ class ResidualBlock(nn.Module):
                 activation=self.activation,
                 collector=collector
             )
-        self.act = activation_func(self.activation, inplace=True)
+        # self.act = activation_func(self.activation, inplace=True)
+        if self.is_pre_act:
+            self.act = nn.Identity()
+        else:
+            self.act = activation_func(self.activation, inplace=True)
 
     def initialize(self, fixup_scale, se_fixup_scale, xavier_init):
         if xavier_init:
@@ -2046,6 +2078,7 @@ class Network(nn.Module):
                 "activation" : self.activation,
                 "renorm_clipping" : self.renorm_clipping,
                 "mode" : self.mode,
+                "is_pre_act" : self.is_pre_act,
                 "pos_len" : self.xsize,
                 "collector" : self.layers_collector
             }
