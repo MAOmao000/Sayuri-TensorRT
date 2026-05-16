@@ -1,4 +1,10 @@
 
+<div id="sayuri-art" align="center">
+    </br>
+    <img src="./img/sayuri-art.PNG" alt="Sayuri Art" width="768"/>
+    <h3>Sayuri</h3>
+</div>
+
 # TensorRT backend for ONNX
 
 This is a prototype of the TensorRT backend for ONNX (onnx-tensorrt) designed for Sayuri.
@@ -73,12 +79,6 @@ The configuration definition used is located in the bash/configs/sample folder.
 The log files are located in the train/log folder.
 
 ![all loss](./img/muon_onnx_hybrid_loss.png)
-
-<div id="sayuri-art" align="center">
-    </br>
-    <img src="./img/sayuri-art.PNG" alt="Sayuri Art" width="768"/>
-    <h3>Sayuri</h3>
-</div>
 
 ## Let's ROCK!
 
