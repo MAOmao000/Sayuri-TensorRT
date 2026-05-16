@@ -66,6 +66,14 @@ In the renorm test, after step 520K, the value of "RenormMaxD" in selfplay-setti
 The Transformer model currently implemented is merely a prototype for demonstration purposes.
 Various improvements are needed to make it more powerful.
 
+## Additional test (2026/05/16)
+
+These are the test results for a hybrid configuration model (ResidualBlock -> ResidualBlock -> TransformerBlock).
+The configuration definition used is located in the bash/configs/sample folder.
+The log files are located in the train/log folder.
+
+![all loss](./img/muon_onnx_hybrid_loss.png)
+
 <div id="sayuri-art" align="center">
     </br>
     <img src="./img/sayuri-art.PNG" alt="Sayuri Art" width="768"/>
