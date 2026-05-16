@@ -1,0 +1,76 @@
+{
+    "NeuralNetwork" : {
+        "NNType" : "Residual",
+        "MaxBoardSize" : 9,
+        "ResidualChannels" : 96,
+        "PolicyHeadChannels" : 24,
+        "ValueHeadChannels" : 24,
+        "SeRatio" : 4,
+        "PolicyHeadType" : "RepLK",
+        "Activation" : "mish",
+        "NamePostfix" : "",
+        "BatchNormMode" : "fixup",
+        "IsPreAct" : true,
+
+        "Stack" : [
+            "ResidualBlock",
+            "ResidualBlock",
+            { "Block": "TransformerBlock",
+              "Args": {
+                  "use_rope" : true,
+                  "rope_theta" : 100.0,
+                  "learnable_rope" : false,
+                  "attention_qk_norm" : false,
+                  "use_gab" : false,
+                  "gab_d1" : 16,
+                  "gab_d2" : 16,
+                  "gab_num_templates" : 32,
+                  "use_tab" : false,
+                  "tab_num_templates" : 32,
+                  "transformer_heads" : 3,
+                  "transformer_kv_heads" : 3,
+                  "attention_query_head_dim" : 32,
+                  "attention_value_head_dim" : 32,
+                  "transformer_ffn_channels" : 96,
+                  "use_swiglu" : true,
+                  "transformer_ffn_depthwise_conv" : false
+              }
+            } 
+        ]
+    },
+
+    "Train" : {
+        "UseGPU" : null,
+        "UseFp16" : false,
+        "Optimizer" : "Muon",
+        "StepsPerEpoch" : 4000,
+        "ValidationSteps" : 100,
+        "VerboseSteps" : 1000,
+        "MaxStepsPerRunning" : 4000,
+        "Workers" : 12,
+        "BatchSize" : 256,
+        "BufferSize" : 64000,
+        "DownSampleRate" : 16,
+        "MacroFactor" : 1,
+        "WeightDecay" : 1e-4,
+        "NumberChunks" : 500000,
+        "ChunksIncreasingC" : 5000,
+        "SoftLossWeight" : 0.1,
+        "SwaMaxCount" : 16,
+        "SwaSteps" : 500,
+        "WarmUpSteps" : 20000,
+        "PolicySurpriseFactor" : 0.5,
+        "RenormMaxR" : 3,
+        "RenormMaxD" : 5,
+
+        "LearningRateSchedule" : [
+            [0,     3.2e-5]
+         ],
+
+        "ExportONNX" : true,
+        "UseCompile" : true,
+        "TrainDirectory" : "selfplay/tdata",
+        "ValidationDirectory" : null,
+        "StorePath" : "workspace"
+    }
+}
