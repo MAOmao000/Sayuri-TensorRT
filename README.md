@@ -29,26 +29,35 @@ You can check these features by setting the following in selfplay-setting.json.
     "NeuralNetwork" : {
         "BatchNormMode" : "fixup", ... "renorm"(default), "norm" to use the conventional function
         "IsPreAct" : true, ... Set to true if using a Transformer model, otherwise set to false.
+        "UseRoPE" : true,
+        "RoPETheta" : 100.0,
+        "LearnableRoPE" : false,
+        "AttentionQKNorm" : false,
+        "UseGAB" : false,
+        "GABD1" : 16,
+        "GABD2" : 16,
+        "UseTAB" : false,
+        "InlineRegisters" : false,
+        "AttentionNumRWRegisters" : 16,
+        "GABNumTemplates" : 32,
+        "GABNumFourierFeatures" : 12,
+        "GABMLPHidden" : 96,
+        "TABCZ" : 32,
+        "TABNumTemplates" : 32,
+        "TABNumFreqs" : 8,
+        "TABNumBlocks" : 3,
+        "TABDilation" : 3,
+        "TABUseFrequencyMixing" : false,
+        "UseSwiGLU" : true,
+        "TransformerFFNDepthwiseConv" : false,
         "Stack" : [
             { "Block": "TransformerBlock",
               "Args": {
-                  "use_rope" : true,
-                  "rope_theta" : 100.0,
-                  "learnable_rope" : false,
-                  "attention_qk_norm" : false,
-                  "use_gab" : false,
-                  "gab_d1" : 16,
-                  "gab_d2" : 16,
-                  "gab_num_templates" : 32,
-                  "use_tab" : true,
-                  "tab_num_templates" : 32,
-                  "transformer_heads" : 3,
-                  "transformer_kv_heads" : 3,
-                  "attention_query_head_dim" : 32,
-                  "attention_value_head_dim" : 32,
-                  "transformer_ffn_channels" : 256,
-                  "use_swiglu" : true,
-                  "transformer_ffn_depthwise_conv" : false
+                  "TransformerHeads" : 3,
+                  "TransformerKVHheads" : 3,
+                  "AttentionQueryHeadDim" : 32,
+                  "AttentionValueHeadDim" : 32,
+                  "TransformerFFNChannels" : 256,
               }
             },
             ...
@@ -79,6 +88,18 @@ The configuration definition used is located in the bash/configs/sample folder.
 The log files are located in the train/log folder.
 
 ![all loss](./img/muon_onnx_hybrid_loss.png)
+
+## Additional test (2026/05/19)
+
+These are the test results for a hybrid configuration model (ResidualBlock -> ResidualBlock -> TransformerBlock).
+"UseRoPE" : true
+"LearnableRoPE" : true
+"AttentionQKNorm" : true
+"InlineRegisters" : true
+The configuration definition used is located in the bash/configs/sample folder.
+The log files are located in the train/log folder.
+
+![all loss](./img/muon_onnx_hybrid_learnable_RoPE_loss.png)
 
 ## Let's ROCK!
 
