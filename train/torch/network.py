@@ -4,6 +4,8 @@ import torch.nn.functional as F
 from torch.amp import autocast
 import packaging
 import packaging.version
+from dataclasses import dataclass
+from typing import Any, List, Dict, Optional, Set
 import numpy as np
 import math
 import struct
@@ -895,7 +897,7 @@ class ResidualBlock(nn.Module):
                 activation=self.activation,
                 collector=collector
             )
-        # self.act = activation_func(self.activation, inplace=True)
+
         if self.is_pre_act:
             self.act = nn.Identity()
         else:
@@ -1308,9 +1310,6 @@ class MixerBlock(nn.Module):
             out = self.act(out)
         return out
 
-GAB_TEMPLATES = "gab_templates"
-TAB_KQ = "tab_kq"
-
 # Simplified functional replacement for better ONNX export
 class CustomRMSNorm(nn.Module):
     def __init__(self, dim, eps=1e-6):
@@ -1455,8 +1454,8 @@ def apply_learnable_rotary_emb(xq, xk, cos_q, sin_q, cos_k, sin_k):
     """Apply learnable rotary position embeddings to Q and K tensors.
     xq: (Batch, Seq, num_heads, Dim)
     xk: (Batch, Seq, num_kv_heads, Dim)
-    cos_q, sin_q: (Seq, num_heads, Dim/2) - per-head, per-pair
-    cos_k, sin_k: (Seq, num_kv_heads, Dim/2) - per-kv-head, per-pair
+    cos_q, sin_q: (Seq, num_heads, Dim/2) or (Batch, Seq, num_heads, Dim/2)
+    cos_k, sin_k: (Seq, num_kv_heads, Dim/2) or (Batch, Seq, num_kv_heads, Dim/2)
     """
     def _rotate(x, cos, sin):
         B, S, H, D = x.shape
@@ -1470,6 +1469,569 @@ def apply_learnable_rotary_emb(xq, xk, cos_q, sin_q, cos_k, sin_k):
         return out.reshape(B, S, H, D).type_as(x)
 
     return _rotate(xq, cos_q, sin_q), _rotate(xk, cos_k, sin_k)
+
+def compute_gab_fourier_features(dr, dc, freqs):
+    """Compute Fourier features for relative (dr, dc) offsets.
+    dr: (...) float tensor of row offsets
+    dc: (...) float tensor of col offsets
+    freqs: (num_freqs,) tensor of learnable frequencies
+    Returns: (..., 8*num_freqs)
+    """
+    features = []
+    dr_plus_dc = dr + dc
+    dr_minus_dc = dr - dc
+    for f in freqs:
+        features.append(torch.sin(f * dr).unsqueeze(-1))
+        features.append(torch.cos(f * dr).unsqueeze(-1))
+        features.append(torch.sin(f * dc).unsqueeze(-1))
+        features.append(torch.cos(f * dc).unsqueeze(-1))
+        features.append(torch.sin(f * dr_plus_dc).unsqueeze(-1))
+        features.append(torch.cos(f * dr_plus_dc).unsqueeze(-1))
+        features.append(torch.sin(f * dr_minus_dc).unsqueeze(-1))
+        features.append(torch.cos(f * dr_minus_dc).unsqueeze(-1))
+    return torch.cat(features, dim=-1)
+
+GAB_TEMPLATES = "gab_templates"
+TAB_KQ = "tab_kq"
+REGISTER_STATE = "register_state"
+
+@dataclass
+class RegisterState:
+    """Precomputed board geometry for positional registers, shared across all blocks.
+    Derived from the mask once per forward pass.
+    """
+    center_x: torch.Tensor  # (B, 1) center column of on-board positions
+    center_y: torch.Tensor  # (B, 1) center row of on-board positions
+    radius_x: torch.Tensor  # (B, 1) half-width of on-board positions
+    radius_y: torch.Tensor  # (B, 1) half-height of on-board positions
+    # Precomputed s_x, s_y for all sequence positions (board + inline registers).
+    # (B, S+k) each, or None when not using inline registers.
+    all_pos_x: Optional[torch.Tensor] = None
+    all_pos_y: Optional[torch.Tensor] = None
+
+@dataclass
+class GABTemplateData:
+    """Precomputed GAB template values, shared across all blocks in a forward pass.
+    By convention, templates are pre-scaled by 1/sqrt of the appropriate quantity
+    so that a weighted combination does not need further scaling.
+    """
+    templates: torch.Tensor  # (S, S, T) template values for all position pairs
+
+@dataclass
+class TABKeyQueryData:
+    """Precomputed factored TAB keys and queries, shared across all blocks in a forward pass.
+    Instead of materializing (N, T, S, S) templates, stores the factored keys/queries
+    so they can be concatenated onto the main attention K/Q.
+    By convention, keys and/or queries are pre-scaled by 1/sqrt of the appropriate quantity
+    so that a weighted combination does not need further scaling.
+    """
+    keys: torch.Tensor    # (N, 2*F, 1, S) - single complex key shared across templates
+    queries: torch.Tensor # (N, 2*F, T, S) - complex query vectors per template
+
+class GABTemplateMLP(torch.nn.Module):
+    """Shared module that maps relative (dr, dc) offsets to T template values.
+    Computed once and shared across all GAB-enabled transformer blocks.
+    """
+    def __init__(self, gab_num_templates, gab_num_fourier_features, gab_mlp_hidden, pos_len, activation):
+        # Let F = gab_num_fourier_features, H = gab_mlp_hidden, T = gab_num_templates
+        # S = pos_len * pos_len (max spatial positions)
+        super().__init__()
+        self.gab_num_templates = gab_num_templates
+        self.activation = activation
+        self.act = activation_func(activation)
+        assert gab_num_fourier_features >= 2, "gab_num_fourier_features must be >= 2"
+        fourier_input_dim = 8 * gab_num_fourier_features  # 8*F
+
+        # Geometric initialization from 1 rad/square to 1/50 rad/square
+        init_freqs = torch.exp(torch.linspace(math.log(1.0), math.log(1.0 / 50.0), gab_num_fourier_features))
+        self.gab_freqs = torch.nn.Parameter(init_freqs)  # (F,)
+
+        self.linear1 = torch.nn.Linear(fourier_input_dim, gab_mlp_hidden)  # (8*F) -> (H)
+        self.linear2 = torch.nn.Linear(gab_mlp_hidden, gab_num_templates)  # (H) -> (T)
+
+        S = pos_len * pos_len
+        s_idx = torch.arange(S)
+        s_r, s_c = s_idx // pos_len, s_idx % pos_len
+        offset_dr = (s_r.unsqueeze(1) - s_r.unsqueeze(0)).float()  # (S, S)
+        offset_dc = (s_c.unsqueeze(1) - s_c.unsqueeze(0)).float()  # (S, S)
+        self.register_buffer("offset_dr", offset_dr, persistent=False)
+        self.register_buffer("offset_dc", offset_dc, persistent=False)
+
+    def forward(self, seq_len):
+        """Compute templates for all position pairs up to seq_len.
+        Returns: (seq_len, seq_len, T)
+        """
+        dr = self.offset_dr[:seq_len, :seq_len]              # (S, S)
+        dc = self.offset_dc[:seq_len, :seq_len]              # (S, S)
+        fourier_feats = compute_gab_fourier_features(dr, dc, self.gab_freqs)  # (S, S, 8*F)
+        x = self.act(self.linear1(fourier_feats))            # (S, S, H)
+        x = self.linear2(x)                                  # (S, S, T)
+        scale = 1.0 / math.sqrt(self.gab_num_templates)
+        return x * scale
+
+    def initialize(self):
+        init_weights(self.linear1.weight, self.activation, scale=1.0)
+        init_weights(self.linear2.weight, "identity", scale=1.0)
+
+    def add_reg_dict(self, reg_dict):
+        reg_dict["noreg"].append(self.gab_freqs)
+        reg_dict["gab_mlp"].append(self.linear1.weight)
+        reg_dict["noreg"].append(self.linear1.bias)
+        reg_dict["gab_mlp"].append(self.linear2.weight)
+        reg_dict["noreg"].append(self.linear2.bias)
+
+def tab_rotate(z, cos_a, sin_a):
+    """Apply complex rotation to z.
+    z: (*, 2, c_z, H, W) where dim -4 is [real, imag]
+    cos_a, sin_a: broadcastable to (*, 1, c_z, H, W)
+    Returns: same shape as z
+    """
+    r = z[:, 0:1, :, :, :]  # (*, 1, c_z, H, W)
+    i = z[:, 1:2, :, :, :]
+    new_r = r * cos_a - i * sin_a
+    new_i = r * sin_a + i * cos_a
+    return torch.cat([new_r, new_i], dim=-4)
+
+class ComplexConv2d(torch.nn.Module):
+    """A 2D convolution that enforces complex multiplication structure.
+
+    Stores real_kernel and imag_kernel of shape (c_out, c_in, K, K).
+    Builds the (2*c_out, 2*c_in, K, K) block-structured kernel:
+        [[real_kernel, -imag_kernel],
+         [imag_kernel,  real_kernel]]
+    and applies F.conv2d.
+
+    Input: (*, 2*c_in, H, W), Output: (*, 2*c_out, H, W).
+    """
+    def __init__(self, c_in, c_out=None, kernel_size=1, dilation=1):
+        super().__init__()
+        if c_out is None:
+            c_out = c_in
+        self.c_in = c_in
+        self.c_out = c_out
+        self.kernel_size = kernel_size
+        self.dilation = dilation
+        self.real_kernel = torch.nn.Parameter(torch.empty(c_out, c_in, kernel_size, kernel_size))
+        self.imag_kernel = torch.nn.Parameter(torch.empty(c_out, c_in, kernel_size, kernel_size))
+
+    def forward(self, x):
+        # We encode c_in x c_in complex convolution as a 2*c_in x 2*c_in real convolution
+        # where the kernel is constrained to have the appropriate structure.
+        top = torch.cat([self.real_kernel, -self.imag_kernel], dim=1)  # (c_out, 2*c_in, K, K)
+        bot = torch.cat([self.imag_kernel, self.real_kernel], dim=1)   # (c_out, 2*c_in, K, K)
+        kernel = torch.cat([top, bot], dim=0)  # (2*c_out, 2*c_in, K, K)
+        padding = self.dilation * (self.kernel_size // 2)
+        return torch.nn.functional.conv2d(x, kernel, padding=padding, dilation=self.dilation)
+
+    def initialize(self, activation, scale=1.0):
+        init_weights(self.real_kernel, activation, scale=scale / math.sqrt(2.0))
+        init_weights(self.imag_kernel, activation, scale=scale / math.sqrt(2.0))
+
+class TABEquivariantBlock(torch.nn.Module):
+    """One equivariant residual block for TAB.
+
+    Contains two complex convolutions (first with dilation, second without)
+    with activations and RoPE-style rotations for equivariance.
+    """
+    def __init__(self, c_z, activation, dilation):
+        super().__init__()
+        self.act1 = activation_func(activation)
+        self.conv1 = ComplexConv2d(c_z, kernel_size=3, dilation=dilation)
+        self.act2 = activation_func(activation)
+        self.conv2 = ComplexConv2d(c_z, kernel_size=3, dilation=1)
+        self.c_z = c_z
+
+    def forward(self, z, cos_a, sin_a, block_idx):
+        """
+        z: (NF, 2, c_z, H, W)
+        cos_a, sin_a: (NF, 1, 1, H, W)
+        block_idx: int, for variance normalization
+        """
+        zskip = z
+        # Normalize - variance after block_idx prior blocks is proportional to block_idx + 1
+        # (if we model the input as variance 1 and each block as contributing variance 1)
+        z = z * (1.0 / math.sqrt(block_idx + 1))
+        z = self.act1(z)
+        z = tab_rotate(z, cos_a, sin_a)
+        z = z.reshape(z.shape[0], 2 * self.c_z, z.shape[3], z.shape[4])
+        z = self.conv1(z)
+        z = z.reshape(z.shape[0], 2, self.c_z, z.shape[2], z.shape[3])
+        z = tab_rotate(z, cos_a, -sin_a)
+        z = self.act2(z)
+        z = tab_rotate(z, cos_a, sin_a)
+        z = z.reshape(z.shape[0], 2 * self.c_z, z.shape[3], z.shape[4])
+        z = self.conv2(z)
+        z = z.reshape(z.shape[0], 2, self.c_z, z.shape[2], z.shape[3])
+        z = tab_rotate(z, cos_a, -sin_a)
+        z = z + zskip
+        return z
+
+    def initialize(self, activation):
+        self.conv1.initialize(activation, scale=1.0)
+        self.conv2.initialize(activation, scale=1.0)
+
+class TABModule(torch.nn.Module):
+    """Shared module that generates factored input-dependent attention bias.
+
+    Uses a stack of rotationally-equivariant complex convolutional blocks
+    with learnable 2D RoPE-style frequencies. Produces factored keys and queries
+    via complex key-query projections.
+
+    Uses a single shared key projection and T query projections,
+    returning factored (keys, queries) that are concatenated onto
+    the main attention K/Q in each transformer block.
+
+    Computed once and shared across all transformer blocks.
+    """
+    def __init__(
+        self,
+        trunk_channels,
+        tab_c_z,
+        tab_num_templates,
+        tab_num_freqs,
+        tab_num_blocks,
+        tab_dilation,
+        activation,
+        pos_len
+    ):
+        super().__init__()
+        self.tab_c_z = tab_c_z
+        self.tab_num_freqs = tab_num_freqs
+        self.tab_num_templates = tab_num_templates
+        self.tab_num_blocks = tab_num_blocks
+        self.activation = activation
+
+        # 1x1 conv to project trunk channels -> 2*F*c_z (interpreted as F*c_z complex values)
+        self.input_proj = torch.nn.Conv2d(trunk_channels, 2 * tab_num_freqs * tab_c_z, kernel_size=1, bias=False)
+
+        # Learnable 2D RoPE frequencies: (F, 2) for (omega_X, omega_Y)
+        # Geometric initialization from 1 rad/square to 1/50 rad/square
+        log_lo = math.log(1.0 / 50.0)
+        log_hi = math.log(1.0)
+        init_freqs = torch.exp(torch.empty(tab_num_freqs, 2).uniform_(log_lo, log_hi))
+        init_freqs = init_freqs * (torch.randint(0, 2, (tab_num_freqs, 2)) * 2 - 1).float()
+        self.rope_freqs = torch.nn.Parameter(init_freqs)
+
+        self.blocks = torch.nn.ModuleList()
+        for _ in range(tab_num_blocks):
+            self.blocks.append(TABEquivariantBlock(tab_c_z, activation, tab_dilation))
+
+        self.final_act = activation_func(activation)
+        self.key_proj = ComplexConv2d(tab_c_z, 1, kernel_size=1)
+        self.query_proj = ComplexConv2d(tab_c_z, tab_num_templates, kernel_size=1)
+
+    def forward(self, x, mask):
+        """
+        x: (N, C, H, W) trunk output
+        mask: (N, 1, H, W) or None
+        Returns: (keys, queries) with keys (N, 2*F, 1, S) and queries (N, 2*F, T, S), pre-scaled
+        """
+        N, C, H, W = x.shape
+        S = H * W
+        F = self.tab_num_freqs
+        T = self.tab_num_templates
+        c_z = self.tab_c_z
+
+        z = self.input_proj(x)  # (N, 2*F*c_z, H, W)
+        z = z.view(N, F, 2, c_z, H, W)
+
+        # Precompute angles from learnable frequencies and grid coordinates
+        gy = torch.arange(H, device=x.device, dtype=x.dtype)
+        gx = torch.arange(W, device=x.device, dtype=x.dtype)
+        grid_y, grid_x = torch.meshgrid(gy, gx, indexing='ij')  # (H, W)
+        # angles[f, y, x] = omega_f_X * x + omega_f_Y * y
+        angles = self.rope_freqs[:, 0:1].unsqueeze(-1) * grid_x.unsqueeze(0) + \
+                 self.rope_freqs[:, 1:2].unsqueeze(-1) * grid_y.unsqueeze(0)  # (F, H, W)
+        cos_a = torch.cos(angles).view(1, F, 1, 1, H, W)  # (1, F, 1, 1, H, W)
+        sin_a = torch.sin(angles).view(1, F, 1, 1, H, W)
+
+        # Apply mask to zero off-board positions
+        if mask is not None:
+            z = z * mask.view(N, 1, 1, 1, H, W)
+
+        # Fold N*F into batch dimension for batched processing
+        z = z.reshape(N * F, 2, c_z, H, W)
+        cos_a_batched = cos_a.expand(N, F, 1, 1, H, W).reshape(N * F, 1, 1, H, W)
+        sin_a_batched = sin_a.expand(N, F, 1, 1, H, W).reshape(N * F, 1, 1, H, W)
+
+        # Equivariant blocks
+        block_idx = 0
+        for block in self.blocks:
+            z = block(z, cos_a_batched, sin_a_batched, block_idx)
+            block_idx += 1
+
+        # Normalize to variance 1 - variance after block_idx prior blocks is proportional to block_idx + 1
+        # (if we model the input as variance 1 and each block as contributing variance 1)
+        z = z * (1.0 / math.sqrt(block_idx + 1))
+
+        # Final projection: activate, rotate into RoPE space, project keys/queries
+        z = self.final_act(z)
+        z = tab_rotate(z, cos_a_batched, sin_a_batched)
+
+        z_flat = z.reshape(N * F, 2 * c_z, H, W)
+
+        keys = self.key_proj(z_flat)      # (N*F, 2, H, W)
+        queries = self.query_proj(z_flat)  # (N*F, 2*T, H, W)
+        # Reshape: (N*F, 2*(T or 1), H, W) -> (N, 2*F, (T or 1), S)
+        keys = keys.view(N, 2 * F, 1, S)
+        queries = queries.view(N, 2 * F, T, S)
+        return keys / math.sqrt(F), queries / math.sqrt(self.tab_num_templates)
+
+    def initialize(self):
+        init_weights(self.input_proj.weight, self.activation, scale=1.0)
+        for block in self.blocks:
+            block.initialize(self.activation)
+        self.key_proj.initialize(self.activation, scale=1.0)
+        self.query_proj.initialize(self.activation, scale=1.0)
+
+    def add_reg_dict(self, reg_dict):
+        reg_dict["tab_module"].append(self.input_proj.weight)
+        reg_dict["noreg"].append(self.rope_freqs)
+        for block in self.blocks:
+            reg_dict["tab_module"].append(block.conv1.real_kernel)
+            reg_dict["tab_module"].append(block.conv1.imag_kernel)
+            reg_dict["tab_module"].append(block.conv2.real_kernel)
+            reg_dict["tab_module"].append(block.conv2.imag_kernel)
+        reg_dict["tab_module"].append(self.key_proj.real_kernel)
+        reg_dict["tab_module"].append(self.key_proj.imag_kernel)
+        reg_dict["tab_module"].append(self.query_proj.real_kernel)
+        reg_dict["tab_module"].append(self.query_proj.imag_kernel)
+
+class FrequencyMixingTABBlock(torch.nn.Module):
+    """One residual block for frequency-mixing TAB.
+
+    Depthwise convs are per-frequency in the rotated frame (equivariant).
+    1x1 convs mix freely across all 2*c_z channels in the unrotated frame (equivariant).
+    """
+    def __init__(self, c_z, activation, dilation):
+        super().__init__()
+        self.c_z = c_z
+        self.act1 = activation_func(activation)
+        self.dw_conv1 = ComplexDepthwiseConv2d(c_z, kernel_size=3, dilation=dilation)
+        self.mix1 = torch.nn.Conv2d(2 * c_z, 2 * c_z, kernel_size=1, bias=False)
+        self.act2 = activation_func(activation)
+        self.dw_conv2 = ComplexDepthwiseConv2d(c_z, kernel_size=3, dilation=1)
+        self.mix2 = torch.nn.Conv2d(2 * c_z, 2 * c_z, kernel_size=1, bias=False)
+
+    def forward(self, z, cos_a, sin_a, block_idx):
+        """
+        z: (N, 2, c_z, H, W) - [real, imag] x c_z frequency channels
+        cos_a, sin_a: (1, 1, c_z, H, W) - per-frequency angles, broadcastable
+        block_idx: int, for variance normalization
+        """
+        N, _, c_z, H, W = z.shape
+        zskip = z
+
+        # Normalize variance (same logic as TABEquivariantBlock)
+        z = z * (1.0 / math.sqrt(block_idx + 1))
+
+        z = self.act1(z)
+
+        # Depthwise conv in rotated frame
+        z = tab_rotate(z, cos_a, sin_a)
+        z_flat = z.reshape(N, 2 * c_z, H, W)
+        z_flat = self.dw_conv1(z_flat)
+        z = z_flat.view(N, 2, c_z, H, W)
+        z = tab_rotate(z, cos_a, -sin_a)
+
+        # 1x1 channel mixing in unrotated frame
+        z_flat = z.reshape(N, 2 * c_z, H, W)
+        z_flat = self.mix1(z_flat)
+        z = z_flat.view(N, 2, c_z, H, W)
+
+        z = self.act2(z)
+
+        # Depthwise conv in rotated frame
+        z = tab_rotate(z, cos_a, sin_a)
+        z_flat = z.reshape(N, 2 * c_z, H, W)
+        z_flat = self.dw_conv2(z_flat)
+        z = z_flat.view(N, 2, c_z, H, W)
+        z = tab_rotate(z, cos_a, -sin_a)
+
+        # 1x1 channel mixing in unrotated frame
+        z_flat = z.reshape(N, 2 * c_z, H, W)
+        z_flat = self.mix2(z_flat)
+        z = z_flat.view(N, 2, c_z, H, W)
+
+        z = z + zskip
+        return z
+
+    def initialize(self, activation):
+        self.dw_conv1.initialize(activation, scale=1.0)
+        self.dw_conv2.initialize(activation, scale=1.0)
+        init_weights(self.mix1.weight, activation, scale=1.0)
+        init_weights(self.mix2.weight, "identity", scale=1.0)
+
+    def add_reg_dict(self, reg_dict):
+        reg_dict["tab_module"].append(self.dw_conv1.real_kernel)
+        reg_dict["tab_module"].append(self.dw_conv1.imag_kernel)
+        reg_dict["tab_module"].append(self.mix1.weight)
+        reg_dict["tab_module"].append(self.dw_conv2.real_kernel)
+        reg_dict["tab_module"].append(self.dw_conv2.imag_kernel)
+        reg_dict["tab_module"].append(self.mix2.weight)
+
+class FrequencyMixingTABModule(torch.nn.Module):
+    """TAB module with frequency mixing.
+
+    Unlike TABModule where each frequency has an independent c_z-channel convnet,
+    here c_z IS the number of frequencies. Frequencies interact via pointwise (1x1)
+    convs in the unrotated frame, spatial mixing happens via depthwise convs in the
+    rotated frame. This preserves translational equivariance.
+    """
+    def __init__(self, trunk_channels, tab_c_z, tab_num_templates, tab_num_blocks, tab_dilation, activation, pos_len):
+        super().__init__()
+        self.tab_c_z = tab_c_z  # = number of frequencies
+        self.tab_num_templates = tab_num_templates
+        self.tab_num_blocks = tab_num_blocks
+        self.activation = activation
+
+        # 1x1 conv to project trunk channels -> 2*c_z (interpreted as c_z complex values)
+        self.input_proj = torch.nn.Conv2d(trunk_channels, 2 * tab_c_z, kernel_size=1, bias=False)
+
+        # Learnable 2D RoPE frequencies: (c_z, 2) for (omega_X, omega_Y)
+        # Geometric initialization from 1 rad/square to 1/50 rad/square
+        log_lo = math.log(1.0 / 50.0)
+        log_hi = math.log(1.0)
+        init_freqs = torch.exp(torch.empty(tab_c_z, 2).uniform_(log_lo, log_hi))
+        init_freqs = init_freqs * (torch.randint(0, 2, (tab_c_z, 2)) * 2 - 1).float()
+        self.rope_freqs = torch.nn.Parameter(init_freqs)
+
+        self.blocks = torch.nn.ModuleList()
+        for _ in range(tab_num_blocks):
+            self.blocks.append(FrequencyMixingTABBlock(tab_c_z, activation, tab_dilation))
+
+        self.final_act = activation_func(activation)
+        self.key_proj = torch.nn.Conv2d(2 * tab_c_z, 2 * tab_c_z, kernel_size=1, bias=False)
+        self.query_proj = torch.nn.Conv2d(2 * tab_c_z, 2 * tab_c_z * tab_num_templates, kernel_size=1, bias=False)
+
+    def forward(self, x, mask):
+        """
+        x: (N, C, H, W) trunk output
+        mask: (N, 1, H, W) or None
+        Returns: (keys, queries) with keys (N, 2*c_z, 1, S) and queries (N, 2*c_z, T, S), pre-scaled
+        """
+        N, C, H, W = x.shape
+        S = H * W
+        c_z = self.tab_c_z
+        T = self.tab_num_templates
+
+        z = self.input_proj(x)
+
+        # Apply mask to zero off-board positions
+        if mask is not None:
+            z = z * mask
+
+        z = z.view(N, 2, c_z, H, W)
+
+        # Precompute angles
+        gy = torch.arange(H, device=x.device, dtype=x.dtype)
+        gx = torch.arange(W, device=x.device, dtype=x.dtype)
+        grid_y, grid_x = torch.meshgrid(gy, gx, indexing='ij')  # (H, W)
+        angles = self.rope_freqs[:, 0:1].unsqueeze(-1) * grid_x.unsqueeze(0) + \
+                 self.rope_freqs[:, 1:2].unsqueeze(-1) * grid_y.unsqueeze(0)  # (c_z, H, W)
+        # Shape (1, 1, c_z, H, W) to broadcast with (N, 2, c_z, H, W) in tab_rotate
+        cos_a = torch.cos(angles).view(1, 1, c_z, H, W)
+        sin_a = torch.sin(angles).view(1, 1, c_z, H, W)
+
+        block_idx = 0
+        for block in self.blocks:
+            z = block(z, cos_a, sin_a, block_idx)
+            block_idx += 1
+
+        # Normalize variance
+        z = z * (1.0 / math.sqrt(block_idx + 1))
+
+        # Final: activate, project keys/queries in unrotated space, then rotate
+        z = self.final_act(z)
+        z_flat = z.reshape(N, 2 * c_z, H, W)
+
+        # cos/sin for final rotation: (1, c_z, 1, 1, H, W) -> tile across N samples
+        # After folding N*c_z into batch, need (N*c_z, 1, 1, H, W)
+        cos_a_out = cos_a.view(1, c_z, 1, 1, H, W).expand(N, c_z, 1, 1, H, W).reshape(N * c_z, 1, 1, H, W)
+        sin_a_out = sin_a.view(1, c_z, 1, 1, H, W).expand(N, c_z, 1, 1, H, W).reshape(N * c_z, 1, 1, H, W)
+
+        # Keys: mix in unrotated space first, reshape per-frequency, then rotate
+        keys = self.key_proj(z_flat)  # (N, 2*c_z, H, W)
+        keys = keys.view(N * c_z, 2, 1, H, W)
+        keys = tab_rotate(keys, cos_a_out, sin_a_out)
+
+        # Queries: mix in unrotated space first, reshape per-frequency, then rotate
+        queries = self.query_proj(z_flat)  # (N, 2*c_z*T, H, W)
+        queries = queries.view(N * c_z, 2, T, H, W)
+        queries = tab_rotate(queries, cos_a_out, sin_a_out)
+
+        keys = keys.reshape(N, 2 * c_z, 1, S)
+        queries = queries.reshape(N, 2 * c_z, T, S)
+        return keys / math.sqrt(c_z), queries / math.sqrt(T)
+
+    def initialize(self):
+        init_weights(self.input_proj.weight, self.activation, scale=1.0)
+        for block in self.blocks:
+            block.initialize(self.activation)
+        init_weights(self.key_proj.weight, self.activation, scale=1.0)
+        init_weights(self.query_proj.weight, self.activation, scale=1.0)
+
+    def add_reg_dict(self, reg_dict):
+        reg_dict["tab_module"].append(self.input_proj.weight)
+        reg_dict["noreg"].append(self.rope_freqs)
+        for block in self.blocks:
+            block.add_reg_dict(reg_dict)
+        reg_dict["tab_module"].append(self.key_proj.weight)
+        reg_dict["tab_module"].append(self.query_proj.weight)
+
+class ComplexDepthwiseConv2d(torch.nn.Module):
+    """Depthwise 2D complex convolution.
+
+    Each of the c channels gets its own K x K complex kernel (no cross-channel mixing).
+    Stores real_kernel and imag_kernel of shape (c, 1, K, K).
+
+    Computes complex multiplication via two separate depthwise convolutions (groups=c):
+        out_real = real_kernel * in_real - imag_kernel * in_imag
+        out_imag = imag_kernel * in_real + real_kernel * in_imag
+
+    Input: (*, 2*c, H, W) where channels are [re_0..re_{c-1}, im_0..im_{c-1}].
+    Output: same layout.
+    """
+    def __init__(self, c, kernel_size=3, dilation=1):
+        super().__init__()
+        self.c = c
+        self.kernel_size = kernel_size
+        self.dilation = dilation
+        self.real_kernel = torch.nn.Parameter(torch.empty(c, 1, kernel_size, kernel_size))
+        self.imag_kernel = torch.nn.Parameter(torch.empty(c, 1, kernel_size, kernel_size))
+
+    def forward(self, x):
+        # x: (*, 2*c, H, W) laid out as [re_0, ..., re_{c-1}, im_0, ..., im_{c-1}]
+        padding = self.dilation * (self.kernel_size // 2)
+        x_re = x[..., :self.c, :, :]   # (*, c, H, W)
+        x_im = x[..., self.c:, :, :]   # (*, c, H, W)
+
+        # Conv 1: convolve [re; im] with [rk; ik], fully depthwise (groups=2c)
+        x_ri = torch.cat([x_re, x_im], dim=-3)              # (*, 2c, H, W)
+        k_ri = torch.cat([self.real_kernel, self.imag_kernel], dim=0)  # (2c, 1, K, K)
+        conv1 = torch.nn.functional.conv2d(x_ri, k_ri, padding=padding, dilation=self.dilation, groups=2 * self.c)
+        # conv1: (*, 2c, H, W) = [rk*re; ik*im]
+
+        # Conv 2: convolve [re; im] with [-ik; rk], fully depthwise (groups=2c)
+        k_neg_ir = torch.cat([-self.imag_kernel, self.real_kernel], dim=0)  # (2c, 1, K, K)
+        conv2 = torch.nn.functional.conv2d(
+            x_ri,
+            k_neg_ir,
+            padding=padding,
+            dilation=self.dilation,
+            groups=2 * self.c
+        )
+        # conv2: (*, 2c, H, W) = [-ik*re; rk*im]
+
+        # out_re = rk*re - ik*im = conv1[:c] - conv1[c:]
+        # out_im = ik*re + rk*im = -conv2[:c] + conv2[c:]
+        out_re = conv1[..., :self.c, :, :] - conv1[..., self.c:, :, :]
+        out_im = conv2[..., self.c:, :, :] - conv2[..., :self.c, :, :]
+        return torch.cat([out_re, out_im], dim=-3)
+
+    def initialize(self, activation, scale=1.0):
+        init_weights(self.real_kernel, activation, scale=scale / math.sqrt(2.0))
+        init_weights(self.imag_kernel, activation, scale=scale / math.sqrt(2.0))
 
 class TransformerBlock(nn.Module):
     """Self-attention half and Feed-forward half of a transformer block with its own residual connection.
@@ -1518,9 +2080,24 @@ class TransformerBlock(nn.Module):
             self.q_norm = CustomRMSNorm(self.q_head_dim, eps=1e-6)
             self.k_norm = CustomRMSNorm(self.q_head_dim, eps=1e-6)
 
+        # Inline registers: registers are part of the trunk tensor (NC1S layout),
+        # share trunk channel dim, and participate in all layers identically to
+        # board tokens. No separate parameters needed.
+        self.inline_registers = kwargs.get("inline_registers", False)
+        self.use_depthwise_conv = kwargs.get("transformer_ffn_depthwise_conv", False)
+        self.num_rw_registers = kwargs.get("attention_num_rw_registers", 0)
+        if self.num_rw_registers > 0 and self.inline_registers:
+            assert not (self.use_gab or self.use_tab), \
+                "Inline register tokens are not currently supported together with GAB/TAB"
+            assert self.use_rope and self.learnable_rope, \
+                "Inline register tokens require learnable RoPE"
+            assert not self.use_depthwise_conv, \
+                "Inline registers are not compatible with depthwise conv in FFN"
+
         if self.use_rope:
             if self.learnable_rope:
-                assert self.q_head_dim % 2 == 0, f"Head dim must be even for learnable RoPE, got {self.q_head_dim}"
+                assert self.q_head_dim % 2 == 0, \
+                    f"Head dim must be even for learnable RoPE, got {self.q_head_dim}"
                 num_pairs = self.q_head_dim // 2
                 # Learnable 2D RoPE frequencies.
                 # Geometric initialization from 1 rad/square to 1/50 rad/square
@@ -1535,7 +2112,8 @@ class TransformerBlock(nn.Module):
                 self.sin_cached = None
             else:
                 self.rope_theta = kwargs.get("rope_theta", 100.0)
-                assert self.rope_theta > self.pos_len * 2.0, f"theta={self.rope_theta} of RoPE may be too small for pos_len={self.pos_len}"
+                assert self.rope_theta > self.pos_len * 2.0, \
+                    f"theta={self.rope_theta} of RoPE may be too small for pos_len={self.pos_len}"
                 cos_cached, sin_cached = precompute_freqs_cos_sin_2d(self.q_head_dim, self.pos_len, self.rope_theta)
                 self.register_buffer("cos_cached", cos_cached, persistent=False)
                 self.register_buffer("sin_cached", sin_cached, persistent=False)
@@ -1588,14 +2166,14 @@ class TransformerBlock(nn.Module):
             if "weight" in name:
                 if any(x in name for x in ["q_proj", "k_proj", "v_proj", "out_proj"]):
                     reg_dict["normal_attn"].append(param)
+                elif "gab_proj" in name:
+                    reg_dict["normal_gab"].append(param)
                 else:
                     reg_dict["normal"].append(param)
             else:
                 reg_dict["noreg"].append(param)
 
     def initialize(self, fixup_scale, se_fixup_scale, xavier_init):
-        # Relies on torch initialization, nothing to do here.
-        # Since we have active normalization layers, initial scaling doesn't matter so much.
         pass
 
     def _compute_gab_bias(self, x_norm, mask, mask_sum_hw, block_shared_data):
@@ -1672,11 +2250,11 @@ class TransformerBlock(nn.Module):
 
         return bias, extra_kq
 
-    def forward(self, x, mask, mask_sum_hw, mask_sum):
+    def forward(self, x, mask, mask_sum_hw, mask_sum, block_shared_data=None):
         """
         Parameters:
-        x: NCHW
-        mask: N1HW
+        x: NCHW (or NC1S when inline registers are active)
+        mask: N1HW (or N11S when inline registers are active)
         mask_sum_hw: N111
         mask_sum: scalar
 
@@ -1698,11 +2276,16 @@ class TransformerBlock(nn.Module):
 
         if self.use_rope:
             if self.learnable_rope:
-                # Compute per-head, per-pair angles from learnable 2D frequencies.
-                # rope_freqs: (num_kv_heads, P, 2) = (H_kv, P, [omega_x, omega_y])
-                s_idx = torch.arange(seq_len, device=q.device)
-                s_y = (s_idx // self.pos_len).float()  # row
-                s_x = (s_idx % self.pos_len).float()   # col
+                # When inline registers are active, use precomputed all_pos_x/all_pos_y
+                # which covers both board and register positions. Otherwise compute from arange.
+                if self.inline_registers and self.num_rw_registers > 0:
+                    reg_state = block_shared_data[REGISTER_STATE]
+                    s_x = reg_state.all_pos_x  # (B, S)
+                    s_y = reg_state.all_pos_y  # (B, S)
+                else:
+                    s_idx = torch.arange(seq_len, device=q.device)
+                    s_y = (s_idx // self.pos_len).float()  # row
+                    s_x = (s_idx % self.pos_len).float()   # col
                 cos_k, sin_k = compute_learnable_rope_cos_sin(s_x, s_y, self.rope_freqs)  # ([B,] S, H_kv, P)
                 # For Q: expand kv head freqs to match num_heads if using multi-query attention
                 if self.n_rep > 1:
@@ -1710,12 +2293,14 @@ class TransformerBlock(nn.Module):
                         *cos_k.shape[:-2],
                         self.n_rep,
                         cos_k.shape[-1]).reshape(*cos_k.shape[:-2],
-                        self.num_heads, -1)
+                        self.num_heads,
+                        -1)
                     sin_q = sin_k.unsqueeze(-3).expand(
                         *sin_k.shape[:-2],
                         self.n_rep,
                         sin_k.shape[-1]).reshape(*sin_k.shape[:-2],
-                        self.num_heads, -1)
+                        self.num_heads,
+                        -1)
                 else:
                     cos_q = cos_k
                     sin_q = sin_k
@@ -1742,8 +2327,9 @@ class TransformerBlock(nn.Module):
         if self.use_gab or self.use_tab:
             template_bias, extra_kq = self._compute_gab_bias(x_norm, mask, mask_sum_hw, block_shared_data)
 
-        """
         if mask is not None:
+            # For inline registers, mask is N11S and already includes register positions
+            # (always 1.0), so seq_len already covers them.
             mask_flat = mask.view(batch_size, 1, 1, seq_len)
             attn_mask = torch.zeros_like(mask_flat, dtype=q.dtype)
             attn_mask.masked_fill_(mask_flat == 0, float('-inf'))
@@ -1755,9 +2341,6 @@ class TransformerBlock(nn.Module):
                 attn_mask = attn_mask + template_bias
             else:
                 attn_mask = template_bias
-        """
-        # Note: In the current program, the inference engine does not work when using attn_mask.
-        attn_mask = None
 
         # Default scaling for q/k dot product, 1/sqrt(query head dim)
         scale = 1.0 / math.sqrt(self.q_head_dim)
@@ -1857,12 +2440,37 @@ class Network(nn.Module):
         else:
             self.xavier_init = True
         self.is_pre_act = cfg.is_pre_act
+        self.use_rope = cfg.use_rope
+        self.rope_theta = cfg.rope_theta
+        self.learnable_rope = cfg.learnable_rope
+        self.attention_qk_norm = cfg.attention_qk_norm
+        self.use_gab = cfg.use_gab
+        self.gab_d1 = cfg.gab_d1
+        self.gab_d2 = cfg.gab_d2
+        self.use_tab = cfg.use_tab
+        self.inline_registers = cfg.inline_registers
+        self.attention_num_rw_registers = cfg.attention_num_rw_registers
+        self.gab_num_templates=cfg.gab_num_templates
+        self.gab_num_fourier_features=cfg.gab_num_fourier_features
+        self.gab_mlp_hidden=cfg.gab_mlp_hidden
+        self.tab_c_z = cfg.tab_c_z
+        self.tab_num_templates=cfg.tab_num_templates
+        self.tab_num_freqs=cfg.tab_num_freqs
+        self.tab_num_blocks=cfg.tab_num_blocks
+        self.tab_dilation=cfg.tab_dilation
+        self.tab_use_frequency_mixing=cfg.tab_use_frequency_mixing
+        self.use_swiglu = cfg.use_swiglu
+        self.transformer_ffn_depthwise_conv = cfg.transformer_ffn_depthwise_conv
 
         self.construct_layers()
 
         num_total_blocks = len(self.residual_tower)
         with torch.no_grad():
             self.input_conv.initialize(scale=1.0, xavier_init=self.xavier_init)
+            if self.gab_template_mlp is not None:
+                self.gab_template_mlp.initialize()
+            if self.tab_module is not None:
+                self.tab_module.initialize()
             if self.mode == "fixup":
                 fixup_scale = 1.0 / math.sqrt(num_total_blocks)
                 se_fixup_scale = math.pow(num_total_blocks, -1.0 / (2 * 4 - 2))
@@ -1874,6 +2482,10 @@ class Network(nn.Module):
                 for block in self.residual_tower:
                     block.initialize(fixup_scale=fixup_scale,
                         se_fixup_scale=fixup_scale, xavier_init=self.xavier_init)
+
+            if self.attention_num_rw_registers > 0 and self.inline_registers:
+                # Zero-init readout so registers start as no-ops
+                self.rw_reg_readout_proj2.weight.data.zero_()
 
             self.policy_conv.initialize(scale=0.8, xavier_init=self.xavier_init)
             if self.policy_head_type["Type"] == "RepLK":
@@ -2008,6 +2620,26 @@ class Network(nn.Module):
                 block = MixerBlock
                 blockargs["version"] = 2
             elif component == "TransformerBlock":
+                blockargs["use_rope"] = self.use_rope
+                blockargs["rope_theta"] = self.rope_theta
+                blockargs["learnable_rope"] = self.learnable_rope
+                blockargs["attention_qk_norm"] = self.attention_qk_norm
+                blockargs["use_gab"] = self.use_gab
+                blockargs["gab_d1"] = self.gab_d1
+                blockargs["gab_d2"] = self.gab_d2
+                blockargs["use_tab"] = self.use_tab
+                blockargs["inline_registers"] = self.inline_registers
+                blockargs["attention_num_rw_registers"] = self.attention_num_rw_registers
+                blockargs["gab_num_templates"] = self.gab_num_templates
+                blockargs["gab_num_fourier_features"] = self.gab_num_fourier_features
+                blockargs["gab_mlp_hidden"] = self.gab_mlp_hidden
+                blockargs["tab_c_z"] = self.tab_c_z
+                blockargs["tab_num_templates"] = self.tab_num_templates
+                blockargs["tab_num_freqs"] = self.tab_num_freqs
+                blockargs["tab_num_blocks"] = self.tab_num_blocks
+                blockargs["tab_dilation"] = self.tab_dilation
+                blockargs["use_swiglu"] = self.use_swiglu
+                blockargs["transformer_ffn_depthwise_conv"] = self.transformer_ffn_depthwise_conv
                 block = TransformerBlock
             elif component == "SE":
                 blockargs["se_size"] = channels // self.se_ratio
@@ -2029,40 +2661,16 @@ class Network(nn.Module):
                 blockargs["kernel_size"] = value
             elif key == "FfnExpansionRatio":
                 blockargs["ffn_expansion_ratio"] = value
-            elif key == "use_rope":
-                blockargs["use_rope"] = value
-            elif key == "rope_theta":
-                blockargs["rope_theta"] = value
-            elif key == "learnable_rope":
-                blockargs["learnable_rope"] = value
-            elif key == "attention_qk_norm":
-                blockargs["attention_qk_norm"] = value
-            elif key == "use_gab":
-                blockargs["use_gab"] = value
-            elif key == "gab_d1":
-                blockargs["gab_d1"] = value
-            elif key == "gab_d2":
-                blockargs["gab_d2"] = value
-            elif key == "gab_num_templates":
-                blockargs["gab_num_templates"] = value
-            elif key == "use_tab":
-                blockargs["use_tab"] = value
-            elif key == "tab_num_templates":
-                blockargs["tab_num_templates"] = value
-            elif key == "transformer_heads":
+            elif key == "TransformerHeads":
                 blockargs["transformer_heads"] = value
-            elif key == "transformer_kv_heads":
+            elif key == "TransformerKVHheads":
                 blockargs["transformer_kv_heads"] = value
-            elif key == "attention_query_head_dim":
+            elif key == "AttentionQueryHeadDim":
                 blockargs["attention_query_head_dim"] = value
-            elif key == "attention_value_head_dim":
+            elif key == "AttentionValueHeadDim":
                 blockargs["attention_value_head_dim"] = value
-            elif key == "transformer_ffn_channels":
+            elif key == "TransformerFFNChannels":
                 blockargs["transformer_ffn_channels"] = value
-            elif key == "use_swiglu":
-                blockargs["use_swiglu"] = value
-            elif key == "transformer_ffn_depthwise_conv":
-                blockargs["transformer_ffn_depthwise_conv"] = value
             else:
                 raise Exception("Invalid block setting.")
         return block, channels, blockargs
@@ -2113,6 +2721,66 @@ class Network(nn.Module):
 
         self.create_residual_tower()
 
+        # Create shared GAB template MLP if any block uses GAB
+        if self.use_gab:
+            self.gab_template_mlp = GABTemplateMLP(
+                gab_num_templates=self.gab_num_templates,
+                gab_num_fourier_features=self.gab_num_fourier_features,
+                gab_mlp_hidden=self.gab_mlp_hidden,
+                pos_len=self.xsize,
+                activation=self.activation,
+            )
+        else:
+            self.gab_template_mlp = None
+
+        if self.use_tab:
+            if self.tab_use_frequency_mixing:
+                self.tab_module = FrequencyMixingTABModule(
+                    trunk_channels=self.residual_channels,
+                    tab_c_z=self.tab_c_z,
+                    tab_num_templates=self.tab_num_templates,
+                    tab_num_blocks=self.tab_num_blocks,
+                    tab_dilation=self.tab_dilation,
+                    activation=self.activation,
+                    pos_len=self.xsize,
+                )
+            else:
+                self.tab_module = TABModule(
+                    trunk_channels=self.residual_channels,
+                    tab_c_z=self.tab_c_z,
+                    tab_num_templates=self.tab_num_templates,
+                    tab_num_freqs=self.tab_num_freqs,
+                    tab_num_blocks=self.tab_num_blocks,
+                    tab_dilation=self.tab_dilation,
+                    activation=self.activation,
+                    pos_len=self.xsize,
+                )
+        else:
+            self.tab_module = None
+
+        if self.attention_num_rw_registers > 0 and self.inline_registers:
+            # Inline registers: registers are part of the trunk tensor (NC1S layout).
+            # They share the trunk channel dimension and participate in all layers.
+            # Learnable initial register contents: (1, c_trunk, 1, k) in NC1S format
+            self.rw_register_init = torch.nn.Parameter(
+                torch.randn(1, self.residual_channels, 1, self.attention_num_rw_registers) * 0.25
+            )
+            # Learnable relative positions for RW registers (before tanh)
+            self.rw_register_rel_pos_x = torch.nn.Parameter(
+                torch.empty(self.attention_num_rw_registers).uniform_(-0.5, 0.5)
+            )
+            self.rw_register_rel_pos_y = torch.nn.Parameter(
+                torch.empty(self.attention_num_rw_registers).uniform_(-0.5, 0.5)
+            )
+            # Readout: project register state into the trunk just before the final norm.
+            # After splitting off registers from the NC1S trunk, mean-pool across registers
+            # and project back to trunk channels.
+            # norm -> project to c_trunk -> activate -> mean pool -> project to c_trunk
+            self.rw_reg_readout_norm = torch.nn.RMSNorm(self.residual_channels, eps=1e-6)
+            self.rw_reg_readout_proj1 = torch.nn.Linear(self.residual_channels, self.residual_channels, bias=False)
+            self.rw_reg_readout_act = activation_func(self.activation, inplace=False)
+            self.rw_reg_readout_proj2 = torch.nn.Linear(self.residual_channels, self.residual_channels, bias=False)
+
         if self.is_pre_act:
             # self.final_block = RMSNormMask(
             #     c_in=self.residual_channels,
@@ -2143,29 +2811,116 @@ class Network(nn.Module):
             planes = torch_symmetry(symm, planes, invert=False)
 
         # mask buffers
-        mask = planes[:, (self.input_channels-1):self.input_channels , :, :]
+        mask = planes[:, (self.input_channels-1):self.input_channels , :, :].contiguous()
         mask_sum_hw = torch.sum(mask, dim=(1,2,3))
         mask_sum_hw_sqrt = torch.sqrt(mask_sum_hw)
         mask_buffers = (mask, mask_sum_hw, mask_sum_hw_sqrt)
-        mask_transformer = planes[:, 0:1, :, :].contiguous()
         mask_sum_hw_transformer = torch.sum(mask, dim=(2,3), keepdim=True)
         mask_sum_transformer = torch.sum(mask)
+        # Save original mask/dims for restoring NCHW after trunk when using inline registers.
+        orig_mask = mask
+        orig_mask_sum_hw = mask_sum_hw_transformer
+        orig_mask_sum = mask_sum_transformer
+        _, _, orig_H, orig_W = mask.shape
 
         # input layer
         x = self.input_conv(planes, mask)
 
+        # Compute shared block data
+        block_shared_data = {}
+        if self.gab_template_mlp is not None:
+            seq_len = mask.shape[2] * mask.shape[3]  # H * W
+            templates = self.gab_template_mlp(seq_len)
+            block_shared_data[GAB_TEMPLATES] = GABTemplateData(templates=templates)
+        if self.tab_module is not None:
+            tab_keys, tab_queries = self.tab_module(x, mask)
+            block_shared_data[TAB_KQ] = TABKeyQueryData(keys=tab_keys, queries=tab_queries)
+        if self.attention_num_rw_registers > 0 and self.inline_registers:
+            # Compute board geometry from mask for register tokens.
+            # mask: (B, 1, H, W)
+            B, _, H, W = mask.shape
+            col_idx = torch.arange(W, device=mask.device, dtype=mask.dtype).view(1, 1, 1, W)  # (1,1,1,W)
+            row_idx = torch.arange(H, device=mask.device, dtype=mask.dtype).view(1, 1, H, 1)  # (1,1,H,1)
+            inv_mask = 1.0 - mask
+            col_min = (col_idx * mask + W * inv_mask).amin(dim=(1, 2, 3), keepdim=False).unsqueeze(1)  # (B, 1)
+            col_max = (col_idx * mask).amax(dim=(1, 2, 3), keepdim=False).unsqueeze(1)  # (B, 1)
+            row_min = (row_idx * mask + H * inv_mask).amin(dim=(1, 2, 3), keepdim=False).unsqueeze(1)  # (B, 1)
+            row_max = (row_idx * mask).amax(dim=(1, 2, 3), keepdim=False).unsqueeze(1)  # (B, 1)
+            center_x = 0.5 * (col_min + col_max)  # (B, 1)
+            center_y = 0.5 * (row_min + row_max)  # (B, 1)
+            radius_x = 0.5 * (col_max - col_min).clamp(min=0.5)  # (B, 1)
+            radius_y = 0.5 * (row_max - row_min).clamp(min=0.5)  # (B, 1)
+            # Compute register positions (shared across all blocks).
+            rw_pos_x = center_x + 2.0 * radius_x * torch.tanh(self.rw_register_rel_pos_x.unsqueeze(0))  # (B, k)
+            rw_pos_y = center_y + 2.0 * radius_y * torch.tanh(self.rw_register_rel_pos_y.unsqueeze(0))  # (B, k)
+
         # residual tower
         for block in self.residual_tower:
             if isinstance(block, TransformerBlock):
-                x = block(x, mask_transformer, mask_sum_hw_transformer, mask_sum_transformer)
+                if self.attention_num_rw_registers > 0 and self.inline_registers:
+                    # Inline registers: concatenate register embeddings to trunk tensor,
+                    # converting from NCHW to NC1S layout.
+                    # out is currently NCHW -> reshape to NC1(HW)
+                    out = x.view(B, self.residual_channels, 1, H * W)
+                    # Concatenate register init embeddings: (1, self.residual_channels, 1, k)
+                    #   -> broadcast to (B, self.residual_channels, 1, k)
+                    reg_init = self.rw_register_init.expand(B, -1, -1, -1)
+                    out = torch.cat([out, reg_init], dim=3)  # (B, self.residual_channels, 1, HW+k)
+                    # Build augmented mask: N11S with register positions always valid (1.0)
+                    mask_flat = mask.view(B, 1, 1, H * W)
+                    reg_mask = torch.ones(B, 1, 1, self.attention_num_rw_registers,
+                        device=mask.device, dtype=mask.dtype)
+                    mask = torch.cat([mask_flat, reg_mask], dim=3)  # (B, 1, 1, HW+k)
+                    mask_sum_hw_transformer = torch.sum(mask, dim=(2, 3), keepdim=True)  # (B, 1, 1, 1)
+                    mask_sum_transformer = torch.sum(mask)
+                    # Precompute s_x, s_y for all positions (board grid + register positions).
+                    # Board positions: row-major flattened grid
+                    board_idx = torch.arange(H * W, device=out.device)
+                    board_pos_x = (board_idx % W).float()  # (HW,)
+                    board_pos_y = (board_idx // W).float()  # (HW,)
+                    # Expand to (B, HW) for consistency with register positions which are (B, k)
+                    board_pos_x = board_pos_x.unsqueeze(0).expand(B, -1)
+                    board_pos_y = board_pos_y.unsqueeze(0).expand(B, -1)
+                    # Concatenate board and register positions
+                    all_pos_x = torch.cat([board_pos_x, rw_pos_x], dim=1)  # (B, HW+k)
+                    all_pos_y = torch.cat([board_pos_y, rw_pos_y], dim=1)  # (B, HW+k)
+                    block_shared_data[REGISTER_STATE] = RegisterState(
+                        center_x=center_x, center_y=center_y,
+                        radius_x=radius_x, radius_y=radius_y,
+                        all_pos_x=all_pos_x,
+                        all_pos_y=all_pos_y,
+                    )
+                    x = out
+
+                x = block(x, mask, mask_sum_hw_transformer, mask_sum_transformer, block_shared_data)
+                if self.attention_num_rw_registers > 0 and self.inline_registers:
+                    # Split off register positions from NC1S trunk.
+                    # out: (B, c_trunk, 1, HW+k)
+                    board_hw = orig_H * orig_W
+                    out_board = x[:, :, :, :board_hw]   # (B, c_trunk, 1, HW)
+                    out_regs = x[:, :, :, board_hw:]    # (B, c_trunk, 1, k)
+                    # Readout: norm -> proj1 -> act -> mean pool -> proj2 -> add to board
+                    # Reshape registers to (B, k, c_trunk) for RMSNorm and Linear
+                    rw_state = out_regs.squeeze(2).permute(0, 2, 1)  # (B, k, c_trunk)
+                    rw_readout = self.rw_reg_readout_norm(rw_state)
+                    rw_readout = self.rw_reg_readout_proj1(rw_readout)  # (B, k, c_trunk)
+                    rw_readout = self.rw_reg_readout_act(rw_readout)
+                    rw_readout = rw_readout.mean(dim=1)  # (B, c_trunk) - mean pool across registers
+                    rw_readout = self.rw_reg_readout_proj2(rw_readout)  # (B, c_trunk)
+                    # Restore to NCHW and add readout
+                    out = out_board.view(x.shape[0], self.residual_channels, orig_H, orig_W)
+                    x = out + rw_readout.unsqueeze(-1).unsqueeze(-1)  # broadcast to NCHW
+                    mask = orig_mask
             else:
                 x = block(x, mask_buffers)
 
-        with autocast("cuda", enabled=False):
-            # x = self.final_block(x, mask_transformer, mask_sum_hw_transformer, mask_sum_transformer)
-            x = self.final_block(x, mask)
-            x = self.final_act(x)
+        # Use original mask for final norm and heads (NCHW format)
+        # x = self.final_block(x, mask=orig_mask, mask_sum_hw=orig_mask_sum_hw, mask_sum=orig_mask_sum)
+        # x = self.final_block(x, mask, mask_sum_hw_transformer, mask_sum_transformer)
+        x = self.final_block(x, mask)
+        x = self.final_act(x)
 
+        with autocast("cuda", enabled=False):
             # policy head
             pol = self.policy_conv(x, mask)
             if self.policy_head_type["Type"] == "RepLK":
@@ -2541,15 +3296,29 @@ class Network(nn.Module):
         reg_dict["normal"] = []
         reg_dict["normal_gamma"] = []
         reg_dict["normal_attn"] = []
+        reg_dict["normal_gab"] = []
         reg_dict["output"] = []
         reg_dict["noreg"] = []
         reg_dict["output_noreg"] = []
+        reg_dict["gab_mlp"] = []
+        reg_dict["tab_module"] = []
 
         self.input_conv.add_reg_dict(reg_dict, placement="before_block")
         for block in self.residual_tower:
             block.add_reg_dict(reg_dict)
+        if self.gab_template_mlp is not None:
+            self.gab_template_mlp.add_reg_dict(reg_dict)
+        if self.tab_module is not None:
+            self.tab_module.add_reg_dict(reg_dict)
         if self.is_pre_act:
             self.final_block.add_reg_dict(reg_dict, placement="after_block")
+        if self.attention_num_rw_registers > 0 and self.inline_registers:
+            reg_dict["noreg"].append(self.rw_register_init)
+            reg_dict["noreg"].append(self.rw_register_rel_pos_x)
+            reg_dict["noreg"].append(self.rw_register_rel_pos_y)
+            reg_dict["normal_gamma"].append(self.rw_reg_readout_norm.weight)
+            reg_dict["normal"].append(self.rw_reg_readout_proj1.weight)
+            reg_dict["normal"].append(self.rw_reg_readout_proj2.weight)
         self.policy_conv.add_reg_dict(reg_dict, placement="after_block")
         if self.policy_head_type["Type"] == "RepLK":
             self.policy_depthwise_conv.add_reg_dict(reg_dict, placement="after_block")

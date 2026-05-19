@@ -684,7 +684,7 @@ class TrainingPipe():
         }
 
     def _get_is_muon_suitable(self, group_name):
-        if group_name == "normal" or group_name == "normal_attn":
+        if group_name == "normal" or group_name == "normal_attn" or group_name == "normal_gab" or group_name == "gab_mlp" or group_name == "tab_module":
             return True
         elif group_name in ["normal_gamma", "noreg", "output", "output_noreg", "input", "input_noreg"]:
             return False
@@ -709,7 +709,7 @@ class TrainingPipe():
                     return 0.005000 * batch_scaling
                 else:
                     return 0.000001 * batch_scaling
-            elif group_name == "normal_attn":
+            elif group_name == "normal_attn" or group_name == "normal_gab" or group_name == "gab_mlp" or group_name == "tab_module":
                 if self.opt_name == "Muon":
                     return 0.005000 * 0.5 * batch_scaling
                 else:
@@ -723,7 +723,7 @@ class TrainingPipe():
         elif self.cfg.mode == "renorm" or self.cfg.mode == "norm":
             warmup_scale = self._get_lr_schedule(self.current_steps) / self.lr_schedule[-1][1]
             adaptive_scale = 1.0
-            if (group_name == "input" or group_name == "normal" or group_name == "normal_attn" or group_name == "normal_gamma"):
+            if (group_name == "input" or group_name == "normal" or group_name == "normal_attn" or group_name == "normal_gab" or group_name == "normal_gamma" or group_name == "gab_mlp" or group_name == "tab_module"):
                 if self.opt_name == "Muon":
                     wd_with_lr_scale = math.pow(effective_lr_scale * warmup_scale, 0.70) * adaptive_scale
                 else:
@@ -740,6 +740,12 @@ class TrainingPipe():
                     wd_group_factor = 1.0
                 elif group_name == "normal_attn":
                     wd_group_factor = 0.5
+                elif group_name == "normal_gab":
+                    wd_group_factor = 0.3
+                elif group_name == "gab_mlp":
+                    wd_group_factor = 0.1
+                elif group_name == "tab_module":
+                    wd_group_factor = 0.1
                 elif group_name == "normal_gamma":
                     # Batch norm gammas can be regularized a bit less,
                     # doing them just as much empirically seemed to be a bit more unstable
@@ -837,7 +843,7 @@ class TrainingPipe():
 
         if self.opt_name == "Muon":
             for param in self.opt.param_groups:
-                if param["group_name"] == "normal" or param["group_name"] == "normal_attn":
+                if param["group_name"] == "normal" or param["group_name"] == "normal_attn" or param["group_name"] == "normal_gab" or param["group_name"] == "gab_mlp" or param["group_name"] == "tab_module":
                     param["lr"] = curr_lr * 2.0
                 elif param["group_name"] == "output" or param["group_name"] == "output_noreg":
                     param["lr"] = curr_lr * 0.5
@@ -899,19 +905,20 @@ class TrainingPipe():
             dynamic_axes = None # dynamo uses dynamic_shapes
             with torch.no_grad():
                 torch.onnx.export(
-                    wrapper,
-                    tuple(inputs),
-                    onnx_model_name,
-                    export_params=True,
-                    opset_version=20,
-                    do_constant_folding=True,
-                    input_names=input_names,
-                    output_names=output_names,
-                    dynamic_axes=dynamic_axes,
-                    dynamic_shapes=dynamic_shapes,
-                    verbose=False,
-                    dynamo=True,
-                    report=False
+                    wrapper,                   # model to export
+                    tuple(inputs),             # inputs of the model
+                    onnx_model_name,           # filename of the ONNX model
+                    export_params=True,        # When ``f`` is specified: If false, parameters (weights) will not be exported
+                    # opset_version=20,          # The version of the default (ai.onnx) opset to target
+                    # do_constant_folding=True,  # Deprecated option
+                    input_names=input_names,   # Rename inputs for the ONNX model
+                    output_names=output_names, # Rename outputs for the ONNX model
+                    dynamic_axes=dynamic_axes, # Deprecated: Prefer specifying dynamic_shapes when dynamo=True
+                    dynamic_shapes=dynamic_shapes, # A dictionary or a tuple of dynamic shapes for the model inputs
+                    verbose=False,             # Whether to enable verbose logging
+                    dynamo=True,               # True or False to select the exporter to use
+                    external_data=False,       # Whether to save the model weights as an external data file
+                    report=False               # Whether to generate a markdown report for the export process
                 )
             # Add metadata to the ONNX model
             try:
@@ -1256,7 +1263,7 @@ class TrainingPipe():
                             param["lr"] = curr_lr
                     else:
                         for param in self.opt.param_groups:
-                            if param["group_name"] == "normal" or param["group_name"] == "normal_attn":
+                            if param["group_name"] == "normal" or param["group_name"] == "normal_attn" or param["group_name"] == "normal_gab" or param["group_name"] == "gab_mlp" or param["group_name"] == "tab_module":
                                 param["lr"] = curr_lr * 2.0
                             elif param["group_name"] == "output" or param["group_name"] == "output_noreg":
                                 param["lr"] = curr_lr * 0.5
