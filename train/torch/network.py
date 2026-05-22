@@ -23,6 +23,8 @@ def activation_func(activation, inplace=False):
         return nn.ReLU(inplace=inplace)
     if activation == "elu":
         return nn.ELU(inplace=inplace)
+    if activation == "silu":
+        return nn.SiLU(inplace=inplace)
     if activation == "selu":
         return nn.SELU(inplace=inplace)
     if activation == "gelu":
@@ -45,6 +47,8 @@ def compute_gain(activation):
         gain = math.sqrt(2.0)
     elif activation == "elu":
         gain = math.sqrt(1.55052)
+    elif activation == "silu":
+        gain = math.sqrt(2.0)  # Theoretically should be sqrt(2.8108), kept sqrt(2.0) for compat reasons.
     elif activation == "selu":
         gain = 3/4
     elif activation == "gelu":
@@ -2084,7 +2088,6 @@ class TransformerBlock(nn.Module):
         # share trunk channel dim, and participate in all layers identically to
         # board tokens. No separate parameters needed.
         self.inline_registers = kwargs.get("inline_registers", False)
-        self.use_depthwise_conv = kwargs.get("transformer_ffn_depthwise_conv", False)
         self.num_rw_registers = kwargs.get("attention_num_rw_registers", 0)
         if self.num_rw_registers > 0 and self.inline_registers:
             assert not (self.use_gab or self.use_tab), \
@@ -2782,17 +2785,17 @@ class Network(nn.Module):
             self.rw_reg_readout_proj2 = torch.nn.Linear(self.residual_channels, self.residual_channels, bias=False)
 
         if self.is_pre_act:
-            # self.final_block = RMSNormMask(
-            #     c_in=self.residual_channels,
-            #     spatial=True,
-            #     cgroup_size=None
-            # )
-            self.final_block = BatchNorm2d(
-                num_features=self.residual_channels,
-                use_gamma=False,
-                mode=self.mode,
-                renorm_clipping=self.renorm_clipping
+            self.final_block = RMSNormMask(
+                c_in=self.residual_channels,
+                spatial=True,
+                cgroup_size=None
             )
+            # self.final_block = BatchNorm2d(
+            #     num_features=self.residual_channels,
+            #     use_gamma=False,
+            #     mode=self.mode,
+            #     renorm_clipping=self.renorm_clipping
+            # )
             self.final_act = activation_func(self.activation, inplace=True)
         else:
             self.final_block = CustomIdentity()
@@ -2916,8 +2919,8 @@ class Network(nn.Module):
 
         # Use original mask for final norm and heads (NCHW format)
         # x = self.final_block(x, mask=orig_mask, mask_sum_hw=orig_mask_sum_hw, mask_sum=orig_mask_sum)
-        # x = self.final_block(x, mask, mask_sum_hw_transformer, mask_sum_transformer)
-        x = self.final_block(x, mask)
+        x = self.final_block(x, mask, mask_sum_hw_transformer, mask_sum_transformer)
+        # x = self.final_block(x, mask)
         x = self.final_act(x)
 
         with autocast("cuda", enabled=False):
