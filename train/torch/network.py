@@ -747,6 +747,7 @@ class DepthwiseConvBlock(nn.Module):
                        placement,
                        renorm_clipping,
                        activation,
+                       is_pre_act=False,
                        collector=None):
         # Implement it based on "Scaling Up Your Kernels to 31x31: Revisiting Large Kernel Design
         # in CNNs".
@@ -758,6 +759,8 @@ class DepthwiseConvBlock(nn.Module):
         self.channels = channels
         self.kernel_size = kernel_size
         self.groups = self.channels
+        self.is_pre_act = is_pre_act
+        self.activation = activation
         self.conv = BroadcastDepthwiseConv2d(
             self.channels,
             self.kernel_size,
@@ -770,7 +773,22 @@ class DepthwiseConvBlock(nn.Module):
             padding="same",
             bias=True
         )
-        if mode == "fixup" and placement == "in_block":
+
+        if is_pre_act:
+            self.pre_bias = BatchNorm2d(
+                num_features=channels,
+                use_gamma=use_gamma,
+                mode=mode,
+                renorm_clipping=renorm_clipping,
+                momentum_basic_batchsize=256
+            )
+            self.pre_bias1 = CustomIdentity()
+            self.pre_bias2 = CustomIdentity()
+            self.bn = CustomIdentity()
+            self.pre_act = activation_func(self.activation, inplace=True)
+            self.post_act = nn.Identity()
+        elif mode == "fixup" and placement == "in_block":
+            self.pre_bias = CustomIdentity()
             self.pre_bias1 = BatchNorm2d(
                 num_features=channels,
                 use_gamma=False,
@@ -781,19 +799,29 @@ class DepthwiseConvBlock(nn.Module):
                 use_gamma=False,
                 mode=mode
             )
+            self.bn = BatchNorm2d(
+                num_features=self.channels,
+                use_gamma=use_gamma,
+                mode=mode,
+                renorm_clipping=renorm_clipping,
+                momentum_basic_batchsize=256
+            )
+            self.pre_act = nn.Identity()
+            self.post_act = activation_func(self.activation, inplace=True)
         else:
+            self.pre_bias = CustomIdentity()
             self.pre_bias1 = CustomIdentity()
             self.pre_bias2 = CustomIdentity()
-
-        self.bn = BatchNorm2d(
-            num_features=self.channels,
-            use_gamma=use_gamma,
-            mode=mode,
-            renorm_clipping=renorm_clipping,
-            momentum_basic_batchsize=256
-        )
-        self.activation = activation
-        self.act = activation_func(self.activation, inplace=True)
+            self.bn = BatchNorm2d(
+                num_features=self.channels,
+                use_gamma=use_gamma,
+                mode=mode,
+                renorm_clipping=renorm_clipping,
+                momentum_basic_batchsize=256
+            )
+            self.pre_act = nn.Identity()
+            self.post_act = activation_func(self.activation, inplace=True)
+        # self.act = activation_func(self.activation, inplace=True)
         self._try_collect(collector)
 
     def initialize(self, scale, xavier_init, norm_scale=None):
@@ -809,7 +837,10 @@ class DepthwiseConvBlock(nn.Module):
     def add_reg_dict(self, reg_dict, placement="in_block"):
         self.conv.add_reg_dict(reg_dict, placement)
         self.rep3x3.add_reg_dict(reg_dict, placement)
-        self.bn.add_reg_dict(reg_dict, placement)
+        if not isinstance(self.bn, CustomIdentity):
+            self.bn.add_reg_dict(reg_dict, placement)
+        if not isinstance(self.pre_bias, CustomIdentity):
+            self.pre_bias.add_reg_dict(reg_dict, placement)
         if not isinstance(self.pre_bias1, CustomIdentity):
             self.pre_bias1.add_reg_dict(reg_dict, placement)
         if not isinstance(self.pre_bias2, CustomIdentity):
@@ -847,11 +878,13 @@ class DepthwiseConvBlock(nn.Module):
         return out
 
     def forward(self, x, mask):
+        x = self.pre_bias(x, mask)
+        x = self.pre_act(x)
         x1 = self.pre_bias1(x, mask)
-        x2 = self.pre_bias1(x, mask)
+        x2 = self.pre_bias2(x, mask)
         out = (self.conv(x1) + self.rep3x3(x2)) * mask
         x = self.bn(x, mask)
-        x = self.act(x)
+        x = self.post_act(x)
         return x
 
 class ResidualBlock(nn.Module):
@@ -954,6 +987,7 @@ class BottleneckBlock(nn.Module):
         self.bottleneck_channels = kwargs.get("bottleneck_channels", None)
         self.se_size = kwargs.get("se_size", None)
         self.mode = kwargs.get("mode", "renorm")
+        self.is_pre_act = kwargs.get("is_pre_act", False)
         collector = kwargs.get("collector", None)
 
         assert self.bottleneck_channels is not None, ""
@@ -972,6 +1006,7 @@ class BottleneckBlock(nn.Module):
             kernel_size=1,
             use_gamma=False,
             mode=self.mode,
+            is_pre_act=self.is_pre_act,
             placement="in_block",
             renorm_clipping=self.renorm_clipping,
             activation=self.activation,
@@ -983,6 +1018,7 @@ class BottleneckBlock(nn.Module):
             kernel_size=3,
             use_gamma=False,
             mode=self.mode,
+            is_pre_act=self.is_pre_act,
             placement="in_block",
             renorm_clipping=self.renorm_clipping,
             activation=self.activation,
@@ -994,6 +1030,7 @@ class BottleneckBlock(nn.Module):
             kernel_size=3,
             use_gamma=False,
             mode=self.mode,
+            is_pre_act=self.is_pre_act,
             placement="in_block",
             renorm_clipping=self.renorm_clipping,
             activation=self.activation,
@@ -1005,9 +1042,10 @@ class BottleneckBlock(nn.Module):
             kernel_size=1,
             use_gamma=True,
             mode=self.mode,
+            is_pre_act=self.is_pre_act,
             placement="in_block",
             renorm_clipping=self.renorm_clipping,
-            activation="identity",
+            activation=self.activation if self.is_pre_act else "identity",
             collector=collector
         )
         if self.use_se:
@@ -1018,7 +1056,11 @@ class BottleneckBlock(nn.Module):
                 activation=self.activation,
                 collector=collector
             )
-        self.act = activation_func(self.activation, inplace=True)
+
+        if self.is_pre_act:
+            self.act = nn.Identity()
+        else:
+            self.act = activation_func(self.activation, inplace=True)
 
     def initialize(self, fixup_scale, se_fixup_scale, xavier_init):
         if xavier_init:
@@ -1069,8 +1111,9 @@ class BottleneckBlock(nn.Module):
         out = self.post_btl_conv(out, mask)
         if self.use_se and self.mode != "fixup":
             out = self.se_module(out, mask_buffers)
-        out = out + x
-        out = self.act(out)
+        if not self.is_pre_act:
+            out = out + x
+            out = self.act(out)
         return out
 
 class NestedBottleneckBlock(nn.Module):
@@ -1084,6 +1127,7 @@ class NestedBottleneckBlock(nn.Module):
         self.bottleneck_channels = kwargs.get("bottleneck_channels", None)
         self.se_size = kwargs.get("se_size", None)
         self.mode = kwargs.get("mode", "renorm")
+        self.is_pre_act = kwargs.get("is_pre_act", False)
         collector = kwargs.get("collector", None)
 
         assert self.bottleneck_channels is not None, ""
@@ -1102,6 +1146,7 @@ class NestedBottleneckBlock(nn.Module):
             kernel_size=1,
             use_gamma=False,
             mode=self.mode,
+            is_pre_act=self.is_pre_act,
             placement="in_block",
             renorm_clipping=self.renorm_clipping,
             activation=self.activation,
@@ -1110,6 +1155,7 @@ class NestedBottleneckBlock(nn.Module):
         self.block1 = ResidualBlock(
             channels=self.inner_channels,
             mode=self.mode,
+            is_pre_act=self.is_pre_act,
             renorm_clipping=self.renorm_clipping,
             activation=self.activation,
             collector=collector
@@ -1117,6 +1163,7 @@ class NestedBottleneckBlock(nn.Module):
         self.block2 = ResidualBlock(
             channels=self.inner_channels,
             mode=self.mode,
+            is_pre_act=self.is_pre_act,
             renorm_clipping=self.renorm_clipping,
             activation=self.activation,
             collector=collector
@@ -1127,9 +1174,10 @@ class NestedBottleneckBlock(nn.Module):
             kernel_size=1,
             use_gamma=True,
             mode=self.mode,
+            is_pre_act=self.is_pre_act,
             placement="in_block",
             renorm_clipping=self.renorm_clipping,
-            activation="identity",
+            activation=self.activation if self.is_pre_act else "identity",
             collector=collector
         )
         if self.use_se:
@@ -1140,13 +1188,17 @@ class NestedBottleneckBlock(nn.Module):
                 activation=self.activation,
                 collector=collector
             )
-        self.act = activation_func(self.activation, inplace=True)
+
+        if self.is_pre_act:
+            self.act = nn.Identity()
+        else:
+            self.act = activation_func(self.activation, inplace=True)
 
     def initialize(self, fixup_scale, se_fixup_scale, xavier_init):
         if xavier_init:
             self.pre_btl_conv.initialize(scale=1.0, xavier_init=xavier_init)
-            self.block1.initialize(scale=1.0, xavier_init=xavier_init)
-            self.block2.initialize(scale=1.0, xavier_init=xavier_init)
+            self.block1.initialize(fixup_scale=1.0, se_fixup_scale=1.0, xavier_init=xavier_init)
+            self.block2.initialize(fixup_scale=1.0, se_fixup_scale=1.0, xavier_init=xavier_init)
             self.post_btl_conv.initialize(scale=1.0, xavier_init=xavier_init)
             if self.use_se:
                 self.se_module.initialize(scale=1.0, xavier_init=xavier_init)
@@ -1189,8 +1241,9 @@ class NestedBottleneckBlock(nn.Module):
         out = self.post_btl_conv(out, mask)
         if self.use_se and self.mode != "fixup":
             out = self.se_module(out, mask_buffers)
-        out = out + x
-        out = self.act(out)
+        if not self.is_pre_act:
+            out = out + x
+            out = self.act(out)
         return out
 
 class MixerBlock(nn.Module):
@@ -1206,6 +1259,7 @@ class MixerBlock(nn.Module):
         self.ffn_expansion_ratio = kwargs.get("ffn_expansion_ratio", 1.5)
         self.version = kwargs.get("version", 1)
         self.mode = kwargs.get("mode", "renorm")
+        self.is_pre_act = kwargs.get("is_pre_act", False)
         collector = kwargs.get("collector", None)
 
         self.channels = channels
@@ -1217,6 +1271,7 @@ class MixerBlock(nn.Module):
             kernel_size=self.kernel_size,
             use_gamma=True,
             mode=self.mode,
+            is_pre_act=self.is_pre_act,
             placement="in_block",
             renorm_clipping=self.renorm_clipping,
             activation=self.activation,
@@ -1230,6 +1285,7 @@ class MixerBlock(nn.Module):
             kernel_size=1,
             use_gamma=False,
             mode=self.mode,
+            is_pre_act=self.is_pre_act,
             placement="in_block",
             renorm_clipping=self.renorm_clipping,
             activation=self.activation,
@@ -1241,9 +1297,10 @@ class MixerBlock(nn.Module):
             kernel_size=1,
             use_gamma=True,
             mode=self.mode,
+            is_pre_act=self.is_pre_act,
             placement="in_block",
             renorm_clipping=self.renorm_clipping,
-            activation="identity",
+            activation=self.activation if self.is_pre_act else "identity",
             collector=collector
         )
         if self.use_se:
@@ -1254,7 +1311,11 @@ class MixerBlock(nn.Module):
                 activation=self.activation,
                 collector=collector
             )
-        self.act = activation_func(self.activation, inplace=True)
+
+        if self.is_pre_act:
+            self.act = nn.Identity()
+        else:
+            self.act = activation_func(self.activation, inplace=True)
 
     def initialize(self, fixup_scale, se_fixup_scale, xavier_init):
         if xavier_init:
@@ -1300,8 +1361,9 @@ class MixerBlock(nn.Module):
             out = self.ffn2(out, mask)
             if self.use_se and self.mode != "fixup":
                 out = self.se_module(out, mask_buffers)
-            out = out + x
-            out = self.act(out)
+            if not self.is_pre_act:
+                out = out + x
+                out = self.act(out)
         elif self.version == 2:
             out = x
             if self.use_se and self.mode == "fixup":
@@ -1311,8 +1373,9 @@ class MixerBlock(nn.Module):
             out = self.ffn2(out, mask)
             if self.use_se and self.mode != "fixup":
                 out = self.se_module(out, mask_buffers)
-            out = out + x
-            out = self.act(out)
+            if not self.is_pre_act:
+                out = out + x
+                out = self.act(out)
         return out
 
 # Simplified functional replacement for better ONNX export

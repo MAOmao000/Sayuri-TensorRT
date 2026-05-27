@@ -533,10 +533,10 @@ void DNNLoader::DumpInfo(std::vector<std::string> *vec_stack) const {
     } else {
         for (size_t i = 0, serial_number = 0; i < vec_stack->size(); ++i) {
             auto stack_name = (*vec_stack)[i];
-            if (stack_name == "ResidualBlock" ||
-                stack_name == "BottleneckBlock" ||
-                stack_name == "NestedBottleneckBlock" ||
-                stack_name == "MixerBlock" ||
+            if (stack_name == "ResidualBlock" || stack_name == "ResidualBlock-SE" ||
+                stack_name == "BottleneckBlock" || stack_name == "BottleneckBlock-SE" ||
+                stack_name == "NestedBottleneckBlock" || stack_name == "NestedBottleneckBlock-SE" ||
+                stack_name == "MixerBlock" || stack_name == "MixerBlock-SE" ||
                 stack_name == "TransformerBlock"
             ) {
                 serial_number++;
