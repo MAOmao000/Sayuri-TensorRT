@@ -103,6 +103,8 @@ class Config:
         self.tab_use_frequency_mixing = network.get("TABUseFrequencyMixing", False)
         self.use_swiglu = network.get("UseSwiGLU", True)
         self.transformer_ffn_depthwise_conv = network.get("TransformerFFNDepthwiseConv", False)
+        self.use_trunk_channel_gate = network.get("UseTrunkChannelGate", False)
+        self.use_trunk_residual_backout = network.get("UseTrunkResidualBackout", False)
 
         assert self.input_channels != None, ""
         assert self.residual_channels != None, ""
