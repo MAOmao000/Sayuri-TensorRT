@@ -37,7 +37,7 @@ You can check these features by setting the following in selfplay-setting.json.
         "GABD1" : 16,
         "GABD2" : 16,
         "UseTAB" : false,
-        "InlineRegisters" : false,
+        "InlineRegisters" : false,  ... Add Register tokens
         "AttentionNumRWRegisters" : 16,
         "GABNumTemplates" : 32,
         "GABNumFourierFeatures" : 12,
@@ -50,6 +50,8 @@ You can check these features by setting the following in selfplay-setting.json.
         "TABUseFrequencyMixing" : false,
         "UseSwiGLU" : true,
         "TransformerFFNDepthwiseConv" : false,
+        "UseTrunkChannelGate" : false, ... KataGo's unique new features
+        "UseTrunkResidualBackout" : false, ... KataGo's unique new features
         "Stack" : [
             { "Block": "TransformerBlock",
               "Args": {
