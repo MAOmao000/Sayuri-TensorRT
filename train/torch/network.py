@@ -649,7 +649,7 @@ class ConvBlock(nn.Module):
             bias=False,
         )
 
-        if is_pre_act:
+        if is_pre_act:  # default:False
             self.pre_bias = BatchNorm2d(
                 num_features=in_channels,
                 use_gamma=use_gamma,
@@ -706,7 +706,7 @@ class ConvBlock(nn.Module):
         elif placement == "before_block":
             reg_dict["input"].append(self.conv.weight)
         else:
-            reg_dict["normal"].append(self.conv.weight)
+            reg_dict["output"].append(self.conv.weight)
         if not isinstance(self.bn, CustomIdentity):
             self.bn.add_reg_dict(reg_dict, placement)
         if not isinstance(self.pre_bias, CustomIdentity):
@@ -774,7 +774,7 @@ class DepthwiseConvBlock(nn.Module):
             bias=True
         )
 
-        if is_pre_act:
+        if is_pre_act:  # default:False
             self.pre_bias = BatchNorm2d(
                 num_features=channels,
                 use_gamma=use_gamma,
@@ -882,7 +882,7 @@ class DepthwiseConvBlock(nn.Module):
         x = self.pre_act(x)
         x1 = self.pre_bias1(x, mask)
         x2 = self.pre_bias2(x, mask)
-        out = (self.conv(x1) + self.rep3x3(x2)) * mask
+        x = (self.conv(x1) + self.rep3x3(x2)) * mask
         x = self.bn(x, mask)
         x = self.post_act(x)
         return x
@@ -2497,81 +2497,81 @@ class Network(nn.Module):
 
         self.layers_collector = list()
 
-        self.nntype = cfg.nntype
+        self.nntype = cfg.nntype  # default:None
 
-        self.activation = cfg.activation.lower()
-        self.input_channels = cfg.input_channels
-        self.residual_channels = cfg.residual_channels
-        self.xsize = cfg.boardsize
-        self.ysize = cfg.boardsize
-        self.policy_head_channels = cfg.policy_head_channels
-        self.value_head_channels = cfg.value_head_channels
-        self.se_ratio = cfg.se_ratio
-        self.policy_head_type = cfg.policy_head_type
+        self.activation = cfg.activation.lower()  # default:"relu"
+        self.input_channels = cfg.input_channels  # default:43
+        self.residual_channels = cfg.residual_channels  # default:None
+        self.xsize = cfg.boardsize  # default:19
+        self.ysize = cfg.boardsize  # default:19
+        self.policy_head_channels = cfg.policy_head_channels  # default:None
+        self.value_head_channels = cfg.value_head_channels    # default:None
+        self.se_ratio = cfg.se_ratio  # default:2
+        self.policy_head_type = cfg.policy_head_type  # default:{"Type" : "Normal"}
         if type(self.policy_head_type) == str:
-            self.policy_head_type = { "Type" : self.policy_head_type }
-        self.renorm_clipping = {"rmax" : cfg.renorm_max_r, "dmax" : cfg.renorm_max_d}
+            self.policy_head_type = { "Type" : self.policy_head_type }  # default:{"Type" : "Normal"}
+        self.renorm_clipping = {"rmax" : cfg.renorm_max_r, "dmax" : cfg.renorm_max_d}  # default:{"rmax":1, "dmax":0}
         self.value_misc = 15
         self.policy_outs = 5
-        self.stack = cfg.stack
+        self.stack = cfg.stack  # default:[]
         self.version = 5
-        self.mode = cfg.mode.lower()
+        self.mode = cfg.mode.lower()  # default:"renorm"
         if self.mode == "fixup":
             self.xavier_init = False
         else:
             self.xavier_init = True
-        self.is_pre_act = cfg.is_pre_act
-        self.use_rope = cfg.use_rope
-        self.rope_theta = cfg.rope_theta
-        self.learnable_rope = cfg.learnable_rope
-        self.attention_qk_norm = cfg.attention_qk_norm
-        self.use_gab = cfg.use_gab
-        self.gab_d1 = cfg.gab_d1
-        self.gab_d2 = cfg.gab_d2
-        self.use_tab = cfg.use_tab
-        self.inline_registers = cfg.inline_registers
-        self.attention_num_rw_registers = cfg.attention_num_rw_registers
-        self.gab_num_templates=cfg.gab_num_templates
-        self.gab_num_fourier_features=cfg.gab_num_fourier_features
-        self.gab_mlp_hidden=cfg.gab_mlp_hidden
-        self.tab_c_z = cfg.tab_c_z
-        self.tab_num_templates=cfg.tab_num_templates
-        self.tab_num_freqs=cfg.tab_num_freqs
-        self.tab_num_blocks=cfg.tab_num_blocks
-        self.tab_dilation=cfg.tab_dilation
-        self.tab_use_frequency_mixing=cfg.tab_use_frequency_mixing
-        self.use_swiglu = cfg.use_swiglu
-        self.transformer_ffn_depthwise_conv = cfg.transformer_ffn_depthwise_conv
-        self.use_trunk_channel_gate = cfg.use_trunk_channel_gate
-        self.use_trunk_residual_backout = cfg.use_trunk_residual_backout
+        self.is_pre_act = cfg.is_pre_act  # default:False
+        self.use_rope = cfg.use_rope      # default:False
+        self.rope_theta = cfg.rope_theta  # default:100.0
+        self.learnable_rope = cfg.learnable_rope  # default:False
+        self.attention_qk_norm = cfg.attention_qk_norm  # default:False
+        self.use_gab = cfg.use_gab  # default:False
+        self.gab_d1 = cfg.gab_d1    # default:16
+        self.gab_d2 = cfg.gab_d2    # default:16
+        self.use_tab = cfg.use_tab  # default:False
+        self.inline_registers = cfg.inline_registers  # default:False
+        self.attention_num_rw_registers = cfg.attention_num_rw_registers  # default:0
+        self.gab_num_templates=cfg.gab_num_templates  # default:None
+        self.gab_num_fourier_features=cfg.gab_num_fourier_features  # default:None
+        self.gab_mlp_hidden=cfg.gab_mlp_hidden  # default:None
+        self.tab_c_z = cfg.tab_c_z  # default:None
+        self.tab_num_templates=cfg.tab_num_templates  # default:None
+        self.tab_num_freqs=cfg.tab_num_freqs    # default:None
+        self.tab_num_blocks=cfg.tab_num_blocks  # default:None
+        self.tab_dilation=cfg.tab_dilation      # default:None
+        self.tab_use_frequency_mixing=cfg.tab_use_frequency_mixing  # default:False
+        self.use_swiglu = cfg.use_swiglu        # default:True
+        self.transformer_ffn_depthwise_conv = cfg.transformer_ffn_depthwise_conv  # default:False
+        self.use_trunk_channel_gate = cfg.use_trunk_channel_gate          # default:False
+        self.use_trunk_residual_backout = cfg.use_trunk_residual_backout  # default:False
 
         self.construct_layers()
 
         num_total_blocks = len(self.residual_tower)
         with torch.no_grad():
             self.input_conv.initialize(scale=1.0, xavier_init=self.xavier_init)
-            if self.gab_template_mlp is not None:
+            if self.gab_template_mlp is not None:  # default:None
                 self.gab_template_mlp.initialize()
-            if self.tab_module is not None:
+            if self.tab_module is not None:  # default:None
                 self.tab_module.initialize()
-            if self.mode == "fixup":
+            if self.mode == "fixup":  # default:"renorm"
                 fixup_scale = 1.0 / math.sqrt(num_total_blocks)
                 se_fixup_scale = math.pow(num_total_blocks, -1.0 / (2 * 4 - 2))
                 for block in self.residual_tower:
                     block.initialize(fixup_scale=fixup_scale,
                         se_fixup_scale=se_fixup_scale, xavier_init=self.xavier_init)
-            else:
+            else:  # default:"renorm"
                 fixup_scale = 1.0
                 for block in self.residual_tower:
                     block.initialize(fixup_scale=fixup_scale,
                         se_fixup_scale=fixup_scale, xavier_init=self.xavier_init)
 
-            if self.attention_num_rw_registers > 0 and self.inline_registers:
+            if self.attention_num_rw_registers > 0 and self.inline_registers:  # default:0 and False
                 # Zero-init readout so registers start as no-ops
                 self.rw_reg_readout_proj2.weight.data.zero_()
 
             self.policy_conv.initialize(scale=0.8, xavier_init=self.xavier_init)
-            if self.policy_head_type["Type"] == "RepLK":
+            if self.policy_head_type["Type"] == "RepLK":  # default:"Normal"
                 self.policy_depthwise_conv.initialize(scale=1.0, xavier_init=self.xavier_init)
                 self.policy_pointwise_conv.initialize(scale=1.0, xavier_init=self.xavier_init)
             self.policy_intermediate_fc.initialize(scale=0.6, xavier_init=self.xavier_init)
@@ -2584,92 +2584,92 @@ class Network(nn.Module):
 
     def create_policy_head(self):
         self.policy_conv = ConvBlock(
-            in_channels=self.residual_channels,
-            out_channels=self.policy_head_channels,
+            in_channels=self.residual_channels,      # default:None
+            out_channels=self.policy_head_channels,  # default:None
             kernel_size=1,
             use_gamma=False,
-            mode=self.mode,
+            mode=self.mode,                          # default:"renorm"
             placement="after_block",
-            renorm_clipping=self.renorm_clipping,
-            activation=self.activation,
+            renorm_clipping=self.renorm_clipping,    # default:{"rmax":1, "dmax":0}
+            activation=self.activation,              # default:"relu"
             collector=self.layers_collector
         )
-        if self.policy_head_type["Type"] == "Normal":
+        if self.policy_head_type["Type"] == "Normal":  # default:"Normal"
             pass
-        elif self.policy_head_type["Type"] == "RepLK":
+        elif self.policy_head_type["Type"] == "RepLK":  # default:"Normal"
             dw_kernel_size = max(self.policy_head_type.get("KernelSize", 7), 7)
             self.policy_depthwise_conv = DepthwiseConvBlock(
-                channels=self.policy_head_channels,
+                channels=self.policy_head_channels,      # default:None
                 kernel_size=dw_kernel_size,
                 use_gamma=False,
-                mode=self.mode,
+                mode=self.mode,                          # default:"renorm"
                 placement="after_block",
-                renorm_clipping=self.renorm_clipping,
-                activation=self.activation,
+                renorm_clipping=self.renorm_clipping,    # default:{"rmax":1, "dmax":0}
+                activation=self.activation,              # default:"relu"
                 collector=self.layers_collector
             )
             self.policy_pointwise_conv = ConvBlock(
-                in_channels=self.policy_head_channels,
-                out_channels=self.policy_head_channels,
+                in_channels=self.policy_head_channels,   # default:None
+                out_channels=self.policy_head_channels,  # default:None
                 kernel_size=1,
                 use_gamma=True,
-                mode=self.mode,
+                mode=self.mode,                          # default:"renorm"
                 placement="after_block",
-                renorm_clipping=self.renorm_clipping,
-                activation=self.activation,
+                renorm_clipping=self.renorm_clipping,    # default:{"rmax":1, "dmax":0}
+                activation=self.activation,              # default:"relu"
                 collector=self.layers_collector
             )
         else:
             raise Exception("Invalid policy head type.")
 
         self.policy_intermediate_fc = FullyConnect(
-            in_size=self.policy_head_channels * 3,
-            out_size=self.policy_head_channels,
-            activation=self.activation,
+            in_size=self.policy_head_channels * 3,   # default:None
+            out_size=self.policy_head_channels,      # default:None
+            activation=self.activation,              # default:"relu"
             collector=self.layers_collector
         )
         self.pol_misc = Convolve(
-            in_channels=self.policy_head_channels,
-            out_channels=self.policy_outs,
+            in_channels=self.policy_head_channels,   # default:None
+            out_channels=self.policy_outs,           # fix:5
             kernel_size=1,
             activation="identity",
             collector=self.layers_collector
         )
         self.pol_misc_pass_fc = FullyConnect(
-            in_size=self.policy_head_channels,
-            out_size=self.policy_outs,
+            in_size=self.policy_head_channels,       # default:None
+            out_size=self.policy_outs,               # fix:5
             activation="identity",
             collector=self.layers_collector
         )
 
     def create_value_head(self):
         self.value_conv = ConvBlock(
-            in_channels=self.residual_channels,
-            out_channels=self.value_head_channels,
+            in_channels=self.residual_channels,      # default:None
+            out_channels=self.value_head_channels,   # default:None
             kernel_size=1,
             use_gamma=False,
-            mode=self.mode,
+            mode=self.mode,                          # default:"renorm"
             placement="after_block",
-            renorm_clipping=self.renorm_clipping,
-            activation=self.activation,
+            renorm_clipping=self.renorm_clipping,    # default:{"rmax":1, "dmax":0}
+            activation=self.activation,              # default:"relu"
             collector=self.layers_collector
         )
         self.value_intermediate_fc = FullyConnect(
-            in_size=self.value_head_channels * 3,
-            out_size=self.value_head_channels * 3,
-            activation=self.activation,
+            in_size=self.value_head_channels * 3,    # default:None
+            out_size=self.value_head_channels * 3,   # default:None
+            activation=self.activation,              # default:"relu"
             collector=self.layers_collector
         )
         self.ownership_conv = Convolve(
-            in_channels=self.value_head_channels,
+            in_channels=self.value_head_channels,    # default:None
             out_channels=1,
             kernel_size=1,
             activation="identity",
             collector=self.layers_collector
         )
         self.value_misc_fc = FullyConnect(
-            in_size=self.value_head_channels * 3,
-            out_size=self.value_misc,
+            in_size=self.value_head_channels * 3,    # default:None
+            out_size=self.value_misc,                # fix:15
             activation="identity",
             collector=self.layers_collector
         )
@@ -2685,7 +2685,7 @@ class Network(nn.Module):
 
         block = None
         blockname = None
-        channels = self.residual_channels
+        channels = self.residual_channels  # default:None
         for component in components:
             if component == "ResidualBlock":
                 block = ResidualBlock
@@ -2703,26 +2703,26 @@ class Network(nn.Module):
                 block = MixerBlock
                 blockargs["version"] = 2
             elif component == "TransformerBlock":
-                blockargs["use_rope"] = self.use_rope
-                blockargs["rope_theta"] = self.rope_theta
-                blockargs["learnable_rope"] = self.learnable_rope
-                blockargs["attention_qk_norm"] = self.attention_qk_norm
-                blockargs["use_gab"] = self.use_gab
-                blockargs["gab_d1"] = self.gab_d1
-                blockargs["gab_d2"] = self.gab_d2
-                blockargs["use_tab"] = self.use_tab
-                blockargs["inline_registers"] = self.inline_registers
-                blockargs["attention_num_rw_registers"] = self.attention_num_rw_registers
-                blockargs["gab_num_templates"] = self.gab_num_templates
-                blockargs["gab_num_fourier_features"] = self.gab_num_fourier_features
-                blockargs["gab_mlp_hidden"] = self.gab_mlp_hidden
-                blockargs["tab_c_z"] = self.tab_c_z
-                blockargs["tab_num_templates"] = self.tab_num_templates
-                blockargs["tab_num_freqs"] = self.tab_num_freqs
-                blockargs["tab_num_blocks"] = self.tab_num_blocks
-                blockargs["tab_dilation"] = self.tab_dilation
-                blockargs["use_swiglu"] = self.use_swiglu
-                blockargs["transformer_ffn_depthwise_conv"] = self.transformer_ffn_depthwise_conv
+                blockargs["use_rope"] = self.use_rope  # default:False
+                blockargs["rope_theta"] = self.rope_theta  # default:100.0
+                blockargs["learnable_rope"] = self.learnable_rope  # default:False
+                blockargs["attention_qk_norm"] = self.attention_qk_norm  # default:False
+                blockargs["use_gab"] = self.use_gab  # default:False
+                blockargs["gab_d1"] = self.gab_d1    # default:16
+                blockargs["gab_d2"] = self.gab_d2    # default:16
+                blockargs["use_tab"] = self.use_tab  # default:False
+                blockargs["inline_registers"] = self.inline_registers  # default:False
+                blockargs["attention_num_rw_registers"] = self.attention_num_rw_registers  # default:0
+                blockargs["gab_num_templates"] = self.gab_num_templates  # default:None
+                blockargs["gab_num_fourier_features"] = self.gab_num_fourier_features  # default:None
+                blockargs["gab_mlp_hidden"] = self.gab_mlp_hidden  # default:None
+                blockargs["tab_c_z"] = self.tab_c_z  # default:None
+                blockargs["tab_num_templates"] = self.tab_num_templates  # default:None
+                blockargs["tab_num_freqs"] = self.tab_num_freqs  # default:None
+                blockargs["tab_num_blocks"] = self.tab_num_blocks  # default:None
+                blockargs["tab_dilation"] = self.tab_dilation  # default:None
+                blockargs["use_swiglu"] = self.use_swiglu  # default:True
+                blockargs["transformer_ffn_depthwise_conv"] = self.transformer_ffn_depthwise_conv  # default:False
                 block = TransformerBlock
             elif component == "SE":
                 blockargs["se_size"] = channels // self.se_ratio
@@ -2766,11 +2766,11 @@ class Network(nn.Module):
                 "se_size" : None,
                 "bottleneck_channels" : None,
                 "version" : 1,
-                "activation" : self.activation,
-                "renorm_clipping" : self.renorm_clipping,
-                "mode" : self.mode,
-                "is_pre_act" : self.is_pre_act,
-                "pos_len" : self.xsize,
+                "activation" : self.activation,            # default:"relu"
+                "renorm_clipping" : self.renorm_clipping,  # default:{"rmax":1, "dmax":0}
+                "mode" : self.mode,                        # default:"renorm"
+                "is_pre_act" : self.is_pre_act,            # default:False
+                "pos_len" : self.xsize,                    # default:19
                 "collector" : self.layers_collector
             }
             block, channels, blockargs = self.parse_blocksetting(blocksetting, blockargs)
@@ -2782,8 +2782,8 @@ class Network(nn.Module):
 
         if self.is_pre_act:
             self.input_conv = Convolve(
-                in_channels=self.input_channels,
-                out_channels=self.residual_channels,
+                in_channels=self.input_channels,  # default:43
+                out_channels=self.residual_channels,  # default:None
                 kernel_size=3,
                 activation="identity",
                 bias=False,
@@ -2791,14 +2791,14 @@ class Network(nn.Module):
             )
         else:
             self.input_conv = ConvBlock(
-                in_channels=self.input_channels,
-                out_channels=self.residual_channels,
+                in_channels=self.input_channels,  # default:43
+                out_channels=self.residual_channels,   # default:None
                 kernel_size=3,
                 use_gamma=False if self.mode == "fixup" else True,
-                mode=self.mode,
+                mode=self.mode,                        # default:"renorm"
                 placement="before_block",
-                renorm_clipping=self.renorm_clipping,
-                activation=self.activation,
+                renorm_clipping=self.renorm_clipping,  # default:{"rmax":1, "dmax":0}
+                activation=self.activation,            # default::"relu"
                 collector=self.layers_collector
             )
 
@@ -2806,7 +2806,7 @@ class Network(nn.Module):
 
         # Trunk channel gating: per-channel learned gate that interpolates between
         # trunk and residual at each block.
-        if self.use_trunk_channel_gate:
+        if self.use_trunk_channel_gate:  # default:False
             num_blocks = len(self.residual_tower)
             self.trunk_channel_gate_logits = torch.nn.ParameterList()
             for k in range(num_blocks):
@@ -2819,7 +2819,7 @@ class Network(nn.Module):
         # sigmoid gate. Later blocks (and the final trunk output) can subtract a per-channel
         # sigmoid-gated amount of the backout trunk from the main trunk input to effectively
         # "back out" the influence of earlier blocks.
-        if self.use_trunk_residual_backout:
+        if self.use_trunk_residual_backout:  # default:False
             num_blocks = len(self.residual_tower)
             # Controls the amount that the initial embedding (channelwise scaled) forms
             # the initial contents of the backout trunk.
@@ -2846,43 +2846,43 @@ class Network(nn.Module):
             self.backout_use_logit_final = torch.nn.Parameter(torch.full((1, self.residual_channels, 1, 1), -2.0))
 
         # Create shared GAB template MLP if any block uses GAB
-        if self.use_gab:
+        if self.use_gab:  # default:False
             self.gab_template_mlp = GABTemplateMLP(
-                gab_num_templates=self.gab_num_templates,
-                gab_num_fourier_features=self.gab_num_fourier_features,
-                gab_mlp_hidden=self.gab_mlp_hidden,
-                pos_len=self.xsize,
-                activation=self.activation,
+                gab_num_templates=self.gab_num_templates,  # default:None
+                gab_num_fourier_features=self.gab_num_fourier_features,  # default:None
+                gab_mlp_hidden=self.gab_mlp_hidden,  # default:None
+                pos_len=self.xsize,  # default:19
+                activation=self.activation,  # default:"relu"
             )
         else:
             self.gab_template_mlp = None
 
-        if self.use_tab:
-            if self.tab_use_frequency_mixing:
+        if self.use_tab:  # default:False
+            if self.tab_use_frequency_mixing:  # default:False
                 self.tab_module = FrequencyMixingTABModule(
-                    trunk_channels=self.residual_channels,
-                    tab_c_z=self.tab_c_z,
-                    tab_num_templates=self.tab_num_templates,
-                    tab_num_blocks=self.tab_num_blocks,
-                    tab_dilation=self.tab_dilation,
-                    activation=self.activation,
-                    pos_len=self.xsize,
+                    trunk_channels=self.residual_channels,     # default:None
+                    tab_c_z=self.tab_c_z,                      # default:None
+                    tab_num_templates=self.tab_num_templates,  # default:None
+                    tab_num_blocks=self.tab_num_blocks,        # default:None
+                    tab_dilation=self.tab_dilation,            # default:None
+                    activation=self.activation,                # default:"relu"
+                    pos_len=self.xsize                         # default:19
                 )
             else:
                 self.tab_module = TABModule(
-                    trunk_channels=self.residual_channels,
-                    tab_c_z=self.tab_c_z,
-                    tab_num_templates=self.tab_num_templates,
-                    tab_num_freqs=self.tab_num_freqs,
-                    tab_num_blocks=self.tab_num_blocks,
-                    tab_dilation=self.tab_dilation,
-                    activation=self.activation,
-                    pos_len=self.xsize,
+                    trunk_channels=self.residual_channels,     # default:None
+                    tab_c_z=self.tab_c_z,                      # default:None
+                    tab_num_templates=self.tab_num_templates,  # default:None
+                    tab_num_freqs=self.tab_num_freqs,          # default:None
+                    tab_num_blocks=self.tab_num_blocks,        # default:None
+                    tab_dilation=self.tab_dilation,            # default:None
+                    activation=self.activation,                # default:"relu"
+                    pos_len=self.xsize                         # default:19
                 )
         else:
             self.tab_module = None
 
-        if self.attention_num_rw_registers > 0 and self.inline_registers:
+        if self.attention_num_rw_registers > 0 and self.inline_registers:  # default:0 and False
             # Inline registers: registers are part of the trunk tensor (NC1S layout).
             # They share the trunk channel dimension and participate in all layers.
             # Learnable initial register contents: (1, c_trunk, 1, k) in NC1S format
@@ -2905,19 +2905,19 @@ class Network(nn.Module):
             self.rw_reg_readout_act = activation_func(self.activation, inplace=False)
             self.rw_reg_readout_proj2 = torch.nn.Linear(self.residual_channels, self.residual_channels, bias=False)
 
-        if self.is_pre_act:
+        if self.is_pre_act:  # default:False
             # self.final_block = RMSNormMask(
             #     c_in=self.residual_channels,
             #     spatial=True,
             #     cgroup_size=None
             # )
             self.final_block = BatchNorm2d(
-                num_features=self.residual_channels,
+                num_features=self.residual_channels,  # default:None
                 use_gamma=False,
-                mode=self.mode,
-                renorm_clipping=self.renorm_clipping
+                mode=self.mode,                       # default:"renorm"
+                renorm_clipping=self.renorm_clipping  # default:{"rmax":1, "dmax":0}
             )
-            self.final_act = activation_func(self.activation, inplace=True)
+            self.final_act = activation_func(self.activation, inplace=True)  # default:"relu"
         else:
             self.final_block = CustomIdentity()
             self.final_act = nn.Identity()
@@ -2931,7 +2931,7 @@ class Network(nn.Module):
         If trunk channel gating is enabled, these are per-channel (1, C, 1, 1) tensors,
         otherwise both factors are the scalar 1.0 (plain residual addition).
         """
-        if self.use_trunk_channel_gate:
+        if self.use_trunk_channel_gate:  # default:False
             gate_logit = 0.5 * self.trunk_channel_gate_logits[block_idx]
             w = ((block_idx+2) / (block_idx+1)) / ((1.0 / (block_idx+1)) + torch.exp(-gate_logit))
             trunk_factor = (1.0/(block_idx+1)) * ((block_idx+2) - w)
@@ -3008,16 +3008,15 @@ class Network(nn.Module):
 
         # Compute shared block data
         block_shared_data = {}
-        if self.gab_template_mlp is not None:
+        if self.gab_template_mlp is not None:  # default:None
             seq_len = mask.shape[2] * mask.shape[3]  # H * W
             templates = self.gab_template_mlp(seq_len)
             block_shared_data[GAB_TEMPLATES] = GABTemplateData(templates=templates)
-        if self.tab_module is not None:
+        if self.tab_module is not None:  # default:None
             tab_keys, tab_queries = self.tab_module(x, mask)
             block_shared_data[TAB_KQ] = TABKeyQueryData(keys=tab_keys, queries=tab_queries)
         reg_init = None
-        # if self.attention_num_rw_registers > 0 and self.inline_registers:
-        if self.attention_num_rw_registers > 0:
+        if self.attention_num_rw_registers > 0:  # default:0
             # Compute board geometry from mask for register tokens.
             # mask: (B, 1, H, W)
             B, _, H, W = mask.shape
@@ -3036,7 +3035,7 @@ class Network(nn.Module):
             rw_pos_x = center_x + 2.0 * radius_x * torch.tanh(self.rw_register_rel_pos_x.unsqueeze(0))  # (B, k)
             rw_pos_y = center_y + 2.0 * radius_y * torch.tanh(self.rw_register_rel_pos_y.unsqueeze(0))  # (B, k)
 
-            if self.inline_registers:
+            if self.inline_registers:  # default:False
                 reg_init = self.rw_register_init.expand(B, -1, -1, -1)
                 # Build augmented mask: N11S with register positions always valid (1.0)
                 mask_flat = mask.view(B, 1, 1, H * W)
@@ -3064,15 +3063,15 @@ class Network(nn.Module):
                 )
         # residual tower
         # Initialize the parallel backout trunk if enabled.
-        if self.use_trunk_residual_backout:
+        if self.use_trunk_residual_backout:  # default:False
             backout = torch.sigmoid(self.backout_add_logit_embedding) * x
         else:
             backout = None
         # for block in self.residual_tower:
         for i, block in enumerate(self.residual_tower):
             if isinstance(block, TransformerBlock):
-                if self.attention_num_rw_registers > 0 and self.inline_registers:
-                    if self.use_trunk_residual_backout:
+                if self.attention_num_rw_registers > 0 and self.inline_registers:  # default:0 and False
+                    if self.use_trunk_residual_backout:  # default:False
                         x, backout = self._run_block_with_backout(
                             block, x, backout, i, is_first_block_of_trunk=(i == 0),
                             mask=mask_transformer_reg, 
@@ -3095,7 +3094,7 @@ class Network(nn.Module):
                         else:
                             x = x + residual
                 else:
-                    if self.use_trunk_residual_backout:
+                    if self.use_trunk_residual_backout:  # default:False
                         x, backout = self._run_block_with_backout(
                             block, x, backout, i, is_first_block_of_trunk=(i == 0),
                             mask=mask_transformer, 
@@ -3117,8 +3116,8 @@ class Network(nn.Module):
                             x = trunk_factor * x + residual_factor * residual
                         else:
                             x = x + residual
-            elif self.is_pre_act:
-                if self.use_trunk_residual_backout:
+            elif self.is_pre_act:  # default:False
+                if self.use_trunk_residual_backout:  # default:False
                     x, backout = self._run_block_with_backout(
                         block, x, backout, i, is_first_block_of_trunk=(i == 0),
                         mask_buffers=mask_buffers
@@ -3133,7 +3132,7 @@ class Network(nn.Module):
             else:
                 x = block(x, mask_buffers)
 
-        if self.use_trunk_residual_backout:
+        if self.use_trunk_residual_backout:  # default:False
             x = x - torch.sigmoid(self.backout_use_logit_final) * backout
 
         x = self.final_block(x, mask)
@@ -3142,7 +3141,7 @@ class Network(nn.Module):
         with autocast("cuda", enabled=False):
             # policy head
             pol = self.policy_conv(x, mask)
-            if self.policy_head_type["Type"] == "RepLK":
+            if self.policy_head_type["Type"] == "RepLK":  # default:"Normal"
                 pol = self.policy_depthwise_conv(pol, mask)
                 pol = self.policy_pointwise_conv(pol, mask)
             pol_gpool = self.global_pool(pol, mask_buffers)
@@ -3525,14 +3524,14 @@ class Network(nn.Module):
         self.input_conv.add_reg_dict(reg_dict, placement="before_block")
         for block in self.residual_tower:
             block.add_reg_dict(reg_dict)
-        if self.gab_template_mlp is not None:
+        if self.gab_template_mlp is not None:  # default:None
             self.gab_template_mlp.add_reg_dict(reg_dict)
-        if self.tab_module is not None:
+        if self.tab_module is not None:        # default:None
             self.tab_module.add_reg_dict(reg_dict)
-        if self.use_trunk_channel_gate:
+        if self.use_trunk_channel_gate:        # default:None
             for gate_logit in self.trunk_channel_gate_logits:
                 reg_dict["normal_gamma"].append(gate_logit)
-        if self.use_trunk_residual_backout:
+        if self.use_trunk_residual_backout:    # default:None
             # backout_reg = "noreg" if self.trunk_residual_backout_noreg else "normal_gamma"
             backout_reg = "normal_gamma"
             reg_dict[backout_reg].append(self.backout_add_logit_embedding)
@@ -3541,9 +3540,9 @@ class Network(nn.Module):
             for logit in self.backout_use_logits:
                 reg_dict[backout_reg].append(logit)
             reg_dict[backout_reg].append(self.backout_use_logit_final)
-        if self.is_pre_act:
+        if self.is_pre_act:  # default:False
             self.final_block.add_reg_dict(reg_dict, placement="after_block")
-        if self.attention_num_rw_registers > 0 and self.inline_registers:
+        if self.attention_num_rw_registers > 0 and self.inline_registers:  # default:0 and False
             reg_dict["noreg"].append(self.rw_register_init)
             reg_dict["noreg"].append(self.rw_register_rel_pos_x)
             reg_dict["noreg"].append(self.rw_register_rel_pos_y)
@@ -3551,7 +3550,7 @@ class Network(nn.Module):
             reg_dict["normal"].append(self.rw_reg_readout_proj1.weight)
             reg_dict["normal"].append(self.rw_reg_readout_proj2.weight)
         self.policy_conv.add_reg_dict(reg_dict, placement="after_block")
-        if self.policy_head_type["Type"] == "RepLK":
+        if self.policy_head_type["Type"] == "RepLK":  # default:"Normal"
             self.policy_depthwise_conv.add_reg_dict(reg_dict, placement="after_block")
             self.policy_pointwise_conv.add_reg_dict(reg_dict, placement="after_block")
         self.policy_intermediate_fc.add_reg_dict(reg_dict, placement="after_block")

@@ -1,3 +1,5 @@
+import faulthandler
+faulthandler.enable()
 import torch
 torch.set_float32_matmul_precision('high')
 import torch.nn.functional as F
@@ -1292,6 +1294,7 @@ def train_process(args):
     pipe = TrainingPipe(cfg)
     pipe.fit_and_store()
 
+import gc
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-j", "--json", metavar="<string>",
@@ -1304,3 +1307,4 @@ if __name__ == "__main__":
         stdout_write("Please give the setting json file.\n")
     else:
         train_process(args)
+    gc.disable()  # Disable garbage collection at program termination.

@@ -537,6 +537,8 @@ void DNNLoader::DumpInfo(std::vector<std::string> *vec_stack) const {
                 stack_name == "BottleneckBlock" || stack_name == "BottleneckBlock-SE" ||
                 stack_name == "NestedBottleneckBlock" || stack_name == "NestedBottleneckBlock-SE" ||
                 stack_name == "MixerBlock" || stack_name == "MixerBlock-SE" ||
+                stack_name == "MixerBlockV1" || stack_name == "MixerBlockV1-SE" ||
+                stack_name == "MixerBlockV2" || stack_name == "MixerBlockV2-SE" ||
                 stack_name == "TransformerBlock"
             ) {
                 serial_number++;
