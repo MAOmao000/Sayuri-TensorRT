@@ -3084,7 +3084,7 @@ class Network(nn.Module):
                         residual = block(x,
                             mask=mask_transformer_reg,
                             mask_sum_hw=mask_sum_hw_transformer_reg,
-                            mask_sum=wmask_sum_transformer_reg,
+                            mask_sum=mask_sum_transformer_reg,
                             block_shared_data=block_shared_data,
                             reg_init=reg_init
                         )
