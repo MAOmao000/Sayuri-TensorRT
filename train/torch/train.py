@@ -618,12 +618,13 @@ class TrainingPipe():
             self.net = self.net.to(self.device)
             self.module = self.net # linking
             self.net = torch.compile(
-                self.net,
-                backend="inductor",
-                options={
-                    "triton.autotune_cublasLt": False,  # Disable GEMM auto-tuning
-                    "triton.cudagraphs": True  # Keep CUDA Graphs enabled to maintain performance
-                }
+                self.net
+                # fullgraph=True
+                # backend="inductor",
+                # options={
+                #     "triton.autotune_cublasLt": False,  # Disable GEMM auto-tuning
+                #     "triton.cudagraphs": True  # Keep CUDA Graphs enabled to maintain performance
+                # }
             )
             self.swa_net = self.swa_net.to(self.device)
         else:
