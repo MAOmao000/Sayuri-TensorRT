@@ -3097,7 +3097,7 @@ class Network(nn.Module):
                     if self.use_trunk_residual_backout:  # default:False
                         x, backout = self._run_block_with_backout(
                             block, x, backout, i, is_first_block_of_trunk=(i == 0),
-                            mask=mask_transformer, 
+                            mask=mask, 
                             mask_sum_hw=mask_sum_hw_transformer,
                             mask_sum=mask_sum_transformer,
                             block_shared_data=block_shared_data,
@@ -3105,7 +3105,7 @@ class Network(nn.Module):
                         )
                     else:
                         residual = block(x,
-                            mask=mask_transformer,
+                            mask=mask,
                             mask_sum_hw=mask_sum_hw_transformer,
                             mask_sum=mask_sum_transformer,
                             block_shared_data=block_shared_data,
