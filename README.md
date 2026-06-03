@@ -31,14 +31,14 @@ You can check these features by setting the following in selfplay-setting.json.
         "IsPreAct" : true, ... Set to true if using a Transformer model, otherwise set to false.
         "UseRoPE" : true,
         "RoPETheta" : 100.0,
-        "LearnableRoPE" : false,
+        ~~"LearnableRoPE" : false,~~
         "AttentionQKNorm" : false,
         "UseGAB" : false,
         "GABD1" : 16,
         "GABD2" : 16,
         "UseTAB" : false,
-        "InlineRegisters" : false,  ... Add Register tokens
-        "AttentionNumRWRegisters" : 16,
+        ~~"InlineRegisters" : false,  ... Add Register tokens~~
+        ~~"AttentionNumRWRegisters" : 16,~~
         "GABNumTemplates" : 32,
         "GABNumFourierFeatures" : 12,
         "GABMLPHidden" : 96,
@@ -102,6 +102,10 @@ The configuration definition used is located in the bash/configs/sample folder.
 The log files are located in the train/log folder.
 
 ![all loss](./img/muon_onnx_hybrid_learnable_RoPE_loss.png)
+
+## Note (2026/06/03)
+
+Inline registers (Register tokens) and the learnable RoPE were removed from the program for the time being because they could not be successfully ported.
 
 ## Let's ROCK!
 
