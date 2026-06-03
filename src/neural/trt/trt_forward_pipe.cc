@@ -315,10 +315,11 @@ bool TrtForwardPipe::TrtEngine::CreatePlan(trt::InferPtr<nvinfer1::INetworkDefin
         const auto network_name = GetNetworkCacheName(std::filesystem::path(network->getName()));
         const auto trt_version = getInferLibVersion();
 
-        const std::string plan_cache_file = Format("trt-%d_gpu-%s_net-%s_%dx%d_batch%d_%s",
+        const std::string plan_cache_file = Format("trt-%d_gpu-%s_net-%s_%s_%dx%d_batch%d_%s",
                                                    trt_version,
                                                    device_ident.c_str(),
                                                    network_name.c_str(),
+                                                   model_hash.c_str(),
                                                    board_size_,
                                                    board_size_,
                                                    max_batch_size,
