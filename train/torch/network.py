@@ -2063,10 +2063,20 @@ class TransformerAttentionBlock(nn.Module):
 
         self.activation = kwargs.get("activation", DEFAULT_ACTIVATION)
         self.pos_len = kwargs.get("pos_len", 9)
-        self.use_rope = kwargs.get("use_rope", True)
+        self.positional_encoding = kwargs.get("positional_encoding", "RoPE")
+        self.use_rope = False
+        self.use_gab = False
+        self.use_tab = False
+        self.use_tab_freq_mix = False
+        if self.positional_encoding in ["RoPE", "RoPE+GAB", "RoPE+TAB", "RoPE+TAB+FreqMix"]:
+            self.use_rope = True
+        if self.positional_encoding in ["GAB", "RoPE+GAB"]:
+            self.use_gab = True
+        if self.positional_encoding in ["TAB", "RoPE+TAB"]:
+            self.use_tab = True
+        if self.positional_encoding in ["TAB+FreqMix", "RoPE+TAB+FreqMix"]:
+            self.use_tab_freq_mix = True
         self.use_qk_norm = kwargs.get("attention_qk_norm", False)
-        self.use_gab = kwargs.get("use_gab", False)
-        self.use_tab = kwargs.get("use_tab", False)
         self.num_heads = kwargs.get("transformer_heads", 3)
         self.num_kv_heads = kwargs.get("transformer_kv_heads", self.num_heads)
         # Compute how many query heads each KV head serves (group size)
@@ -2100,11 +2110,11 @@ class TransformerAttentionBlock(nn.Module):
             self.cos_cached = None
             self.sin_cached = None
 
-        if self.use_gab or self.use_tab:
+        if self.use_gab or self.use_tab or self.use_tab_freq_mix:
             gab_d1 = kwargs.get("gab_d1", 16)
             gab_d2 = kwargs.get("gab_d2", 16)
             self.gab_num_templates = kwargs.get("gab_num_templates", 32) if self.use_gab else 0
-            self.tab_num_templates = kwargs.get("tab_num_templates", 32) if self.use_tab else 0
+            self.tab_num_templates = kwargs.get("tab_num_templates", 32) if self.use_tab or self.use_tab_freq_mix else 0
             # Per-head weights: one per GAB template, one per TAB template.
             # TAB weights are per-template (shared across 2*F real/imag freq channels).
             self.total_num_weights = self.gab_num_templates + self.tab_num_templates
@@ -2185,7 +2195,7 @@ class TransformerAttentionBlock(nn.Module):
         # Instead of keeping T templates separate (which would need 2*F*T extra dims),
         # we contract over templates before the dot product, yielding one mixed
         # key/query per frequency per head - only 2*F_tab extra dims.
-        if self.use_tab:
+        if self.use_tab or self.use_tab_freq_mix:
             z_tab = z[:, :, idx:idx + self.tab_num_templates]  # (B, H, T)
             idx += self.tab_num_templates
             tab_data = block_shared_data[TAB_KQ]
@@ -2200,7 +2210,7 @@ class TransformerAttentionBlock(nn.Module):
             tab_keys = tab_keys.unsqueeze(1).expand(-1, self.num_heads, -1, -1)
             extra_k_parts.append(tab_keys)  # (B, H, S, 2*F_tab)
 
-        assert idx == self.total_num_weights
+        assert idx == self.total_num_weights, ""
 
         extra_kq = None
         if extra_k_parts:
@@ -2253,7 +2263,7 @@ class TransformerAttentionBlock(nn.Module):
 
         template_bias = None
         extra_kq = None
-        if self.use_gab or self.use_tab:
+        if self.use_gab or self.use_tab or self.use_tab_freq_mix:
             template_bias, extra_kq = self._compute_gab_bias(x_norm, mask, mask_sum_hw, block_shared_data)
 
         if mask is not None:
@@ -2399,32 +2409,48 @@ class Network(nn.Module):
         self.policy_outs = 5
         self.stack = cfg.stack  # default:[]
         self.version = 5
-        self.mode = cfg.mode.lower()  # default:"renorm"
+        self.mode = cfg.mode  # default:"renorm"
         if self.mode == "fixup":
             self.xavier_init = False
         else:
             self.xavier_init = True
-        self.is_pre_act = cfg.is_pre_act  # default:False
-        self.use_rope = cfg.use_rope      # default:False
+        self.is_pre_act = False
+        self.use_rope = False
+        self.use_gab = False
+        self.use_tab = False
+        self.use_tab_freq_mix = False
+        self.positional_encoding = cfg.positional_encoding # default:"RoPE"
+        if self.positional_encoding in ["RoPE", "RoPE+GAB", "RoPE+TAB", "RoPE+TAB+FreqMix"]:
+            self.use_rope = True
+        if self.positional_encoding in ["GAB", "RoPE+GAB"]:
+            self.use_gab = True
+        if self.positional_encoding in ["TAB", "RoPE+TAB"]:
+            self.use_tab = True
+        if self.positional_encoding in ["TAB+FreqMix", "RoPE+TAB+FreqMix"]:
+            self.use_tab_freq_mix = True
         self.rope_theta = cfg.rope_theta  # default:100.0
         self.attention_qk_norm = cfg.attention_qk_norm  # default:False
-        self.use_gab = cfg.use_gab  # default:False
         self.gab_d1 = cfg.gab_d1    # default:16
         self.gab_d2 = cfg.gab_d2    # default:16
-        self.use_tab = cfg.use_tab  # default:False
-        self.gab_num_templates=cfg.gab_num_templates  # default:None
-        self.gab_num_fourier_features=cfg.gab_num_fourier_features  # default:None
-        self.gab_mlp_hidden=cfg.gab_mlp_hidden  # default:None
+        self.gab_num_templates = cfg.gab_num_templates  # default:None
+        self.gab_num_fourier_features = cfg.gab_num_fourier_features  # default:None
+        self.gab_mlp_hidden = cfg.gab_mlp_hidden  # default:None
         self.tab_c_z = cfg.tab_c_z  # default:None
-        self.tab_num_templates=cfg.tab_num_templates  # default:None
-        self.tab_num_freqs=cfg.tab_num_freqs    # default:None
-        self.tab_num_blocks=cfg.tab_num_blocks  # default:None
-        self.tab_dilation=cfg.tab_dilation      # default:None
-        self.tab_use_frequency_mixing=cfg.tab_use_frequency_mixing  # default:False
+        self.tab_num_templates = cfg.tab_num_templates  # default:None
+        self.tab_num_freqs = cfg.tab_num_freqs    # default:None
+        self.tab_num_blocks = cfg.tab_num_blocks  # default:None
+        self.tab_dilation = cfg.tab_dilation      # default:None
+        self.transformer_heads = cfg.transformer_heads  # default:3
+        self.transformer_kv_heads = cfg.transformer_kv_heads  # default:3
+        self.attention_query_head_dim = cfg.attention_query_head_dim  # default:32
+        self.attention_value_head_dim = cfg.attention_value_head_dim  # default:32
+        self.transformer_ffn_channels = cfg.transformer_ffn_channels  # default:256
         self.use_swiglu = cfg.use_swiglu        # default:True
         self.transformer_ffn_depthwise_conv = cfg.transformer_ffn_depthwise_conv  # default:False
         self.use_trunk_channel_gate = cfg.use_trunk_channel_gate          # default:False
         self.use_trunk_residual_backout = cfg.use_trunk_residual_backout  # default:False
+        if self.use_trunk_channel_gate or self.use_trunk_residual_backout:
+            self.is_pre_act = True
 
         self.construct_layers()
 
@@ -2580,13 +2606,11 @@ class Network(nn.Module):
                 block = MixerBlock
                 blockargs["version"] = 2
             elif component == "TransformerBlock":
-                blockargs["use_rope"] = self.use_rope  # default:False
+                blockargs["positional_encoding"] = self.positional_encoding  # default:"RoPE"
                 blockargs["rope_theta"] = self.rope_theta  # default:100.0
                 blockargs["attention_qk_norm"] = self.attention_qk_norm  # default:False
-                blockargs["use_gab"] = self.use_gab  # default:False
                 blockargs["gab_d1"] = self.gab_d1    # default:16
                 blockargs["gab_d2"] = self.gab_d2    # default:16
-                blockargs["use_tab"] = self.use_tab  # default:False
                 blockargs["gab_num_templates"] = self.gab_num_templates  # default:None
                 blockargs["gab_num_fourier_features"] = self.gab_num_fourier_features  # default:None
                 blockargs["gab_mlp_hidden"] = self.gab_mlp_hidden  # default:None
@@ -2595,6 +2619,11 @@ class Network(nn.Module):
                 blockargs["tab_num_freqs"] = self.tab_num_freqs  # default:None
                 blockargs["tab_num_blocks"] = self.tab_num_blocks  # default:None
                 blockargs["tab_dilation"] = self.tab_dilation  # default:None
+                blockargs["transformer_heads"] = self.transformer_heads  # default:3
+                blockargs["transformer_kv_heads"] = self.transformer_kv_heads  # default:3
+                blockargs["attention_query_head_dim"] = self.attention_query_head_dim  # default:32
+                blockargs["attention_value_head_dim"] = self.attention_value_head_dim  # default:32
+                blockargs["transformer_ffn_channels"] = self.transformer_ffn_channels  # default:256
                 blockargs["use_swiglu"] = self.use_swiglu  # default:True
                 blockargs["transformer_ffn_depthwise_conv"] = self.transformer_ffn_depthwise_conv  # default:False
                 block = TransformerAttentionBlock
@@ -2619,6 +2648,27 @@ class Network(nn.Module):
                 blockargs["kernel_size"] = value
             elif key == "FfnExpansionRatio":
                 blockargs["ffn_expansion_ratio"] = value
+            elif key == "PositionalEncoding":
+                blockargs["positional_encoding"] = value
+                assert value in ["RoPE", "GAB", "TAB", "TAB+FreqMix", "RoPE+GAB", "RoPE+TAB", "RoPE+TAB+FreqMix"], ""
+                if value in ["RoPE", "RoPE+GAB", "RoPE+TAB", "RoPE+TAB+FreqMix"]:
+                    self.use_rope = True
+                if value in ["GAB", "RoPE+GAB"]:
+                    self.use_gab = True
+                if value in ["TAB", "RoPE+TAB"]:
+                    assert not self.use_tab_freq_mix, ""
+                    self.use_tab = True
+                if value in ["TAB+FreqMix", "RoPE+TAB+FreqMix"]:
+                    assert not self.use_tab, ""
+                    self.use_tab_freq_mix = True
+            elif key == "RoPETheta":
+                blockargs["rope_theta"] = value
+            elif key == "AttentionQKNorm":
+                blockargs["attention_qk_norm"] = value
+            elif key == "GABD1":
+                blockargs["gab_d1"] = value
+            elif key == "GABD2":
+                blockargs["gab_d2"] = value
             elif key == "TransformerHeads":
                 blockargs["transformer_heads"] = value
             elif key == "TransformerKVHheads":
@@ -2629,6 +2679,10 @@ class Network(nn.Module):
                 blockargs["attention_value_head_dim"] = value
             elif key == "TransformerFFNChannels":
                 blockargs["transformer_ffn_channels"] = value
+            elif key == "UseSwiGLU":
+                blockargs["use_swiglu"] = value
+            elif key == "TransformerFFNDepthwiseConv":
+                blockargs["transformer_ffn_depthwise_conv"] = value
             else:
                 raise Exception("Invalid block setting.")
         return block, channels, blockargs, additional_block
@@ -2656,6 +2710,20 @@ class Network(nn.Module):
     def construct_layers(self):
         self.global_pool = GlobalPool(is_value_head=False)
         self.global_pool_val = GlobalPool(is_value_head=True)
+
+        if not self.is_pre_act:
+            for block in self.stack:
+                components = list()
+                if type(block) == str:
+                    components = block.strip().split('-')
+                else:
+                    components = block["Block"].strip().split('-')
+                for component in components:
+                    if component == "TransformerBlock":
+                        self.is_pre_act = True  # used Transformer
+                        break
+                if self.is_pre_act:
+                    break
 
         if self.is_pre_act:
             self.input_conv = Convolve(
@@ -2734,28 +2802,27 @@ class Network(nn.Module):
         else:
             self.gab_template_mlp = None
 
-        if self.use_tab:  # default:False
-            if self.tab_use_frequency_mixing:  # default:False
-                self.tab_module = FrequencyMixingTABModule(
-                    trunk_channels=self.residual_channels,     # default:None
-                    tab_c_z=self.tab_c_z,                      # default:None
-                    tab_num_templates=self.tab_num_templates,  # default:None
-                    tab_num_blocks=self.tab_num_blocks,        # default:None
-                    tab_dilation=self.tab_dilation,            # default:None
-                    activation=self.activation,                # default:"relu"
-                    pos_len=self.xsize                         # default:19
-                )
-            else:
-                self.tab_module = TABModule(
-                    trunk_channels=self.residual_channels,     # default:None
-                    tab_c_z=self.tab_c_z,                      # default:None
-                    tab_num_templates=self.tab_num_templates,  # default:None
-                    tab_num_freqs=self.tab_num_freqs,          # default:None
-                    tab_num_blocks=self.tab_num_blocks,        # default:None
-                    tab_dilation=self.tab_dilation,            # default:None
-                    activation=self.activation,                # default:"relu"
-                    pos_len=self.xsize                         # default:19
-                )
+        if self.use_tab_freq_mix:  # default:False
+            self.tab_module = FrequencyMixingTABModule(
+                trunk_channels=self.residual_channels,     # default:None
+                tab_c_z=self.tab_c_z,                      # default:None
+                tab_num_templates=self.tab_num_templates,  # default:None
+                tab_num_blocks=self.tab_num_blocks,        # default:None
+                tab_dilation=self.tab_dilation,            # default:None
+                activation=self.activation,                # default:"relu"
+                pos_len=self.xsize                         # default:19
+            )
+        elif self.use_tab:  # default:False
+            self.tab_module = TABModule(
+                trunk_channels=self.residual_channels,     # default:None
+                tab_c_z=self.tab_c_z,                      # default:None
+                tab_num_templates=self.tab_num_templates,  # default:None
+                tab_num_freqs=self.tab_num_freqs,          # default:None
+                tab_num_blocks=self.tab_num_blocks,        # default:None
+                tab_dilation=self.tab_dilation,            # default:None
+                activation=self.activation,                # default:"relu"
+                pos_len=self.xsize                         # default:19
+            )
         else:
             self.tab_module = None
 

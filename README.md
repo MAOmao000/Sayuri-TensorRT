@@ -28,17 +28,11 @@ You can check these features by setting the following in selfplay-setting.json.
 ```
     "NeuralNetwork" : {
         "BatchNormMode" : "fixup", ... "renorm"(default), "norm" to use the conventional function
-        "IsPreAct" : true, ... Set to true if using a Transformer model, otherwise set to false.
-        "UseRoPE" : true,
+        "PositionalEncoding" :"RoPE", ... "RoPE"(default), "GAB", "TAB", "TAB+FreqMix", "RoPE+GAB", "RoPE+TAB", "RoPE+TAB+FreqMix".
         "RoPETheta" : 100.0,
-        ~~"LearnableRoPE" : false,~~
-        "AttentionQKNorm" : false,
-        "UseGAB" : false,
+        "AttentionQKNorm" : true,
         "GABD1" : 16,
         "GABD2" : 16,
-        "UseTAB" : false,
-        ~~"InlineRegisters" : false,  ... Add Register tokens~~
-        ~~"AttentionNumRWRegisters" : 16,~~
         "GABNumTemplates" : 32,
         "GABNumFourierFeatures" : 12,
         "GABMLPHidden" : 96,
@@ -47,13 +41,19 @@ You can check these features by setting the following in selfplay-setting.json.
         "TABNumFreqs" : 8,
         "TABNumBlocks" : 3,
         "TABDilation" : 3,
-        "TABUseFrequencyMixing" : false,
         "UseSwiGLU" : true,
-        "TransformerFFNDepthwiseConv" : false,
+        "TransformerFFNDepthwiseConv" : true,
+        "TransformerHeads" : 3,
+        "TransformerKVHheads" : 3,
+        "AttentionQueryHeadDim" : 32,
+        "AttentionValueHeadDim" : 32,
+        "TransformerFFNChannels" : 256
         "UseTrunkChannelGate" : false, ... KataGo's unique new features
         "UseTrunkResidualBackout" : false, ... KataGo's unique new features
         "Stack" : [
-            { "Block": "TransformerBlock",
+            "TransformerBlock"
+            or
+            { "Block": "TransformerBlock", ... If you want to change the value for each block
               "Args": {
                   "TransformerHeads" : 3,
                   "TransformerKVHheads" : 3,
@@ -106,6 +106,26 @@ The log files are located in the train/log folder.
 ## Note (2026/06/03)
 
 Inline registers (Register tokens) and the learnable RoPE were removed from the program for the time being because they could not be successfully ported.
+
+## Note (2026/06/04)
+
+The method for configuring the selfplay-setting.json file has been changed.
+The current evaluation at 300,000 steps is as follows:
+```
+Rank Name                                          Elo    +    - games score oppo. draws
+---- -------------------------------------------   ---   --   -- ----- ----- ----- ----- 
+   1 9x9 b6xc96 KataGo                             240   36   36   429   81%   -34    9% 
+   2 9x9 b6xc96 Nested Bottleneck                    4   31   31   428   50%     7    8% 
+   3 9x9 b6xc96 RoPE                                -1   31   31   428   48%    12   11% 
+   4 9x9 b6xc96 RoPE & TAB                          -4   31   31   430   49%     5    9% 
+   5 9x9 b6xc96 RRTRRT                             -31   31   31   428   47%    -1    9% 
+   6 9x9 b6xc96 RoPE & GAB                         -80   31   31   428   41%     0    9% 
+   7 9x9 b6xc96 Learnable RoPE & Register Tokens  -128   32   32   429   34%    10    9% 
+---- -------------------------------------------   ---   --   -- ----- ----- ----- ----- 
+KataGo weight: kata1-b6c96-s175395328-d26788732.txt.gz
+```
+
+
 
 ## Let's ROCK!
 

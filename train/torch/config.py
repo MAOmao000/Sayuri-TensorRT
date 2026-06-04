@@ -81,14 +81,11 @@ class Config:
         self.stack = network.get("Stack", [])
         self.netname_postfix = network.get("NamePostfix", "")
         self.mode = network.get("BatchNormMode", "renorm")
-        self.is_pre_act = network.get("IsPreAct", False)
-        self.use_rope = network.get("UseRoPE", False)
+        self.positional_encoding = network.get("PositionalEncoding", "RoPE")
         self.rope_theta = network.get("RoPETheta", 100.0)
         self.attention_qk_norm = network.get("AttentionQKNorm", False)
-        self.use_gab = network.get("UseGAB", False)
         self.gab_d1 = network.get("GABD1", 16)
         self.gab_d2 = network.get("GABD2", 16)
-        self.use_tab = network.get("UseTAB", False)
         self.gab_num_templates = network.get("GABNumTemplates", None)
         self.gab_num_fourier_features = network.get("GABNumFourierFeatures", None)
         self.gab_mlp_hidden = network.get("GABMLPHidden", None)
@@ -97,7 +94,11 @@ class Config:
         self.tab_num_freqs = network.get("TABNumFreqs", None)
         self.tab_num_blocks = network.get("TABNumBlocks", None)
         self.tab_dilation = network.get("TABDilation", None)
-        self.tab_use_frequency_mixing = network.get("TABUseFrequencyMixing", False)
+        self.transformer_heads = network.get("TransformerHeads", 3)
+        self.transformer_kv_heads = network.get("TransformerKVHheads", 3)
+        self.attention_query_head_dim = network.get("AttentionQueryHeadDim", 32)
+        self.attention_value_head_dim = network.get("AttentionValueHeadDim", 32)
+        self.transformer_ffn_channels = network.get("TransformerFFNChannels", 256)
         self.use_swiglu = network.get("UseSwiGLU", True)
         self.transformer_ffn_depthwise_conv = network.get("TransformerFFNDepthwiseConv", False)
         self.use_trunk_channel_gate = network.get("UseTrunkChannelGate", False)
@@ -107,3 +108,5 @@ class Config:
         assert self.residual_channels != None, ""
         assert self.policy_head_channels != None, ""
         assert self.value_head_channels != None, ""
+        assert self.mode in ["norm", "renorm", "fixup"], ""
+        assert self.positional_encoding in ["RoPE", "GAB", "TAB", "TAB+FreqMix", "RoPE+GAB", "RoPE+TAB", "RoPE+TAB+FreqMix"], ""
