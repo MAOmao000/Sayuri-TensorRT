@@ -82,6 +82,7 @@ class Config:
         self.netname_postfix = network.get("NamePostfix", "")
         self.mode = network.get("BatchNormMode", "renorm")
         self.positional_encoding = network.get("PositionalEncoding", "RoPE")
+        self.learnable_rope = network.get("LearnableRoPE", False)
         self.rope_theta = network.get("RoPETheta", 100.0)
         self.attention_qk_norm = network.get("AttentionQKNorm", False)
         self.gab_d1 = network.get("GABD1", 16)

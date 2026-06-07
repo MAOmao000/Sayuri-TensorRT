@@ -30,6 +30,7 @@ You can check these features by setting the following in selfplay-setting.json.
         "BatchNormMode" : "fixup", ... "renorm"(default), "norm" to use the conventional function
         "PositionalEncoding" :"RoPE", ... "RoPE"(default), "GAB", "TAB", "TAB+FreqMix", "RoPE+GAB", "RoPE+TAB", "RoPE+TAB+FreqMix".
         "RoPETheta" : 100.0,
+        "LearnableRoPE" : false,
         "AttentionQKNorm" : true,
         "GABD1" : 16,
         "GABD2" : 16,
@@ -122,6 +123,25 @@ Rank Name                                          Elo    +    - games score opp
    6 9x9 b6xc96 RoPE & GAB                         -80   31   31   428   41%     0    9% 
    7 9x9 b6xc96 Learnable RoPE & Register Tokens  -128   32   32   429   34%    10    9% 
 ---- -------------------------------------------   ---   --   -- ----- ----- ----- ----- 
+KataGo weight: kata1-b6c96-s175395328-d26788732.txt.gz
+```
+
+## Note (2026/06/07)
+
+have re-imported a trainable RoPE.
+The current evaluation at 300,000 steps is as follows:
+```
+Rank Name                           Elo    +    - games score oppo. draws 
+---- -----------------------------  ----  --   -- ----- ----- ----- ----- 
+   1 9x9 b6xc96 KataGo              202   31   31   500   78%   -28   12% 
+   2 9x9 b6xc96 RRTRRT                8   28   28   501   51%    -3   11% 
+   3 9x9 b6xc96 RoPE                 -5   28   28   500   48%     7   10% 
+   4 9x9 b6xc96 Nested Bottleneck   -15   28   28   500   49%    -3    9% 
+   5 9x9 b6xc96 Learnable RoPE      -17   28   28   501   47%     6   13% 
+   6 9x9 b6xc96 RoPE & TAB          -40   29   29   499   45%     4    9% 
+   7 9x9 b6xc96 backout RoPE        -54   28   28   500   43%     7   13% 
+   8 9x9 b6xc96 RoPE & GAB          -80   29   29   499   39%    10   10% 
+---- -----------------------------  ----  --   -- ----- ----- ----- ----- 
 KataGo weight: kata1-b6c96-s175395328-d26788732.txt.gz
 ```
 

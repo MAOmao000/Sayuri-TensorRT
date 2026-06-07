@@ -1503,6 +1503,37 @@ def apply_rotary_emb(xq, xk, cos, sin):
 
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
+def compute_learnable_rope_cos_sin(s_x, s_y, freqs):
+    """Compute cos/sin rotation tables from spatial positions and learnable 2D frequencies.
+    s_x: (...,) float tensor of column positions
+    s_y: (...,) float tensor of row positions
+    freqs: (H_kv, P, 2) learnable frequencies (omega_x, omega_y) per head per pair
+    Returns: (cos, sin) each of shape (..., H_kv, P)
+    """
+    # angles: (..., H_kv, P) = omega_x * x + omega_y * y
+    angles = s_x.unsqueeze(-1).unsqueeze(-1) * freqs[:, :, 0] + s_y.unsqueeze(-1).unsqueeze(-1) * freqs[:, :, 1]
+    return torch.cos(angles), torch.sin(angles)
+
+def apply_learnable_rotary_emb(xq, xk, cos_q, sin_q, cos_k, sin_k):
+    """Apply learnable rotary position embeddings to Q and K tensors.
+    xq: (Batch, Seq, num_heads, Dim)
+    xk: (Batch, Seq, num_kv_heads, Dim)
+    cos_q, sin_q: (Seq, num_heads, Dim/2) or (Batch, Seq, num_heads, Dim/2)
+    cos_k, sin_k: (Seq, num_kv_heads, Dim/2) or (Batch, Seq, num_kv_heads, Dim/2)
+    """
+    def _rotate(x, cos, sin):
+        B, S, H, D = x.shape
+        P = D // 2
+        x_pairs = x.view(B, S, H, P, 2)
+        x0, x1 = x_pairs.unbind(dim=-1)  # each (B, S, H, P)
+        if cos.dim() == 3:
+            cos = cos.unsqueeze(0)  # (1, S, H, P)
+            sin = sin.unsqueeze(0)
+        out = torch.stack([x0 * cos - x1 * sin, x0 * sin + x1 * cos], dim=-1)
+        return out.reshape(B, S, H, D).type_as(x)
+
+    return _rotate(xq, cos_q, sin_q), _rotate(xk, cos_k, sin_k)
+
 def compute_gab_fourier_features(dr, dc, freqs):
     """Compute Fourier features for relative (dr, dc) offsets.
     dr: (...) float tensor of row offsets
@@ -2076,6 +2107,7 @@ class TransformerAttentionBlock(nn.Module):
             self.use_tab = True
         if self.positional_encoding in ["TAB+FreqMix", "RoPE+TAB+FreqMix"]:
             self.use_tab_freq_mix = True
+        self.learnable_rope = kwargs.get("learnable_rope", False) if self.use_rope else False
         self.use_qk_norm = kwargs.get("attention_qk_norm", False)
         self.num_heads = kwargs.get("transformer_heads", 3)
         self.num_kv_heads = kwargs.get("transformer_kv_heads", self.num_heads)
@@ -2100,12 +2132,26 @@ class TransformerAttentionBlock(nn.Module):
             self.k_norm = CustomRMSNorm(self.q_head_dim, eps=1e-6)
 
         if self.use_rope:
-            self.rope_theta = kwargs.get("rope_theta", 100.0)
-            assert self.rope_theta > self.pos_len * 2.0, \
-                f"theta={self.rope_theta} of RoPE may be too small for pos_len={self.pos_len}"
-            cos_cached, sin_cached = precompute_freqs_cos_sin_2d(self.q_head_dim, self.pos_len, self.rope_theta)
-            self.register_buffer("cos_cached", cos_cached, persistent=False)
-            self.register_buffer("sin_cached", sin_cached, persistent=False)
+            if self.learnable_rope:
+                num_pairs = self.q_head_dim // 2
+                # Learnable 2D RoPE frequencies.
+                # Geometric initialization from 1 rad/square to 1/50 rad/square
+                log_lo = math.log(1.0 / 50.0)
+                log_hi = math.log(1.0)
+                init_freqs = (
+                    torch.exp(torch.empty(self.num_kv_heads, num_pairs, 2).uniform_(log_lo, log_hi))
+                    * (torch.randint(0, 2, (self.num_kv_heads, num_pairs, 2)) * 2 - 1).float()
+                )
+                self.rope_freqs = torch.nn.Parameter(init_freqs)  # (num_kv_heads, P, 2)
+                self.cos_cached = None
+                self.sin_cached = None
+            else:
+                self.rope_theta = kwargs.get("rope_theta", 100.0)
+                assert self.rope_theta > self.pos_len * 2.0, \
+                    f"theta={self.rope_theta} of RoPE may be too small for pos_len={self.pos_len}"
+                cos_cached, sin_cached = precompute_freqs_cos_sin_2d(self.q_head_dim, self.pos_len, self.rope_theta)
+                self.register_buffer("cos_cached", cos_cached, persistent=False)
+                self.register_buffer("sin_cached", sin_cached, persistent=False)
         else:
             self.cos_cached = None
             self.sin_cached = None
@@ -2245,7 +2291,25 @@ class TransformerAttentionBlock(nn.Module):
         v = v.view(batch_size, seq_len, self.num_kv_heads, self.v_head_dim)
 
         if self.use_rope:
-            q, k = apply_rotary_emb(q, k, self.cos_cached, self.sin_cached)
+            if self.learnable_rope:
+                # compute from arange.
+                s_idx = torch.arange(seq_len, device=q.device)
+                s_y = (s_idx // self.pos_len).float()  # row
+                s_x = (s_idx % self.pos_len).float()   # col
+                cos_k, sin_k = compute_learnable_rope_cos_sin(s_x, s_y, self.rope_freqs)  # ([B,] S, H_kv, P)
+                # For Q: expand kv head freqs to match num_heads if using grouped-query attention.
+                # cos_k/sin_k are ([B,] S, H_kv, P); repeat each kv head n_rep times along a new axis
+                # inserted right after the head axis, so query head h maps to kv head h // n_rep --
+                # matching the k/v expansion below and the C++ backends' kvh = h * num_kv / num_heads.
+                if self.n_rep > 1:
+                    cos_q = cos_k.unsqueeze(-2).expand(*cos_k.shape[:-1], self.n_rep, cos_k.shape[-1]).reshape(*cos_k.shape[:-2], self.num_heads, -1)
+                    sin_q = sin_k.unsqueeze(-2).expand(*sin_k.shape[:-1], self.n_rep, sin_k.shape[-1]).reshape(*sin_k.shape[:-2], self.num_heads, -1)
+                else:
+                    cos_q = cos_k
+                    sin_q = sin_k
+                q, k = apply_learnable_rotary_emb(q, k, cos_q, sin_q, cos_k, sin_k)
+            else:
+                q, k = apply_rotary_emb(q, k, self.cos_cached, self.sin_cached)
 
         q = q.permute(0, 2, 1, 3)
         k = k.permute(0, 2, 1, 3)
@@ -2428,6 +2492,7 @@ class Network(nn.Module):
             self.use_tab = True
         if self.positional_encoding in ["TAB+FreqMix", "RoPE+TAB+FreqMix"]:
             self.use_tab_freq_mix = True
+        self.learnable_rope = cfg.learnable_rope  # default:False
         self.rope_theta = cfg.rope_theta  # default:100.0
         self.attention_qk_norm = cfg.attention_qk_norm  # default:False
         self.gab_d1 = cfg.gab_d1    # default:16
@@ -2607,6 +2672,7 @@ class Network(nn.Module):
                 blockargs["version"] = 2
             elif component == "TransformerBlock":
                 blockargs["positional_encoding"] = self.positional_encoding  # default:"RoPE"
+                blockargs["learnable_rope"] = self.learnable_rope  # default:False
                 blockargs["rope_theta"] = self.rope_theta  # default:100.0
                 blockargs["attention_qk_norm"] = self.attention_qk_norm  # default:False
                 blockargs["gab_d1"] = self.gab_d1    # default:16
@@ -2661,6 +2727,8 @@ class Network(nn.Module):
                 if value in ["TAB+FreqMix", "RoPE+TAB+FreqMix"]:
                     assert not self.use_tab, ""
                     self.use_tab_freq_mix = True
+            elif key == "LearnableRoPE":
+                blockargs["learnable_rope"] = value
             elif key == "RoPETheta":
                 blockargs["rope_theta"] = value
             elif key == "AttentionQKNorm":
