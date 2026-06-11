@@ -1205,9 +1205,13 @@ class NestedBottleneckBlock(nn.Module):
                 self.pre_btl_conv.initialize(
                     scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
                 self.block1.initialize(
-                    fixup_scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                    fixup_scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)),
+                    se_fixup_scale=1.0,
+                    xavier_init=xavier_init)
                 self.block2.initialize(
-                    fixup_scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                    fixup_scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)),
+                    se_fixup_scale=1.0,
+                    xavier_init=xavier_init)
                 self.post_btl_conv.initialize(scale=0.0, xavier_init=xavier_init)
                 self.se_module.initialize(scale=se_fixup_scale, xavier_init=xavier_init)
             else:
@@ -2449,6 +2453,131 @@ class TransformerFFNBlock(torch.nn.Module):
         result = x1.permute(0, 2, 1).view(batch_size, channels, height, width)
         return result
 
+class NestedBottleneckTransformerBlock(nn.Module):
+    def __init__(self, channels,
+                       *args,
+                       **kwargs):
+        super(NestedBottleneckTransformerBlock, self).__init__()
+
+        self.activation = kwargs.get("activation", DEFAULT_ACTIVATION)
+        self.renorm_clipping = kwargs.get("renorm_clipping", {"rmax" : 1, "dmax" : 0})
+        self.bottleneck_channels = kwargs.get("bottleneck_channels", None)
+        self.mode = kwargs.get("mode", "renorm")
+        self.is_pre_act = kwargs.get("is_pre_act", True)
+        self.positional_encoding = kwargs.get("positional_encoding", "RoPE")
+        self.pos_len = kwargs.get("pos_len", 9)
+        self.learnable_rope = kwargs.get("learnable_rope", False)
+        self.rope_theta = kwargs.get("rope_theta", 100.0)
+        self.attention_qk_norm = kwargs.get("attention_qk_norm", False)
+        self.gab_d1 = kwargs.get("gab_d1", 16)
+        self.gab_d2 = kwargs.get("gab_d2", 16)
+        self.gab_num_templates = kwargs.get("gab_num_templates", None)
+        self.gab_num_fourier_features = kwargs.get("gab_num_fourier_features", None)
+        self.gab_mlp_hidden = kwargs.get("gab_mlp_hidden", None)
+        self.tab_c_z = kwargs.get("tab_c_z", None)
+        self.tab_num_templates = kwargs.get("tab_num_templates", None)
+        self.tab_num_freqs = kwargs.get("tab_num_freqs", None)
+        self.tab_num_blocks = kwargs.get("tab_num_blocks", None)
+        self.tab_dilation = kwargs.get("tab_dilation", None)
+        self.transformer_heads = kwargs.get("transformer_heads", 3)
+        self.transformer_kv_heads = kwargs.get("transformer_kv_heads", 3)
+        self.attention_query_head_dim = kwargs.get("attention_query_head_dim", 32)
+        self.attention_value_head_dim = kwargs.get("attention_value_head_dim", 32)
+        self.transformer_ffn_channels = kwargs.get("transformer_ffn_channels", 256)
+        self.use_swiglu = kwargs.get("use_swiglu", True)
+        self.transformer_ffn_depthwise_conv = kwargs.get("transformer_ffn_depthwise_conv", False)
+        self.internal_length = kwargs.get("internal_length", 2)
+        assert self.internal_length >= 1, ""
+        assert self.bottleneck_channels is not None, ""
+        assert self.bottleneck_channels % 2 == 0, ""
+
+        # The inner layers channels.
+        self.inner_channels = self.bottleneck_channels
+
+        # The main ResidualBlock channels. We say a 15x192
+        # resnet. The 192 is outer_channel.
+        self.outer_channels = channels
+
+        self.pre_btl_conv = ConvBlock(
+            in_channels=self.outer_channels,
+            out_channels=self.inner_channels,
+            kernel_size=1,
+            use_gamma=False,
+            mode=self.mode,
+            is_pre_act=self.is_pre_act,
+            placement="in_block",
+            renorm_clipping=self.renorm_clipping,
+            activation=self.activation,
+            collector=None
+        )
+        self.blockstack = torch.nn.ModuleList()
+        for i in range(self.internal_length):
+            self.blockstack.append(TransformerAttentionBlock(
+                channels=self.inner_channels,
+                activation=self.activation,
+                pos_len=self.pos_len,
+                positional_encoding=self.positional_encoding,
+                learnable_rope=self.learnable_rope,
+                use_qk_norm=self.attention_qk_norm,
+                transformer_heads=self.transformer_heads,
+                transformer_kv_heads=self.transformer_kv_heads,
+                attention_query_head_dim=self.attention_query_head_dim,
+                attention_value_head_dim= self.attention_value_head_dim
+            ))
+            self.blockstack.append(TransformerFFNBlock(
+                channels=self.inner_channels,
+                activation=self.activation,
+                transformer_ffn_channels=self.transformer_ffn_channels,
+                use_swiglu=self.use_swiglu,
+                transformer_ffn_depthwise_conv=self.transformer_ffn_depthwise_conv 
+            ))
+        self.post_btl_conv = ConvBlock(
+            in_channels=self.inner_channels,
+            out_channels=self.outer_channels,
+            kernel_size=1,
+            use_gamma=True,
+            mode=self.mode,
+            is_pre_act=self.is_pre_act,
+            placement="in_block",
+            renorm_clipping=self.renorm_clipping,
+            activation=self.activation,
+            collector=None
+        )
+
+    def initialize(self, fixup_scale, se_fixup_scale, xavier_init):
+        if xavier_init:
+            self.pre_btl_conv.initialize(scale=1.0, xavier_init=xavier_init)
+            for i in range(2 * self.internal_length):
+                self.blockstack[i].initialize(
+                    fixup_scale=1.0,
+                    se_fixup_scale=1.0,
+                    xavier_init=xavier_init)
+            self.post_btl_conv.initialize(scale=1.0, xavier_init=xavier_init)
+        else:
+            self.pre_btl_conv.initialize(
+                scale=math.pow(fixup_scale, 1.0 / (1.0 + self.internal_length)), xavier_init=xavier_init)
+            for i in range(2 * self.internal_length):
+                self.blockstack[i].initialize(
+                    fixup_scale=math.pow(fixup_scale, 1.0 / (1.0 + self.internal_length)),
+                    se_fixup_scale=1.0,
+                    xavier_init=xavier_init)
+            self.post_btl_conv.initialize(scale=0.0, xavier_init=xavier_init)
+
+    def add_reg_dict(self, reg_dict):
+        self.pre_btl_conv.add_reg_dict(reg_dict)
+        for block in self.blockstack:
+            block.add_reg_dict(reg_dict)
+        self.post_btl_conv.add_reg_dict(reg_dict)
+
+    def forward(self, x, mask, mask_sum_hw, mask_sum, block_shared_data=None):
+        out = x
+        out = self.pre_btl_conv(out, mask)
+        for block in self.blockstack:
+            out = block(out, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum,
+                block_shared_data=block_shared_data)
+        out = self.post_btl_conv(out, mask)
+        return out
+
 class Network(nn.Module):
     def __init__(self, cfg):
         super(Network, self).__init__()
@@ -2694,6 +2823,31 @@ class Network(nn.Module):
                 blockargs["transformer_ffn_depthwise_conv"] = self.transformer_ffn_depthwise_conv  # default:False
                 block = TransformerAttentionBlock
                 additional_block = TransformerFFNBlock
+            elif component == "NestedBottleneckTransformerBlock":
+                blockargs["bottleneck_channels"] = channels // 2
+                assert channels % 2 == 0, ""
+                blockargs["positional_encoding"] = self.positional_encoding  # default:"RoPE"
+                blockargs["learnable_rope"] = self.learnable_rope  # default:False
+                blockargs["rope_theta"] = self.rope_theta  # default:100.0
+                blockargs["attention_qk_norm"] = self.attention_qk_norm  # default:False
+                blockargs["gab_d1"] = self.gab_d1    # default:16
+                blockargs["gab_d2"] = self.gab_d2    # default:16
+                blockargs["gab_num_templates"] = self.gab_num_templates  # default:None
+                blockargs["gab_num_fourier_features"] = self.gab_num_fourier_features  # default:None
+                blockargs["gab_mlp_hidden"] = self.gab_mlp_hidden  # default:None
+                blockargs["tab_c_z"] = self.tab_c_z  # default:None
+                blockargs["tab_num_templates"] = self.tab_num_templates  # default:None
+                blockargs["tab_num_freqs"] = self.tab_num_freqs  # default:None
+                blockargs["tab_num_blocks"] = self.tab_num_blocks  # default:None
+                blockargs["tab_dilation"] = self.tab_dilation  # default:None
+                blockargs["transformer_heads"] = self.transformer_heads  # default:3
+                blockargs["transformer_kv_heads"] = self.transformer_kv_heads  # default:3
+                blockargs["attention_query_head_dim"] = self.attention_query_head_dim  # default:32
+                blockargs["attention_value_head_dim"] = self.attention_value_head_dim  # default:32
+                blockargs["transformer_ffn_channels"] = self.transformer_ffn_channels  # default:256
+                blockargs["use_swiglu"] = self.use_swiglu  # default:True
+                blockargs["transformer_ffn_depthwise_conv"] = self.transformer_ffn_depthwise_conv  # default:False
+                block = NestedBottleneckTransformerBlock
             elif component == "SE":
                 blockargs["se_size"] = channels // self.se_ratio
                 assert channels % self.se_ratio == 0, ""
@@ -2787,7 +2941,7 @@ class Network(nn.Module):
                 else:
                     components = block["Block"].strip().split('-')
                 for component in components:
-                    if component == "TransformerBlock":
+                    if component == "TransformerBlock" or component == "NestedBottleneckTransformerBlock":
                         self.is_pre_act = True  # used Transformer
                         break
                 if self.is_pre_act:
@@ -2946,7 +3100,9 @@ class Network(nn.Module):
         else:
             block_in = out - torch.sigmoid(self.backout_use_logits[block_idx - 1]) * backout
 
-        if isinstance(block, TransformerAttentionBlock) or isinstance(block, TransformerFFNBlock):
+        if (isinstance(block, TransformerAttentionBlock) or
+            isinstance(block, TransformerFFNBlock) or
+            isinstance(block, NestedBottleneckTransformerBlock)):
             residual = block(
                 block_in,
                 mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum,
@@ -3007,11 +3163,13 @@ class Network(nn.Module):
             backout = None
         # for block in self.residual_tower:
         for i, block in enumerate(self.residual_tower):
-            if isinstance(block, TransformerAttentionBlock) or isinstance(block, TransformerFFNBlock):
+            if (isinstance(block, TransformerAttentionBlock) or
+                isinstance(block, TransformerFFNBlock) or
+                isinstance(block, NestedBottleneckTransformerBlock)):
                 if self.use_trunk_residual_backout:  # default:False
                     x, backout = self._run_block_with_backout(
                         block, x, backout, i, is_first_block_of_trunk=(i == 0),
-                        mask=mask, 
+                        mask=mask,
                         mask_sum_hw=mask_sum_hw_transformer,
                         mask_sum=mask_sum_transformer,
                         block_shared_data=block_shared_data
