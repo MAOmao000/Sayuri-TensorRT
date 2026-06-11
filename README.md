@@ -166,6 +166,28 @@ Rank Name                               Elo     +    - games score oppo. draws T
 KataGo weight: kata1-b6c96-s175395328-d26788732.txt.gz
 ```
 
+## Note (2026/06/12)
+
+Added support for NNTNNT (Nested Bottleneck & Transformer) model.
+The current evaluation at 300,000 steps is as follows:
+```
+Rank Name                               Elo     +    - games score oppo. draws Training hours
+---- ---------------------------------  ----   --   -- ----- ----- ----- ----- --------------
+   1 9x9 b6xc96 KataGo                   282   36   36   454   83%   -13   11%            -
+   2 9x9 b6xc96 RoPE+TAB                  57   30   30   455   56%     4   10%          26.33
+   3 9x9 b6xc96 Learnable RoPE            57   31   31   457   55%    16    9%          14.87
+   4 9x9 b6xc96 RRTRRT                    44   31   31   455   54%    11    7%          12.18
+   5 9x9 b6xc96 Nested Bottleneck         41   31   31   457   53%    12    8%          13.28
+   6 9x9 b6xc96 RoPE                      33   30   30   454   51%    20    9%          14.53
+   7 9x9 b6xc96 Backout RoPE              12   31   31   454   50%     6    6%          15.28
+   8 9x9 b6xc96 RoPE+GAB                 -44   31   31   454   44%     8    7%          17.47
+   9 9x9 b6xc96 NNTNNT                  -125   31   31   454   39%   -29    8%          13.92
+  10 9x9 b6xc96 Nested Bottleneck RoPE  -170   32   32   453   33%   -19    6%          21.00
+  11 9x9 b6xc96 TAB+FreqMix             -186   33   33   453   31%   -15    6%          26.08
+---- ---------------------------------  ----   --   -- ----- ----- ----- ----- --------------
+KataGo weight: kata1-b6c96-s175395328-d26788732.txt.gz
+```
+
 
 
 ## Let's ROCK!
