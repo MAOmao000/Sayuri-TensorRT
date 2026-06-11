@@ -1218,9 +1218,13 @@ class NestedBottleneckBlock(nn.Module):
                 self.pre_btl_conv.initialize(
                     scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
                 self.block1.initialize(
-                    fixup_scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                    fixup_scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)),
+                    se_fixup_scale=1.0,
+                    xavier_init=xavier_init)
                 self.block2.initialize(
-                    fixup_scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                    fixup_scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)),
+                    se_fixup_scale=1.0,
+                    xavier_init=xavier_init)
                 self.post_btl_conv.initialize(scale=0.0, xavier_init=xavier_init)
 
     def add_reg_dict(self, reg_dict):
