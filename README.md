@@ -188,6 +188,23 @@ Rank Name                               Elo     +    - games score oppo. draws T
 KataGo weight: kata1-b6c96-s175395328-d26788732.txt.gz
 ```
 
+## Note (2026/06/16)
+
+Added support for Learnable RRTAB (Residual & Learnable RoPE+TAB) model.
+The current evaluation at 400,000 steps is as follows:
+```
+Rank Name                               Elo     +    - games score oppo. draws Training hours
+---- ---------------------------------  ----   --   -- ----- ----- ----- ----- --------------
+   1 9x9 b6xc96 KataGo                   147   33   33   400   71%   -28   10%            -
+   2 9x9 b6xc96 Learnable RRTRRT           9   31   31   400   51%     0   10%          16.03
+   3 9x9 b6xc96 Learnable RRTAB            4   32   32   400   50%     4   10%          29.12
+   4 9x9 b6xc96 Nested Bottleneck        -47   32   32   399   44%     8    8%          17.52
+   5 9x9 b6xc96 Learnable RoPE           -52   32   32   400   43%     7   10%          19.62
+   6 9x9 b6xc96 RoPE                     -60   32   32   401   41%    10    8%          19.22
+---- ---------------------------------  ----   --   -- ----- ----- ----- ----- --------------
+KataGo weight: kata1-b6c96-s175395328-d26788732.txt.gz
+```
+
 
 
 ## Let's ROCK!
