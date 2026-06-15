@@ -11,6 +11,7 @@ This is a prototype of the TensorRT backend for ONNX (onnx-tensorrt) designed fo
 AQ already adopted this method (using UFF instead of ONNX) in 2018, but there were still many restrictions at that time, so it was not adopted in the Go engine for a while.
 Also added the following features:
 * Muon+AdamW optimizer
+* Aurora+AdamW optimizer
 * torch.compile
 * Fixup Initialize
 * Transformer model for demonstration purposes
@@ -65,7 +66,7 @@ You can check these features by setting the following in selfplay-setting.json.
             },
             ...
     "Train" : {
-        "Optimizer" : "Muon", ... "Adam", "SGD" (default) to use the conventional function
+        "Optimizer" : "Aurora", ... "Muon", "Adam", "SGD" (default) to use the conventional function
         "LearningRateSchedule" : [
             [0,     3.2e-4 or 3.2e-5] ... For Muon, operation has been confirmed with 3.2e-4 (default:0.2)
                                           When using the Transformer model, used 3.2e-5.
@@ -190,7 +191,7 @@ KataGo weight: kata1-b6c96-s175395328-d26788732.txt.gz
 
 ## Note (2026/06/16)
 
-Added support for Learnable RRTAB (Residual & Learnable RoPE+TAB) model.
+Added support for Learnable RRTAB (Residual & Learnable RoPE+TAB) model and Aurora+AdamW optimizer.
 The current evaluation at 400,000 steps is as follows:
 ```
 Rank Name                               Elo     +    - games score oppo. draws Training hours
