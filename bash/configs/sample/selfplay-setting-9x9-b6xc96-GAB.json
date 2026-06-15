@@ -1,0 +1,72 @@
+{
+    "NeuralNetwork" : {
+        "NNType" : "Residual",
+        "MaxBoardSize" : 9,
+        "ResidualChannels" : 96,
+        "PolicyHeadChannels" : 24,
+        "ValueHeadChannels" : 24,
+        "SeRatio" : 4,
+        "PolicyHeadType" : "RepLK",
+        "Activation" : "mish",
+        "NamePostfix" : "",
+        "BatchNormMode" : "fixup",
+        "PositionalEncoding" : "RoPE+GAB",
+        "RoPETheta" : 100.0,
+        "AttentionQKNorm" : true,
+        "UseGAB" : true,
+        "GABD1" : 16,
+        "GABD2" : 16,
+        "UseTAB" : false,
+        "GABNumTemplates" : 32,
+        "GABNumFourierFeatures" : 12,
+        "GABMLPHidden" : 96,
+        "UseSwiGLU" : true,
+        "TransformerFFNDepthwiseConv" : true,
+        "UseTrunkChannelGate" : false,
+        "UseTrunkResidualBackout" : false,
+
+        "Stack" : [
+            "TransformerBlock",
+            "TransformerBlock",
+            "TransformerBlock",
+            "TransformerBlock",
+            "TransformerBlock",
+            "TransformerBlock"
+        ]
+    },
+
+    "Train" : {
+        "UseGPU" : null,
+        "UseFp16" : true,
+        "Optimizer" : "Aurora",
+        "StepsPerEpoch" : 4000,
+        "ValidationSteps" : 100,
+        "VerboseSteps" : 1000,
+        "MaxStepsPerRunning" : 4000,
+        "Workers" : 12,
+        "BatchSize" : 256,
+        "BufferSize" : 64000,
+        "DownSampleRate" : 16,
+        "MacroFactor" : 1,
+        "WeightDecay" : 1e-4,
+        "NumberChunks" : 500000,
+        "ChunksIncreasingC" : 5000,
+        "SoftLossWeight" : 0.1,
+        "SwaMaxCount" : 16,
+        "SwaSteps" : 500,
+        "WarmUpSteps" : 20000,
+        "PolicySurpriseFactor" : 0.0,
+        "RenormMaxR" : 3,
+        "RenormMaxD" : 4,
+
+        "LearningRateSchedule" : [
+            [0,     3.2e-5]
+         ],
+
+        "ExportONNX" : true,
+        "UseCompile" : true,
+        "TrainDirectory" : "selfplay/tdata",
+        "ValidationDirectory" : null,
+        "StorePath" : "workspace"
+    }
+}
