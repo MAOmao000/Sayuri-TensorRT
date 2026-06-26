@@ -2526,7 +2526,7 @@ class NestedBottleneckTransformerBlock(nn.Module):
                 transformer_heads=self.transformer_heads,
                 transformer_kv_heads=self.transformer_kv_heads,
                 attention_query_head_dim=self.attention_query_head_dim,
-                attention_value_head_dim= self.attention_value_head_dim
+                attention_value_head_dim=self.attention_value_head_dim
             ))
             self.blockstack.append(TransformerFFNBlock(
                 channels=self.inner_channels,
@@ -2574,11 +2574,12 @@ class NestedBottleneckTransformerBlock(nn.Module):
         self.post_btl_conv.add_reg_dict(reg_dict)
 
     def forward(self, x, mask, mask_sum_hw, mask_sum, block_shared_data=None):
-        out = x
-        out = self.pre_btl_conv(out, mask)
+        out = self.pre_btl_conv(x, mask)
         for block in self.blockstack:
-            out = block(out, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum,
+            in = out
+            out = block(in, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum,
                 block_shared_data=block_shared_data)
+            out = in + out
         out = self.post_btl_conv(out, mask)
         return out
 
@@ -3119,7 +3120,7 @@ class Network(nn.Module):
             )
 
         trunk_factor, residual_factor = self._trunk_residual_factors(block_idx)
-        new_out = trunk_factor * out + residual_factor * residual
+        new_out = trunk_factor * block_in + residual_factor * residual
         is_last_block_of_trunk = (block_idx == len(self.residual_tower) - 1)
         if is_last_block_of_trunk:
             # Last block's residual is only seen by the final output; don't add it to backout.
