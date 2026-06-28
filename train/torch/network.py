@@ -2576,10 +2576,10 @@ class NestedBottleneckTransformerBlock(nn.Module):
     def forward(self, x, mask, mask_sum_hw, mask_sum, block_shared_data=None):
         out = self.pre_btl_conv(x, mask)
         for block in self.blockstack:
-            in = out
-            out = block(in, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum,
+            in_feature = out
+            out = block(in_feature, mask=mask, mask_sum_hw=mask_sum_hw, mask_sum=mask_sum,
                 block_shared_data=block_shared_data)
-            out = in + out
+            out = in_feature + out
         out = self.post_btl_conv(out, mask)
         return out
 
