@@ -806,7 +806,7 @@ class TrainingPipe():
                 self._get_param_groups(),
                 adjust_lr_fn="match_rms_adamw",
                 use_normuon=False,
-                use_aurora=True if self.opt_name == "Muon" else False,
+                use_aurora=True if self.opt_name == "Aurora" else False,
                 aurora_pp_iterations=2,  # Number of preconditioning-polar iterations for aurora
                 aurora_pp_beta=0.5,      # Damping parameter for aurora diagonal preconditioner
                 ns_steps=5,              # Number of Newton-Schulz iterations for muon/aurora
