@@ -53,7 +53,6 @@ def zeropower_via_newtonschulz5(G, steps: int):
         X = X.mT
     return X
 
-
 # Polar Express: per-iteration coefficients with safety factor for numerical stability.
 # See https://arxiv.org/abs/2505.16932
 _POLAR_EXPRESS_COEFFS = [
@@ -71,7 +70,6 @@ _POLAR_EXPRESS_COEFFS = [
     (a / 1.01, b / 1.01**3, c / 1.01**5)
     for (a, b, c) in _POLAR_EXPRESS_COEFFS[:-1]
 ] + [_POLAR_EXPRESS_COEFFS[-1]]
-
 
 def zeropower_via_polar_express(G, steps: int):
     """
@@ -98,7 +96,6 @@ def zeropower_via_polar_express(G, steps: int):
     if G.size(-2) > G.size(-1):
         X = X.mT
     return X
-
 
 def _aurora_polar(update, ns_steps=5, pp_iterations=2, pp_beta=0.5, eps=1e-7, use_polar_express=False):
     """
@@ -138,7 +135,6 @@ def _aurora_polar(update, ns_steps=5, pp_iterations=2, pp_beta=0.5, eps=1e-7, us
     if transposed:
         U = U.mT
     return U
-
 
 def muon_update(grad, momentum, ns_steps=5, beta=0.95, nesterov=True, adjust_lr_fn="match_rms_adamw",
                 normuon_v=None, normuon_beta2=0.95, normuon_eps=1e-8, use_polar_express=False):
@@ -191,7 +187,6 @@ def muon_update(grad, momentum, ns_steps=5, beta=0.95, nesterov=True, adjust_lr_
         raise AssertionError(f"Unexpected value {adjust_lr_fn=}")
     return update
 
-
 def aurora_update(grad, momentum, ns_steps=5, beta=0.95, nesterov=True, adjust_lr_fn="match_rms_adamw",
                   pp_iterations=2, pp_beta=0.5, eps=1e-7, use_polar_express=False):
     """
@@ -232,14 +227,12 @@ def aurora_update(grad, momentum, ns_steps=5, beta=0.95, nesterov=True, adjust_l
         raise AssertionError(f"Unexpected value {adjust_lr_fn=}")
     return update
 
-
 def adam_update(grad, buf1, buf2, step, betas, eps):
     buf1.lerp_(grad, 1 - betas[0])
     buf2.lerp_(grad.square(), 1 - betas[1])
     buf1c = buf1 / (1 - betas[0]**step)
     buf2c = buf2 / (1 - betas[1]**step)
     return buf1c / (buf2c.sqrt() + eps)
-
 
 class MuonWithAuxAdam(torch.optim.Optimizer):
     """
@@ -366,7 +359,6 @@ class MuonWithAuxAdam(torch.optim.Optimizer):
                     p.add_(update, alpha=-group["lr"])
 
         return loss
-
 
 class SingleDeviceMuonWithAuxAdam(torch.optim.Optimizer):
     """
@@ -780,12 +772,13 @@ class TrainingPipe():
             )
             self.swa_net = self.swa_net.to(self.device)
         else:
-            self.module = self.net # linking
             if self.use_gpu:
                 self.net = self.net.to(self.device)
                 self.net = DataParallel(self.net) 
                 self.module  = self.net.module
                 self.swa_net = self.swa_net.to(self.device)
+            else:
+                self.module  = self.net.module
 
         # Copy the initial weights.
         self.swa_net.accumulate_swa(self.module, 0)
@@ -812,6 +805,7 @@ class TrainingPipe():
                 ns_steps=5,              # Number of Newton-Schulz iterations for muon/aurora
                 use_polar_express=True)  # polar factor projection
         elif self.opt_name == "SGD" or not self.opt_name in ["Adam", "SGD"]:
+            self.opt_name = "SGD"
             # Recommanded optimizer, the SGD is better than Adam
             # in this kind of training task.
             self.opt = torch.optim.SGD(
@@ -1001,7 +995,6 @@ class TrainingPipe():
         self.module.update_parameters(self.current_steps)
 
         self.swa_count = self._status_dict.fancy_get(StatusDict.SWA_COUNT_KEY)
-
         curr_lr = self._get_lr_schedule(self.current_steps)
 
         if self.opt_name == "Muon" or self.opt_name == "Aurora":
@@ -1017,7 +1010,6 @@ class TrainingPipe():
             for param in self.opt.param_groups:
                 param["lr"] = curr_lr
                 param["weight_decay"] = self.weight_decay
-
         self.max_steps = self.max_steps_per_running + self.current_steps
         stdout_write("Current steps is {}. Will stop the training at {}.\n".format(self.current_steps, self.max_steps))
 
@@ -1106,20 +1098,20 @@ class TrainingPipe():
                 raise AssertionError(f"onnx package not installed, skipping metadata addition.")
             except Exception as e:
                 raise AssertionError(f"Failed to add metadata: {e}")
-        else:
-            weights_name = os.path.join(
-                self.weights_path, "{}.bin.txt".format(status))
-            cpu_module = self.module.to("cpu")
-            cpu_module.transfer_to_bin(weights_name)
+            return
+        weights_name = os.path.join(
+            self.weights_path, "{}.bin.txt".format(status))
+        cpu_module = self.module.to("cpu")
+        cpu_module.transfer_to_bin(weights_name)
 
-            swa_weights_name = os.path.join(
-                self.swa_weights_path, "{}-swa.bin.txt".format(status))
-            cpu_swa_net = self.swa_net.to("cpu")
-            cpu_swa_net.transfer_to_bin(swa_weights_name)
+        swa_weights_name = os.path.join(
+            self.swa_weights_path, "{}-swa.bin.txt".format(status))
+        cpu_swa_net = self.swa_net.to("cpu")
+        cpu_swa_net.transfer_to_bin(swa_weights_name)
 
-            if self.use_gpu:
-                self.module = self.module.to(self.device)
-                self.swa_net = self.swa_net.to(self.device)
+        if self.use_gpu:
+            self.module = self.module.to(self.device)
+            self.swa_net = self.swa_net.to(self.device)
 
     def _init_loader(self):
         def compute_window_size(N, c=5000, scale=1.0, alpha=0.75, beta=0.4):
@@ -1290,12 +1282,12 @@ class TrainingPipe():
                 if self.cfg.use_compile:
                     planes = planes.to(self.device)
                     target_to = ()
-                    for batch_dict in target:
-                        batch_dict = batch_dict.to(self.device)
-                        target_to += (batch_dict, )
+                    for prediction in target:
+                        prediction  = prediction.to(self.device)
+                        target_to += (prediction, )
                     _, all_loss_dict = self.net(
                         planes,
-                        target=target_to,
+                        target=target_to, # get=target,
                         use_symm=True,
                         loss_weight_dict=self._loss_weight_dict
                     )
@@ -1375,10 +1367,10 @@ class TrainingPipe():
 
                 if macro_steps % self.macrofactor == 0:
                     # clip grad
-                    if ((self.opt_name != "Muon" and self.opt_name != "Aurora") and
-                        (self.cfg.mode == "renorm" or self.cfg.mode == "norm")):
-                        gnorm = torch.nn.utils.clip_grad_norm_(
-                            self.net.parameters(), 10000.0).detach().cpu().item()
+                    if (self.opt_name != "Muon" and self.opt_name != "Aurora" and
+                        (self.cfg.mode == "renorm" or self.cfg.mode == "norm")
+                    ):
+                        torch.nn.utils.clip_grad_norm_(self.net.parameters(), 10000.0)
                     else:
                         if self.opt_name == "Muon" or self.opt_name == "Aurora":
                             gnorm_cap = 11000.0
@@ -1419,15 +1411,18 @@ class TrainingPipe():
                         self.swa_net.accumulate_swa(self.module, self.swa_count)
 
                     # update learning rate
-                    # for param in self.opt.param_groups:
-                    #     param["lr"] = self._get_lr_schedule(self.current_steps)
                     curr_lr = self._get_lr_schedule(self.current_steps)
                     if self.opt_name == "Adam" or self.opt_name == "SGD":
                         for param in self.opt.param_groups:
                             param["lr"] = curr_lr
                     else:
                         for param in self.opt.param_groups:
-                            if param["group_name"] == "normal" or param["group_name"] == "normal_attn" or param["group_name"] == "normal_gab" or param["group_name"] == "gab_mlp" or param["group_name"] == "tab_module":
+                            if (param["group_name"] == "normal" or
+                                param["group_name"] == "normal_attn" or
+                                param["group_name"] == "normal_gab" or
+                                param["group_name"] == "gab_mlp" or
+                                param["group_name"] == "tab_module"
+                            ):
                                 param["lr"] = curr_lr * 2.0
                             elif param["group_name"] == "output" or param["group_name"] == "output_noreg":
                                 param["lr"] = curr_lr * 0.5
