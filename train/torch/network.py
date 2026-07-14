@@ -288,6 +288,10 @@ class BatchNorm2d(nn.Module):
             self.register_buffer(
                 "running_var", torch.ones(num_features, dtype=torch.float)
             )
+            if mode == "renorm":
+                self.register_buffer(
+                    "num_batches_tracked", torch.tensor(0, dtype=torch.long)
+                )
 
         if use_gamma:
             self.gamma = torch.nn.Parameter(
@@ -316,15 +320,22 @@ class BatchNorm2d(nn.Module):
         # in Batch-Normalized Models", Batch-Renormalization is much faster and steady than 
         # traditional Batch-Normalized when batch size is very small, eg bs=4.
         self.use_renorm = mode == "renorm"
-        if self.use_renorm:
-            self.rmax = renorm_clipping["rmax"]
-            self.dmax = renorm_clipping["dmax"]
+        # self.rmax = renorm_clipping["rmax"]
+        # self.dmax = renorm_clipping["dmax"]
 
         # Fixup Batch Normalization layer. According to kataGo, Batch Normalization may cause
         # some wierd reuslts becuse the inference and training computation results are different.
         # Fixup can avoid the weird forwarding result. Fixup also speeds up the performance. The
         # improvement may be around x1.6 ~ x1.8 faster.
         self.fixup = mode == "fixup"
+
+    @property
+    def rmax(self) -> torch.Tensor:
+        return (2 / 35000 * self.num_batches_tracked + 25 / 35).clamp_(1.0, 3.0)
+
+    @property
+    def dmax(self) -> torch.Tensor:
+        return (5 / 20000 * self.num_batches_tracked - 25 / 20).clamp_(0.0, 5.0)
 
     def add_reg_dict(self, reg_dict, placement="in_block"):
         if placement == "in_block":
@@ -382,13 +393,17 @@ class BatchNorm2d(nn.Module):
 
         r = (
             std.detach() / running_std
-        ).clamp(1 / self.rmax, self.rmax)
+        ).clamp_(1 / self.rmax, self.rmax)
+        # ).clamp(1 / self.rmax, self.rmax)
 
         d = (
             (mean.detach() - running_mean) / running_std
-        ).clamp(-self.dmax, self.dmax)
+        ).clamp_(-self.dmax, self.dmax)
+        # ).clamp(-self.dmax, self.dmax)
 
         x = (x-mean)/std * r + d
+        with torch.no_grad():
+            self.num_batches_tracked += 1
         return x
 
     def _apply_norm(self, x, mean, var):
@@ -412,8 +427,9 @@ class BatchNorm2d(nn.Module):
 
             # Update moving averages.
             momentum = self._get_momentum(x)
-            self.running_mean += momentum * (batch_mean.detach() - self.running_mean)
-            self.running_var += momentum * (batch_var.detach() - self.running_var)
+            with torch.no_grad():
+                self.running_mean += momentum * (batch_mean.detach() - self.running_mean)
+                self.running_var += momentum * (batch_var.detach() - self.running_var)
         elif not self.fixup:
             # Inference step or fixup, they are equal.
             x = self._apply_norm(x, self.running_mean, self.running_var)
@@ -426,8 +442,6 @@ class BatchNorm2d(nn.Module):
             x = x * (self.gamma.view(1, self.num_features))
             x = x + self.beta.view(1, self.num_features)
             return x
-
-        return x * mask
 
 class BroadcastDepthwiseConv2d(nn.Module):
     def __init__(self, channels,
@@ -635,7 +649,7 @@ class ConvBlock(nn.Module):
                        is_pre_act=False,
                        collector=None):
         super(ConvBlock, self).__init__()
-
+ 
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.is_pre_act = is_pre_act
@@ -648,7 +662,6 @@ class ConvBlock(nn.Module):
             padding="same",
             bias=False,
         )
-
         if is_pre_act:  # default:False
             self.pre_bias = BatchNorm2d(
                 num_features=in_channels,
@@ -2612,7 +2625,7 @@ class Network(nn.Module):
             self.xavier_init = False
         else:
             self.xavier_init = True
-        self.is_pre_act = False
+        self.is_pre_act = cfg.is_pre_act
         self.use_rope = False
         self.use_gab = False
         self.use_tab = False
@@ -2648,8 +2661,6 @@ class Network(nn.Module):
         self.transformer_ffn_depthwise_conv = cfg.transformer_ffn_depthwise_conv  # default:False
         self.use_trunk_channel_gate = cfg.use_trunk_channel_gate          # default:False
         self.use_trunk_residual_backout = cfg.use_trunk_residual_backout  # default:False
-        if self.use_trunk_channel_gate or self.use_trunk_residual_backout:
-            self.is_pre_act = True
 
         self.construct_layers()
 
@@ -2984,7 +2995,6 @@ class Network(nn.Module):
             for k in range(num_blocks):
                 self.trunk_channel_gate_logits.append(
                     torch.nn.Parameter(torch.zeros(1, self.residual_channels, 1, 1)))
-
         # Trunk residual backout: a parallel "backout" trunk accumulates alongside the
         # main trunk using the same per-block (trunk_factor, residual_factor) coefficients,
         # but with each residual's contribution additionally multiplied by a per-channel
@@ -3296,7 +3306,7 @@ class Network(nn.Module):
             if target is not None:
                 all_loss_dict = self.compute_loss(predict, target, mask_buffers, loss_weight_dict)
 
-            return predict, all_loss_dict
+        return predict, all_loss_dict
 
     def compute_loss(self, pred, target, mask_buffers, loss_weight_dict):
         mask, mask_sum_hw, _ = mask_buffers
