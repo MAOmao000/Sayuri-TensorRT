@@ -20,9 +20,6 @@ class Config:
         self.parse_training_config(jdata)
         self.parse_nn_config(jdata)
         if not self.export_onnx:
-            if self.mode == "fixup":
-                print("Warning: The fixup mode can only be specified for the ONNX conversion engine. It is being changed renorm mode.")
-                self.mode = "renorm"
             if self.is_pre_act:
                 print("Warning: The PreActivation can only be specified for the ONNX conversion engine. The specification will be ignored.")
                 self.is_pre_act = False
@@ -81,8 +78,6 @@ class Config:
         self.swa_max_count = train.get("SwaMaxCount", 16)
         self.swa_steps = train.get("SwaSteps", 100)
         self.warmup_steps = train.get("WarmUpSteps", 0)
-        self.renorm_max_r = train.get("RenormMaxR", 1)
-        self.renorm_max_d = train.get("RenormMaxD", 0)
         self.policy_surprise_factor = train.get("PolicySurpriseFactor", 0.0)
         self.export_onnx = train.get("ExportONNX", False)
         self.use_compile = train.get("UseCompile", False)
@@ -140,7 +135,7 @@ class Config:
         assert self.policy_head_channels != None, "PolicyHeadChannels or PolicyExtract is not specified."
         assert self.value_head_channels != None, "ValueHeadChannels or ValueExtract is not specified."
         assert (
-            self.mode in ["norm", "renorm", "fixup"]
+            self.mode in ["norm", "renorm"]
         ), f"{self.mode} cannot be assigned to BatchNormMode."
         assert (
             self.positional_encoding in

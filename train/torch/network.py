@@ -205,7 +205,6 @@ class GlobalPool(nn.Module):
 class SqueezeAndExcitation(nn.Module):
     def __init__(self, channels,
                        se_size,
-                       mode,
                        activation,
                        collector=None):
         super(SqueezeAndExcitation, self).__init__()
@@ -220,48 +219,23 @@ class SqueezeAndExcitation(nn.Module):
             activation=self.activation,
             collector=collector
         )
-        if mode == "fixup":
-            self.pre_bias_squeeze = BatchNorm2d(
-                num_features=self.channels * 3,
-                mode=mode
-            )
-        else:
-            self.pre_bias_squeeze = CustomIdentity()
-
         self.excite = FullyConnect(
             in_size=se_size,
             out_size=self.channels * 2,
             activation="identity",
             collector=collector
         )
-        if mode == "fixup":
-            self.pre_bias_excite = BatchNorm2d(
-                num_features=se_size,
-                mode=mode
-            )
-        else:
-            self.pre_bias_excite = CustomIdentity()
-
-    def initialize(self, scale, xavier_init):
-        self.squeeze.initialize(scale=scale, xavier_init=xavier_init)
-        self.excite.initialize(scale=scale, xavier_init=xavier_init)
 
     def add_reg_dict(self, reg_dict):
         self.squeeze.add_reg_dict(reg_dict)
         self.excite.add_reg_dict(reg_dict)
-        if not isinstance(self.pre_bias_squeeze, CustomIdentity):
-            self.pre_bias_squeeze.add_reg_dict(reg_dict)
-        if not isinstance(self.pre_bias_excite, CustomIdentity):
-            self.pre_bias_excite.add_reg_dict(reg_dict)
 
     def forward(self, x, mask_buffers):
         b, c, _, _ = x.size()
         mask, _, _ = mask_buffers
 
         seprocess = self.global_pool(x, mask_buffers)
-        seprocess = self.pre_bias_squeeze(seprocess, mask_buffers)
         seprocess = self.squeeze(seprocess)
-        seprocess = self.pre_bias_excite(seprocess, mask_buffers)
         seprocess = self.excite(seprocess)
 
         gammas, betas = torch.split(seprocess, self.channels, dim=1)
@@ -277,8 +251,7 @@ class BatchNorm2d(nn.Module):
                        momentum=0.01,
                        use_gamma=False,
                        mode="renorm",
-                       renorm_clipping={"rmax" : 1, "dmax" : 0},
-                       momentum_basic_batchsize=None):
+                       momentum_basic_batchsize=256):
         super(BatchNorm2d, self).__init__()
 
         if mode == "renorm" or mode == "norm":
@@ -320,8 +293,6 @@ class BatchNorm2d(nn.Module):
         # in Batch-Normalized Models", Batch-Renormalization is much faster and steady than 
         # traditional Batch-Normalized when batch size is very small, eg bs=4.
         self.use_renorm = mode == "renorm"
-        # self.rmax = renorm_clipping["rmax"]
-        # self.dmax = renorm_clipping["dmax"]
 
         # Fixup Batch Normalization layer. According to kataGo, Batch Normalization may cause
         # some wierd reuslts becuse the inference and training computation results are different.
@@ -331,10 +302,12 @@ class BatchNorm2d(nn.Module):
 
     @property
     def rmax(self) -> torch.Tensor:
+        # 6k: 1.0, 40k: 3.0
         return (2 / 35000 * self.num_batches_tracked + 25 / 35).clamp_(1.0, 3.0)
 
     @property
     def dmax(self) -> torch.Tensor:
+        # 25k: 5.0
         return (5 / 20000 * self.num_batches_tracked - 25 / 20).clamp_(0.0, 5.0)
 
     def add_reg_dict(self, reg_dict, placement="in_block"):
@@ -394,12 +367,10 @@ class BatchNorm2d(nn.Module):
         r = (
             std.detach() / running_std
         ).clamp_(1 / self.rmax, self.rmax)
-        # ).clamp(1 / self.rmax, self.rmax)
 
         d = (
             (mean.detach() - running_mean) / running_std
         ).clamp_(-self.dmax, self.dmax)
-        # ).clamp(-self.dmax, self.dmax)
 
         x = (x-mean)/std * r + d
         with torch.no_grad():
@@ -431,17 +402,13 @@ class BatchNorm2d(nn.Module):
                 self.running_mean += momentum * (batch_mean.detach() - self.running_mean)
                 self.running_var += momentum * (batch_var.detach() - self.running_var)
         elif not self.fixup:
-            # Inference step or fixup, they are equal.
+            # Inference step, they are equal.
             x = self._apply_norm(x, self.running_mean, self.running_var)
 
-        if x.dim() == 4:
-            x = x * (self.gamma.view(1, self.num_features, 1, 1))
-            x = x + self.beta.view(1, self.num_features, 1, 1)
-            return x * mask
-        else:
-            x = x * (self.gamma.view(1, self.num_features))
-            x = x + self.beta.view(1, self.num_features)
-            return x
+        x = x * (self.gamma.view(1, self.num_features, 1, 1))
+        x = x + self.beta.view(1, self.num_features, 1, 1)
+
+        return x * mask
 
 class BroadcastDepthwiseConv2d(nn.Module):
     def __init__(self, channels,
@@ -521,20 +488,17 @@ class FullyConnect(nn.Module):
         )
         self.activation = activation
         self.act = activation_func(self.activation, inplace=True)
+        self._init_weights()
         self._try_collect(collector)
+
+    def _init_weights(self):
+        nn.init.xavier_normal_(
+            self.linear.weight, gain=compute_gain(self.activation))
+        nn.init.zeros_(self.linear.bias)
 
     def _try_collect(self, collector):
         if collector is not None:
             collector.append(self)
-
-    def initialize(self, scale, xavier_init, bias_scale=0.2):
-        if xavier_init:
-            nn.init.xavier_normal_(
-                self.linear.weight, gain=compute_gain(self.activation))
-            nn.init.zeros_(self.linear.bias)
-        else:
-            init_weights(self.linear.weight, self.activation, scale=scale)
-            init_weights(self.linear.bias, self.activation, scale=bias_scale, fan_tensor=self.linear.weight)
 
     def add_reg_dict(self, reg_dict, placement="in_block"):
         if placement == "in_block":
@@ -582,26 +546,22 @@ class Convolve(nn.Module):
             out_channels,
             kernel_size,
             padding="same",
-            bias=bias,
+            bias=bias
         )
         self.activation = activation
         self.act = activation_func(self.activation, inplace=True)
+        self._init_weights()
         self._try_collect(collector)
+
+    def _init_weights(self):
+        nn.init.xavier_normal_(
+            self.conv.weight, gain=compute_gain(self.activation))
+        if self.bias:
+            nn.init.zeros_(self.conv.bias)
 
     def _try_collect(self, collector):
         if collector is not None:
             collector.append(self)
-
-    def initialize(self, scale, xavier_init, bias_scale=0.2):
-        if xavier_init:
-            nn.init.xavier_normal_(
-                self.conv.weight, gain=compute_gain(self.activation))
-            if self.bias:
-                nn.init.zeros_(self.conv.bias)
-        else:
-            init_weights(self.conv.weight, self.activation, scale=scale)
-            if self.bias:
-                init_weights(self.conv.bias, self.activation, scale=bias_scale, fan_tensor=self.conv.weight)
 
     def add_reg_dict(self, reg_dict, placement="in_block"):
         if placement == "in_block":
@@ -644,15 +604,17 @@ class ConvBlock(nn.Module):
                        use_gamma,
                        mode,
                        placement,
-                       renorm_clipping,
                        activation,
                        is_pre_act=False,
                        collector=None):
         super(ConvBlock, self).__init__()
- 
+
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.is_pre_act = is_pre_act
+        self.use_gamma = use_gamma
+        self.mode = mode
+        self.placement = placement
         self.activation = activation
         self.kernel_size = kernel_size
         self.conv = nn.Conv2d(
@@ -662,55 +624,35 @@ class ConvBlock(nn.Module):
             padding="same",
             bias=False,
         )
-        if is_pre_act:  # default:False
-            self.pre_bias = BatchNorm2d(
+        if self.is_pre_act and self.placement == "in_block":
+            self.pre_bn = BatchNorm2d(
                 num_features=in_channels,
-                use_gamma=use_gamma,
-                mode=mode,
-                renorm_clipping=renorm_clipping,
-                momentum_basic_batchsize=256
-            )
-            self.bn = CustomIdentity()
-            self.pre_act = activation_func(self.activation, inplace=True)
-            self.post_act = nn.Identity()
-        elif mode == "fixup" and placement == "in_block":
-            self.pre_bias = BatchNorm2d(
-                num_features=in_channels,
-                use_gamma=False,
+                use_gamma=self.use_gamma,
                 mode=mode
             )
-            self.bn = BatchNorm2d(
-                num_features=out_channels,
-                use_gamma=use_gamma,
-                mode=mode,
-                renorm_clipping=renorm_clipping,
-                momentum_basic_batchsize=256
-            )
-            self.pre_act = nn.Identity()
-            self.post_act = activation_func(self.activation, inplace=True)
+            self.pre_act = activation_func(self.activation, inplace=True)
+            self.bn = CustomIdentity()
+            self.act = nn.Identity()
         else:
-            self.pre_bias = CustomIdentity()
+            self.pre_bn = CustomIdentity()
+            self.pre_act = nn.Identity()
             self.bn = BatchNorm2d(
                 num_features=out_channels,
-                use_gamma=use_gamma,
-                mode=mode,
-                renorm_clipping=renorm_clipping,
-                momentum_basic_batchsize=256
+                use_gamma=self.use_gamma,
+                mode=mode
             )
-            self.pre_act = nn.Identity()
-            self.post_act = activation_func(self.activation, inplace=True)
+            self.act = activation_func(self.activation, inplace=True)
+
+        self._init_weights()
         self._try_collect(collector)
+
+    def _init_weights(self):
+        nn.init.xavier_normal_(
+            self.conv.weight, gain=compute_gain(self.activation))
 
     def _try_collect(self, collector):
         if collector is not None:
             collector.append(self)
-
-    def initialize(self, scale, xavier_init, norm_scale=None):
-        if xavier_init:
-            nn.init.xavier_normal_(
-                self.conv.weight, gain=compute_gain(self.activation))
-        else:
-            init_weights(self.conv.weight, self.activation, scale=scale)
 
     def add_reg_dict(self, reg_dict, placement="in_block"):
         if placement == "in_block":
@@ -719,10 +661,10 @@ class ConvBlock(nn.Module):
             reg_dict["input"].append(self.conv.weight)
         else:
             reg_dict["output"].append(self.conv.weight)
+        if not isinstance(self.pre_bn, CustomIdentity):
+            self.pre_bn.add_reg_dict(reg_dict, placement)
         if not isinstance(self.bn, CustomIdentity):
             self.bn.add_reg_dict(reg_dict, placement)
-        if not isinstance(self.pre_bias, CustomIdentity):
-            self.pre_bias.add_reg_dict(reg_dict, placement)
 
     def shape_to_text(self):
         out = str()
@@ -744,11 +686,11 @@ class ConvBlock(nn.Module):
         return out
 
     def forward(self, x, mask):
-        x = self.pre_bias(x, mask)
+        x = self.pre_bn(x, mask)
         x = self.pre_act(x)
         x = self.conv(x) * mask
         x = self.bn(x, mask)
-        x = self.post_act(x)
+        x = self.act(x)
         return x
 
 class DepthwiseConvBlock(nn.Module):
@@ -757,7 +699,6 @@ class DepthwiseConvBlock(nn.Module):
                        use_gamma,
                        mode,
                        placement,
-                       renorm_clipping,
                        activation,
                        is_pre_act=False,
                        collector=None):
@@ -772,6 +713,9 @@ class DepthwiseConvBlock(nn.Module):
         self.kernel_size = kernel_size
         self.groups = self.channels
         self.is_pre_act = is_pre_act
+        self.use_gamma = use_gamma
+        self.mode = mode
+        self.placement = placement
         self.activation = activation
         self.conv = BroadcastDepthwiseConv2d(
             self.channels,
@@ -785,77 +729,41 @@ class DepthwiseConvBlock(nn.Module):
             padding="same",
             bias=True
         )
-
-        if is_pre_act:  # default:False
-            self.pre_bias = BatchNorm2d(
-                num_features=channels,
-                use_gamma=use_gamma,
-                mode=mode,
-                renorm_clipping=renorm_clipping,
-                momentum_basic_batchsize=256
+        if self.is_pre_act and self.placement == "in_block":
+            self.pre_bn = BatchNorm2d(
+                num_features=self.channels,
+                use_gamma=self.use_gamma,
+                mode=mode
             )
-            self.pre_bias1 = CustomIdentity()
-            self.pre_bias2 = CustomIdentity()
-            self.bn = CustomIdentity()
             self.pre_act = activation_func(self.activation, inplace=True)
-            self.post_act = nn.Identity()
-        elif mode == "fixup" and placement == "in_block":
-            self.pre_bias = CustomIdentity()
-            self.pre_bias1 = BatchNorm2d(
-                num_features=channels,
-                use_gamma=False,
-                mode=mode
-            )
-            self.pre_bias2 = BatchNorm2d(
-                num_features=channels,
-                use_gamma=False,
-                mode=mode
-            )
-            self.bn = BatchNorm2d(
-                num_features=self.channels,
-                use_gamma=use_gamma,
-                mode=mode,
-                renorm_clipping=renorm_clipping,
-                momentum_basic_batchsize=256
-            )
-            self.pre_act = nn.Identity()
-            self.post_act = activation_func(self.activation, inplace=True)
+            self.bn = CustomIdentity()
+            self.act = nn.Identity()
         else:
-            self.pre_bias = CustomIdentity()
-            self.pre_bias1 = CustomIdentity()
-            self.pre_bias2 = CustomIdentity()
-            self.bn = BatchNorm2d(
-                num_features=self.channels,
-                use_gamma=use_gamma,
-                mode=mode,
-                renorm_clipping=renorm_clipping,
-                momentum_basic_batchsize=256
-            )
+            self.pre_bn = CustomIdentity()
             self.pre_act = nn.Identity()
-            self.post_act = activation_func(self.activation, inplace=True)
+            self.bn = BatchNorm2d(
+                num_features=channels,
+                use_gamma=self.use_gamma,
+                mode=mode
+            )
+            self.act = activation_func(self.activation, inplace=True)
+
+        self._init_weights()
         self._try_collect(collector)
 
-    def initialize(self, scale, xavier_init, norm_scale=None):
-        if xavier_init:
-            nn.init.xavier_normal_(
-                self.conv.weight, gain=compute_gain(self.activation))
-            nn.init.xavier_normal_(
-                self.rep3x3.weight, gain=compute_gain(self.activation))
-        else:
-            init_weights(self.conv.weight, self.activation, scale=scale * 0.8)
-            init_weights(self.rep3x3.weight, self.activation, scale=scale * 0.6)
+    def _init_weights(self):
+        nn.init.xavier_normal_(
+            self.conv.weight, gain=compute_gain(self.activation))
+        nn.init.xavier_normal_(
+            self.rep3x3.weight, gain=compute_gain(self.activation))
 
     def add_reg_dict(self, reg_dict, placement="in_block"):
         self.conv.add_reg_dict(reg_dict, placement)
         self.rep3x3.add_reg_dict(reg_dict, placement)
+        if not isinstance(self.pre_bn, CustomIdentity):
+            self.pre_bn.add_reg_dict(reg_dict, placement)
         if not isinstance(self.bn, CustomIdentity):
             self.bn.add_reg_dict(reg_dict, placement)
-        if not isinstance(self.pre_bias, CustomIdentity):
-            self.pre_bias.add_reg_dict(reg_dict, placement)
-        if not isinstance(self.pre_bias1, CustomIdentity):
-            self.pre_bias1.add_reg_dict(reg_dict, placement)
-        if not isinstance(self.pre_bias2, CustomIdentity):
-            self.pre_bias2.add_reg_dict(reg_dict, placement)
 
     def tensors_to_text(self, use_bin):
         if use_bin:
@@ -889,13 +797,11 @@ class DepthwiseConvBlock(nn.Module):
         return out
 
     def forward(self, x, mask):
-        x = self.pre_bias(x, mask)
+        x = self.pre_bn(x, mask)
         x = self.pre_act(x)
-        x1 = self.pre_bias1(x, mask)
-        x2 = self.pre_bias2(x, mask)
-        x = (self.conv(x1) + self.rep3x3(x2)) * mask
+        x = (self.conv(x) + self.rep3x3(x)) * mask
         x = self.bn(x, mask)
-        x = self.post_act(x)
+        x = self.act(x)
         return x
 
 class ResidualBlock(nn.Module):
@@ -905,7 +811,6 @@ class ResidualBlock(nn.Module):
         super(ResidualBlock, self).__init__()
 
         self.activation = kwargs.get("activation", DEFAULT_ACTIVATION)
-        self.renorm_clipping = kwargs.get("renorm_clipping", {"rmax" : 1, "dmax" : 0})
         self.se_size = kwargs.get("se_size", None)
         self.mode = kwargs.get("mode", "renorm")
         self.is_pre_act = kwargs.get("is_pre_act", False)
@@ -921,7 +826,6 @@ class ResidualBlock(nn.Module):
             mode=self.mode,
             is_pre_act=self.is_pre_act,
             placement="in_block",
-            renorm_clipping=self.renorm_clipping,
             activation=self.activation,
             collector=collector
         )
@@ -933,7 +837,6 @@ class ResidualBlock(nn.Module):
             mode=self.mode,
             is_pre_act=self.is_pre_act,
             placement="in_block",
-            renorm_clipping=self.renorm_clipping,
             activation=self.activation if self.is_pre_act else "identity",
             collector=collector
         )
@@ -941,7 +844,6 @@ class ResidualBlock(nn.Module):
             self.se_module = SqueezeAndExcitation(
                 channels=self.channels,
                 se_size=self.se_size,
-                mode=self.mode,
                 activation=self.activation,
                 collector=collector
             )
@@ -950,21 +852,6 @@ class ResidualBlock(nn.Module):
             self.act = nn.Identity()
         else:
             self.act = activation_func(self.activation, inplace=True)
-
-    def initialize(self, fixup_scale, se_fixup_scale, xavier_init):
-        if xavier_init:
-            self.conv1.initialize(scale=1.0, xavier_init=xavier_init)
-            self.conv2.initialize(scale=1.0, xavier_init=xavier_init)
-            if self.use_se:
-                self.se_module.initialize(scale=1.0, xavier_init=xavier_init)
-        else:
-            if self.use_se:
-                self.conv1.initialize(scale=se_fixup_scale, xavier_init=xavier_init)
-                self.conv2.initialize(scale=0.0, xavier_init=xavier_init)
-                self.se_module.initialize(scale=se_fixup_scale, xavier_init=xavier_init)
-            else:
-                self.conv1.initialize(scale=fixup_scale, xavier_init=xavier_init)
-                self.conv2.initialize(scale=0.0, xavier_init=xavier_init)
 
     def add_reg_dict(self, reg_dict):
         self.conv1.add_reg_dict(reg_dict)
@@ -976,11 +863,11 @@ class ResidualBlock(nn.Module):
         mask, _, _ = mask_buffers
 
         out = x
-        if self.use_se and self.mode == "fixup":
+        if self.use_se and self.is_pre_act:
             out = self.se_module(out, mask_buffers)
         out = self.conv1(out, mask)
         out = self.conv2(out, mask)
-        if self.use_se and self.mode != "fixup":
+        if self.use_se and not self.is_pre_act:
             out = self.se_module(out, mask_buffers)
         if not self.is_pre_act:
             out = out + x
@@ -994,7 +881,6 @@ class BottleneckBlock(nn.Module):
         super(BottleneckBlock, self).__init__()
 
         self.activation = kwargs.get("activation", DEFAULT_ACTIVATION)
-        self.renorm_clipping = kwargs.get("renorm_clipping", {"rmax" : 1, "dmax" : 0})
         self.bottleneck_channels = kwargs.get("bottleneck_channels", None)
         self.se_size = kwargs.get("se_size", None)
         self.mode = kwargs.get("mode", "renorm")
@@ -1019,7 +905,6 @@ class BottleneckBlock(nn.Module):
             mode=self.mode,
             is_pre_act=self.is_pre_act,
             placement="in_block",
-            renorm_clipping=self.renorm_clipping,
             activation=self.activation,
             collector=collector
         )
@@ -1031,7 +916,6 @@ class BottleneckBlock(nn.Module):
             mode=self.mode,
             is_pre_act=self.is_pre_act,
             placement="in_block",
-            renorm_clipping=self.renorm_clipping,
             activation=self.activation,
             collector=collector
         )
@@ -1043,7 +927,6 @@ class BottleneckBlock(nn.Module):
             mode=self.mode,
             is_pre_act=self.is_pre_act,
             placement="in_block",
-            renorm_clipping=self.renorm_clipping,
             activation=self.activation,
             collector=collector
         )
@@ -1055,7 +938,6 @@ class BottleneckBlock(nn.Module):
             mode=self.mode,
             is_pre_act=self.is_pre_act,
             placement="in_block",
-            renorm_clipping=self.renorm_clipping,
             activation=self.activation if self.is_pre_act else "identity",
             collector=collector
         )
@@ -1063,7 +945,6 @@ class BottleneckBlock(nn.Module):
             self.se_module = SqueezeAndExcitation(
                 channels=self.outer_channels,
                 se_size=self.se_size,
-                mode=self.mode,
                 activation=self.activation,
                 collector=collector
             )
@@ -1072,35 +953,6 @@ class BottleneckBlock(nn.Module):
             self.act = nn.Identity()
         else:
             self.act = activation_func(self.activation, inplace=True)
-
-    def initialize(self, fixup_scale, se_fixup_scale, xavier_init):
-        if xavier_init:
-            self.pre_btl_conv.initialize(scale=1.0, xavier_init=xavier_init)
-            self.conv1.initialize(scale=1.0, xavier_init=xavier_init)
-            self.conv2.initialize(scale=1.0, xavier_init=xavier_init)
-            self.post_btl_conv.initialize(scale=1.0, xavier_init=xavier_init)
-            if self.use_se:
-                self.se_module.initialize(scale=1.0, xavier_init=xavier_init)
-        else:
-            if self.use_se:
-                self.pre_btl_conv.initialize(
-                    scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
-                self.conv1.initialize(
-                    scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
-                self.conv2.initialize(
-                    scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
-                self.post_btl_conv.initialize(
-                    scale=0.0, xavier_init=xavier_init)
-                self.se_module.initialize(scale=se_fixup_scale, xavier_init=xavier_init)
-            else:
-                self.pre_btl_conv.initialize(
-                    scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
-                self.conv1.initialize(
-                    scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
-                self.conv2.initialize(
-                    scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
-                self.post_btl_conv.initialize(
-                    scale=0.0, xavier_init=xavier_init)
 
     def add_reg_dict(self, reg_dict):
         self.pre_btl_conv.add_reg_dict(reg_dict)
@@ -1114,13 +966,13 @@ class BottleneckBlock(nn.Module):
         mask, _, _ = mask_buffers
 
         out = x
-        if self.use_se and self.mode == "fixup":
+        if self.use_se and self.is_pre_act:
             out = self.se_module(out, mask_buffers)
         out = self.pre_btl_conv(out, mask)
         out = self.conv1(out, mask)
         out = self.conv2(out, mask)
         out = self.post_btl_conv(out, mask)
-        if self.use_se and self.mode != "fixup":
+        if self.use_se and not self.is_pre_act:
             out = self.se_module(out, mask_buffers)
         if not self.is_pre_act:
             out = out + x
@@ -1134,7 +986,6 @@ class NestedBottleneckBlock(nn.Module):
         super(NestedBottleneckBlock, self).__init__()
 
         self.activation = kwargs.get("activation", DEFAULT_ACTIVATION)
-        self.renorm_clipping = kwargs.get("renorm_clipping", {"rmax" : 1, "dmax" : 0})
         self.bottleneck_channels = kwargs.get("bottleneck_channels", None)
         self.se_size = kwargs.get("se_size", None)
         self.mode = kwargs.get("mode", "renorm")
@@ -1159,7 +1010,6 @@ class NestedBottleneckBlock(nn.Module):
             mode=self.mode,
             is_pre_act=self.is_pre_act,
             placement="in_block",
-            renorm_clipping=self.renorm_clipping,
             activation=self.activation,
             collector=collector
         )
@@ -1167,7 +1017,6 @@ class NestedBottleneckBlock(nn.Module):
             channels=self.inner_channels,
             mode=self.mode,
             is_pre_act=self.is_pre_act,
-            renorm_clipping=self.renorm_clipping,
             activation=self.activation,
             collector=collector
         )
@@ -1175,7 +1024,6 @@ class NestedBottleneckBlock(nn.Module):
             channels=self.inner_channels,
             mode=self.mode,
             is_pre_act=self.is_pre_act,
-            renorm_clipping=self.renorm_clipping,
             activation=self.activation,
             collector=collector
         )
@@ -1187,7 +1035,6 @@ class NestedBottleneckBlock(nn.Module):
             mode=self.mode,
             is_pre_act=self.is_pre_act,
             placement="in_block",
-            renorm_clipping=self.renorm_clipping,
             activation=self.activation if self.is_pre_act else "identity",
             collector=collector
         )
@@ -1195,7 +1042,6 @@ class NestedBottleneckBlock(nn.Module):
             self.se_module = SqueezeAndExcitation(
                 channels=self.outer_channels,
                 se_size=self.se_size,
-                mode=self.mode,
                 activation=self.activation,
                 collector=collector
             )
@@ -1204,41 +1050,6 @@ class NestedBottleneckBlock(nn.Module):
             self.act = nn.Identity()
         else:
             self.act = activation_func(self.activation, inplace=True)
-
-    def initialize(self, fixup_scale, se_fixup_scale, xavier_init):
-        if xavier_init:
-            self.pre_btl_conv.initialize(scale=1.0, xavier_init=xavier_init)
-            self.block1.initialize(fixup_scale=1.0, se_fixup_scale=1.0, xavier_init=xavier_init)
-            self.block2.initialize(fixup_scale=1.0, se_fixup_scale=1.0, xavier_init=xavier_init)
-            self.post_btl_conv.initialize(scale=1.0, xavier_init=xavier_init)
-            if self.use_se:
-                self.se_module.initialize(scale=1.0, xavier_init=xavier_init)
-        else:
-            if self.use_se:
-                self.pre_btl_conv.initialize(
-                    scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
-                self.block1.initialize(
-                    fixup_scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)),
-                    se_fixup_scale=1.0,
-                    xavier_init=xavier_init)
-                self.block2.initialize(
-                    fixup_scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)),
-                    se_fixup_scale=1.0,
-                    xavier_init=xavier_init)
-                self.post_btl_conv.initialize(scale=0.0, xavier_init=xavier_init)
-                self.se_module.initialize(scale=se_fixup_scale, xavier_init=xavier_init)
-            else:
-                self.pre_btl_conv.initialize(
-                    scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
-                self.block1.initialize(
-                    fixup_scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)),
-                    se_fixup_scale=1.0,
-                    xavier_init=xavier_init)
-                self.block2.initialize(
-                    fixup_scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)),
-                    se_fixup_scale=1.0,
-                    xavier_init=xavier_init)
-                self.post_btl_conv.initialize(scale=0.0, xavier_init=xavier_init)
 
     def add_reg_dict(self, reg_dict):
         self.pre_btl_conv.add_reg_dict(reg_dict)
@@ -1252,13 +1063,13 @@ class NestedBottleneckBlock(nn.Module):
         mask, _, _ = mask_buffers
 
         out = x
-        if self.use_se and self.mode == "fixup":
+        if self.use_se and self.is_pre_act:
             out = self.se_module(out, mask_buffers)
         out = self.pre_btl_conv(out, mask)
         out = self.block1(out, mask_buffers)
         out = self.block2(out, mask_buffers)
         out = self.post_btl_conv(out, mask)
-        if self.use_se and self.mode != "fixup":
+        if self.use_se and not self.is_pre_act:
             out = self.se_module(out, mask_buffers)
         if not self.is_pre_act:
             out = out + x
@@ -1272,7 +1083,6 @@ class MixerBlock(nn.Module):
         super(MixerBlock, self).__init__()
 
         self.activation = kwargs.get("activation", DEFAULT_ACTIVATION)
-        self.renorm_clipping = kwargs.get("renorm_clipping", {"rmax" : 1, "dmax" : 0})
         self.se_size = kwargs.get("se_size", None)
         self.kernel_size = kwargs.get("kernel_size", 7)
         self.ffn_expansion_ratio = kwargs.get("ffn_expansion_ratio", 1.5)
@@ -1292,7 +1102,6 @@ class MixerBlock(nn.Module):
             mode=self.mode,
             is_pre_act=self.is_pre_act,
             placement="in_block",
-            renorm_clipping=self.renorm_clipping,
             activation=self.activation,
             collector=collector
         )
@@ -1306,7 +1115,6 @@ class MixerBlock(nn.Module):
             mode=self.mode,
             is_pre_act=self.is_pre_act,
             placement="in_block",
-            renorm_clipping=self.renorm_clipping,
             activation=self.activation,
             collector=collector
         )
@@ -1318,7 +1126,6 @@ class MixerBlock(nn.Module):
             mode=self.mode,
             is_pre_act=self.is_pre_act,
             placement="in_block",
-            renorm_clipping=self.renorm_clipping,
             activation=self.activation if self.is_pre_act else "identity",
             collector=collector
         )
@@ -1326,7 +1133,6 @@ class MixerBlock(nn.Module):
             self.se_module = SqueezeAndExcitation(
                 channels=self.channels,
                 se_size=self.se_size,
-                mode=self.mode,
                 activation=self.activation,
                 collector=collector
             )
@@ -1335,30 +1141,6 @@ class MixerBlock(nn.Module):
             self.act = nn.Identity()
         else:
             self.act = activation_func(self.activation, inplace=True)
-
-    def initialize(self, fixup_scale, se_fixup_scale, xavier_init):
-        if xavier_init:
-            self.depthwise_conv.initialize(scale=1.0, xavier_init=xavier_init)
-            self.ffn1.initialize(scale=1.0, xavier_init=xavier_init)
-            self.ffn2.initialize(scale=1.0, xavier_init=xavier_init)
-            if self.use_se:
-                self.se_module.initialize(scale=1.0, xavier_init=xavier_init)
-        else:
-            if self.use_se:
-                self.depthwise_conv.initialize(
-                    scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
-                self.ffn1.initialize(
-                    scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
-                self.ffn2.initialize(
-                    scale=0.0, xavier_init=xavier_init)
-                self.se_module.initialize(scale=se_fixup_scale, xavier_init=xavier_init)
-            else:
-                self.depthwise_conv.initialize(
-                    scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
-                self.ffn1.initialize(
-                    scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
-                self.ffn2.initialize(
-                    scale=0.0, xavier_init=xavier_init)
 
     def add_reg_dict(self, reg_dict):
         self.depthwise_conv.add_reg_dict(reg_dict)
@@ -1372,25 +1154,25 @@ class MixerBlock(nn.Module):
 
         if self.version == 1:
             out = x
-            if self.use_se and self.mode == "fixup":
+            if self.use_se and self.is_pre_act:
                 out = self.se_module(out, mask_buffers)
             x = self.depthwise_conv(out, mask) + x
             out = x
             out = self.ffn1(out, mask)
             out = self.ffn2(out, mask)
-            if self.use_se and self.mode != "fixup":
+            if self.use_se and not self.is_pre_act:
                 out = self.se_module(out, mask_buffers)
             if not self.is_pre_act:
                 out = out + x
                 out = self.act(out)
         elif self.version == 2:
             out = x
-            if self.use_se and self.mode == "fixup":
+            if self.use_se and self.is_pre_act:
                 out = self.se_module(out, mask_buffers)
             out = self.depthwise_conv(out, mask)
             out = self.ffn1(out, mask)
             out = self.ffn2(out, mask)
-            if self.use_se and self.mode != "fixup":
+            if self.use_se and not self.is_pre_act:
                 out = self.se_module(out, mask_buffers)
             if not self.is_pre_act:
                 out = out + x
@@ -2210,7 +1992,7 @@ class TransformerAttentionBlock(nn.Module):
             else:
                 reg_dict["noreg"].append(param)
 
-    def initialize(self, fixup_scale, se_fixup_scale, xavier_init):
+    def initialize(self, fixup_scale, xavier_init):
         pass
 
     def _compute_gab_bias(self, x_norm, mask, mask_sum_hw, block_shared_data):
@@ -2434,7 +2216,7 @@ class TransformerFFNBlock(torch.nn.Module):
             else:
                 reg_dict["noreg"].append(param)
 
-    def initialize(self, fixup_scale, se_fixup_scale, xavier_init):
+    def initialize(self, fixup_scale, xavier_init):
         pass
 
     def forward(self, x, mask, mask_sum_hw, mask_sum, block_shared_data=None):
@@ -2477,7 +2259,6 @@ class NestedBottleneckTransformerBlock(nn.Module):
         super(NestedBottleneckTransformerBlock, self).__init__()
 
         self.activation = kwargs.get("activation", DEFAULT_ACTIVATION)
-        self.renorm_clipping = kwargs.get("renorm_clipping", {"rmax" : 1, "dmax" : 0})
         self.bottleneck_channels = kwargs.get("bottleneck_channels", None)
         self.mode = kwargs.get("mode", "renorm")
         self.is_pre_act = kwargs.get("is_pre_act", True)
@@ -2523,7 +2304,6 @@ class NestedBottleneckTransformerBlock(nn.Module):
             mode=self.mode,
             is_pre_act=self.is_pre_act,
             placement="in_block",
-            renorm_clipping=self.renorm_clipping,
             activation=self.activation,
             collector=None
         )
@@ -2556,29 +2336,9 @@ class NestedBottleneckTransformerBlock(nn.Module):
             mode=self.mode,
             is_pre_act=self.is_pre_act,
             placement="in_block",
-            renorm_clipping=self.renorm_clipping,
             activation=self.activation,
             collector=None
         )
-
-    def initialize(self, fixup_scale, se_fixup_scale, xavier_init):
-        if xavier_init:
-            self.pre_btl_conv.initialize(scale=1.0, xavier_init=xavier_init)
-            for i in range(2 * self.internal_length):
-                self.blockstack[i].initialize(
-                    fixup_scale=1.0,
-                    se_fixup_scale=1.0,
-                    xavier_init=xavier_init)
-            self.post_btl_conv.initialize(scale=1.0, xavier_init=xavier_init)
-        else:
-            self.pre_btl_conv.initialize(
-                scale=math.pow(fixup_scale, 1.0 / (1.0 + self.internal_length)), xavier_init=xavier_init)
-            for i in range(2 * self.internal_length):
-                self.blockstack[i].initialize(
-                    fixup_scale=math.pow(fixup_scale, 1.0 / (1.0 + self.internal_length)),
-                    se_fixup_scale=1.0,
-                    xavier_init=xavier_init)
-            self.post_btl_conv.initialize(scale=0.0, xavier_init=xavier_init)
 
     def add_reg_dict(self, reg_dict):
         self.pre_btl_conv.add_reg_dict(reg_dict)
@@ -2615,16 +2375,11 @@ class Network(nn.Module):
         self.policy_head_type = cfg.policy_head_type  # default:{"Type" : "Normal"}
         if type(self.policy_head_type) == str:
             self.policy_head_type = { "Type" : self.policy_head_type }  # default:{"Type" : "Normal"}
-        self.renorm_clipping = {"rmax" : cfg.renorm_max_r, "dmax" : cfg.renorm_max_d}  # default:{"rmax":1, "dmax":0}
         self.value_misc = 15
         self.policy_outs = 5
         self.stack = cfg.stack  # default:[]
         self.version = 5
         self.mode = cfg.mode  # default:"renorm"
-        if self.mode == "fixup":
-            self.xavier_init = False
-        else:
-            self.xavier_init = True
         self.is_pre_act = cfg.is_pre_act
         self.use_rope = False
         self.use_gab = False
@@ -2661,39 +2416,9 @@ class Network(nn.Module):
         self.transformer_ffn_depthwise_conv = cfg.transformer_ffn_depthwise_conv  # default:False
         self.use_trunk_channel_gate = cfg.use_trunk_channel_gate          # default:False
         self.use_trunk_residual_backout = cfg.use_trunk_residual_backout  # default:False
+        self.opt_name = cfg.optimizer
 
         self.construct_layers()
-
-        num_total_blocks = len(self.residual_tower)
-        with torch.no_grad():
-            self.input_conv.initialize(scale=1.0, xavier_init=self.xavier_init)
-            if self.gab_template_mlp is not None:  # default:None
-                self.gab_template_mlp.initialize()
-            if self.tab_module is not None:  # default:None
-                self.tab_module.initialize()
-            if self.mode == "fixup":  # default:"renorm"
-                fixup_scale = 1.0 / math.sqrt(num_total_blocks)
-                se_fixup_scale = math.pow(num_total_blocks, -1.0 / (2 * 4 - 2))
-                for block in self.residual_tower:
-                    block.initialize(fixup_scale=fixup_scale,
-                        se_fixup_scale=se_fixup_scale, xavier_init=self.xavier_init)
-            else:  # default:"renorm"
-                fixup_scale = 1.0
-                for block in self.residual_tower:
-                    block.initialize(fixup_scale=fixup_scale,
-                        se_fixup_scale=fixup_scale, xavier_init=self.xavier_init)
-
-            self.policy_conv.initialize(scale=0.8, xavier_init=self.xavier_init)
-            if self.policy_head_type["Type"] == "RepLK":  # default:"Normal"
-                self.policy_depthwise_conv.initialize(scale=1.0, xavier_init=self.xavier_init)
-                self.policy_pointwise_conv.initialize(scale=1.0, xavier_init=self.xavier_init)
-            self.policy_intermediate_fc.initialize(scale=0.6, xavier_init=self.xavier_init)
-            self.pol_misc.initialize(scale=0.3, xavier_init=self.xavier_init)
-            self.pol_misc_pass_fc.initialize(scale=0.3, xavier_init=self.xavier_init)
-            self.value_conv.initialize(scale=1.0, xavier_init=self.xavier_init)
-            self.value_intermediate_fc.initialize(scale=1.0, xavier_init=self.xavier_init)
-            self.ownership_conv.initialize(scale=0.2, xavier_init=self.xavier_init)
-            self.value_misc_fc.initialize(scale=0.2, xavier_init=self.xavier_init)
 
     def create_policy_head(self):
         self.policy_conv = ConvBlock(
@@ -2703,7 +2428,6 @@ class Network(nn.Module):
             use_gamma=False,
             mode=self.mode,                          # default:"renorm"
             placement="after_block",
-            renorm_clipping=self.renorm_clipping,    # default:{"rmax":1, "dmax":0}
             activation=self.activation,              # default:"relu"
             collector=self.layers_collector
         )
@@ -2717,7 +2441,6 @@ class Network(nn.Module):
                 use_gamma=False,
                 mode=self.mode,                          # default:"renorm"
                 placement="after_block",
-                renorm_clipping=self.renorm_clipping,    # default:{"rmax":1, "dmax":0}
                 activation=self.activation,              # default:"relu"
                 collector=self.layers_collector
             )
@@ -2728,7 +2451,6 @@ class Network(nn.Module):
                 use_gamma=True,
                 mode=self.mode,                          # default:"renorm"
                 placement="after_block",
-                renorm_clipping=self.renorm_clipping,    # default:{"rmax":1, "dmax":0}
                 activation=self.activation,              # default:"relu"
                 collector=self.layers_collector
             )
@@ -2763,7 +2485,6 @@ class Network(nn.Module):
             use_gamma=False,
             mode=self.mode,                          # default:"renorm"
             placement="after_block",
-            renorm_clipping=self.renorm_clipping,    # default:{"rmax":1, "dmax":0}
             activation=self.activation,              # default:"relu"
             collector=self.layers_collector
         )
@@ -2934,7 +2655,6 @@ class Network(nn.Module):
                 "bottleneck_channels" : None,
                 "version" : 1,
                 "activation" : self.activation,            # default:"relu"
-                "renorm_clipping" : self.renorm_clipping,  # default:{"rmax":1, "dmax":0}
                 "mode" : self.mode,                        # default:"renorm"
                 "is_pre_act" : self.is_pre_act,            # default:False
                 "pos_len" : self.xsize,                    # default:19
@@ -2980,7 +2700,6 @@ class Network(nn.Module):
                 use_gamma=False if self.mode == "fixup" else True,
                 mode=self.mode,                        # default:"renorm"
                 placement="before_block",
-                renorm_clipping=self.renorm_clipping,  # default:{"rmax":1, "dmax":0}
                 activation=self.activation,            # default::"relu"
                 collector=self.layers_collector
             )
@@ -3067,8 +2786,7 @@ class Network(nn.Module):
             self.final_block = BatchNorm2d(
                 num_features=self.residual_channels,  # default:None
                 use_gamma=False,
-                mode=self.mode,                       # default:"renorm"
-                renorm_clipping=self.renorm_clipping  # default:{"rmax":1, "dmax":0}
+                mode="fixup"  # Better results are obteined without the norm than by speciflying self.mode
             )
             self.final_act = activation_func(self.activation, inplace=True)  # default:"relu"
         else:
@@ -3492,6 +3210,11 @@ class Network(nn.Module):
         info += "Policy Head Type: {polheadtype}\n".format(polheadtype=self.policy_head_type["Type"])
         info += "Default activation: {act}\n".format(act=self.activation)
         info += "Batchnorm Mode: {mode}\n".format(mode=self.mode)
+        if self.is_pre_act:
+            info += "Pre Activation : true\n"
+        else:
+            info += "Pre Activation : false\n"
+        info += "Optimizer: {optimizer}\n".format(optimizer=self.opt_name)
         return info
 
     def get_name(self):
