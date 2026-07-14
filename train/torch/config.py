@@ -19,6 +19,35 @@ class Config:
         jdata = json.loads(self.json_str)
         self.parse_training_config(jdata)
         self.parse_nn_config(jdata)
+        if not self.export_onnx:
+            if self.mode == "fixup":
+                print("Warning: The fixup mode can only be specified for the ONNX conversion engine. It is being changed renorm mode.")
+                self.mode = "renorm"
+            if self.is_pre_act:
+                print("Warning: The PreActivation can only be specified for the ONNX conversion engine. The specification will be ignored.")
+                self.is_pre_act = False
+            use_transformer = False
+            for block in self.stack:
+                components = list()
+                if type(block) == str:
+                    components = block.strip().split('-')
+                else:
+                    components = block["Block"].strip().split('-')
+                for component in components:
+                    if component == "TransformerBlock" or component == "NestedBottleneckTransformerBlock":
+                        use_transformer = True  # used Transformer
+                        break
+                if use_transformer:
+                    break
+            if use_transformer:
+                print("Warning: The transformer block can only be specified for the ONNX conversion engine. It is being changed ONNX conversion engine.")
+                self.export_onnx = True
+            if self.use_trunk_channel_gate:
+                print("Warning: The UseTrunkChannelGate can only be specified for the ONNX conversion engine. The specification will be ignored.")
+                self.use_trunk_channel_gate = False
+            if self.use_trunk_residual_backout:
+                print("Warning: The UseTrunkResidualBackout can only be specified for the ONNX conversion engine. The specification will be ignored.")
+                self.use_trunk_residual_backout = False
 
     def parse_training_config(self, json_data):
         train = json_data.get("Train", None)
@@ -58,8 +87,8 @@ class Config:
         self.export_onnx = train.get("ExportONNX", False)
         self.use_compile = train.get("UseCompile", False)
 
-        assert self.train_dir != None, ""
-        assert self.store_path != None, ""
+        assert self.train_dir != None, "TrainDirectory is not specified."
+        assert self.store_path != None, "StorePath is not specified."
 
     def parse_nn_config(self, json_data):
         network = json_data.get("NeuralNetwork", None)
@@ -81,7 +110,8 @@ class Config:
         self.stack = network.get("Stack", [])
         self.netname_postfix = network.get("NamePostfix", "")
         self.mode = network.get("BatchNormMode", "renorm")
-        self.positional_encoding = network.get("PositionalEncoding", "RoPE")
+        self.is_pre_act = network.get("PreActivation", False)
+        self.positional_encoding = network.get("PositionalEncoding", "unuse")
         self.learnable_rope = network.get("LearnableRoPE", False)
         self.rope_theta = network.get("RoPETheta", 100.0)
         self.attention_qk_norm = network.get("AttentionQKNorm", False)
@@ -105,9 +135,14 @@ class Config:
         self.use_trunk_channel_gate = network.get("UseTrunkChannelGate", False)
         self.use_trunk_residual_backout = network.get("UseTrunkResidualBackout", False)
 
-        assert self.input_channels != None, ""
-        assert self.residual_channels != None, ""
-        assert self.policy_head_channels != None, ""
-        assert self.value_head_channels != None, ""
-        assert self.mode in ["norm", "renorm", "fixup"], ""
-        assert self.positional_encoding in ["RoPE", "GAB", "TAB", "TAB+FreqMix", "RoPE+GAB", "RoPE+TAB", "RoPE+TAB+FreqMix"], ""
+        assert self.input_channels != None, "InputChannels is not specified."
+        assert self.residual_channels != None, "ResidualChannels is not specified."
+        assert self.policy_head_channels != None, "PolicyHeadChannels or PolicyExtract is not specified."
+        assert self.value_head_channels != None, "ValueHeadChannels or ValueExtract is not specified."
+        assert (
+            self.mode in ["norm", "renorm", "fixup"]
+        ), f"{self.mode} cannot be assigned to BatchNormMode."
+        assert (
+            self.positional_encoding in
+            ["RoPE", "GAB", "TAB", "TAB+FreqMix", "RoPE+GAB", "RoPE+TAB", "RoPE+TAB+FreqMix", "unuse"]
+        ), f"{self.positional_encoding} cannot be assigned to PositionalEncoding."
