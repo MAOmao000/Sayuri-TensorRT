@@ -13,7 +13,6 @@ Also added the following features:
 * Muon+AdamW optimizer
 * Aurora+AdamW optimizer
 * torch.compile
-* Fixup Initialize
 * Transformer model for demonstration purposes
 
 ## Requirements
@@ -28,8 +27,8 @@ Additional features require the following installation:
 You can check these features by setting the following in selfplay-setting.json.
 ```
     "NeuralNetwork" : {
-        "BatchNormMode" : "fixup", ... "renorm"(default), "norm" to use the conventional function
-        "PositionalEncoding" :"RoPE", ... "RoPE"(default), "GAB", "TAB", "TAB+FreqMix", "RoPE+GAB", "RoPE+TAB", "RoPE+TAB+FreqMix".
+        "BatchNormMode" : "renorm", ... "renorm"(default), "norm" to use the conventional function
+        "PositionalEncoding" :"RoPE", ... "RoPE"(default), "GAB", "TAB", "TAB+FreqMix", "RoPE+GAB", "RoPE+TAB", "RoPE+TAB+FreqMix"
         "RoPETheta" : 100.0,
         "LearnableRoPE" : false,
         "AttentionQKNorm" : true,
@@ -74,12 +73,6 @@ You can check these features by setting the following in selfplay-setting.json.
         "UseCompile" : true, ... New key(default:false)
 ```
 
-## Test results for the b3xc96 model
-
-In the renorm test, after step 520K, the value of "RenormMaxD" in selfplay-setting.json was changed from 4 to 5.
-
-![all loss](./img/muon_onnx_renorm_fixup_loss.png)
-
 ## About the Transformer model
 
 The Transformer model currently implemented is merely a prototype for demonstration purposes.
@@ -107,7 +100,7 @@ The log files are located in the train/log folder.
 
 ## Note (2026/06/03)
 
-Inline registers (Register tokens) and the learnable RoPE were removed from the program for the time being because they could not be successfully ported.
+Inline registers (Register tokens) were removed from the program for the time being because they could not be successfully ported.
 
 ## Note (2026/06/04)
 
