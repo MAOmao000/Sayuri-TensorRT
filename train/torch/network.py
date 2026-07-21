@@ -2537,6 +2537,7 @@ class Network(nn.Module):
                 block = MixerBlock
                 blockargs["version"] = 2
             elif component == "TransformerBlock":
+                self.is_pre_act = True  # used Transformer
                 blockargs["positional_encoding"] = self.positional_encoding  # default:"RoPE"
                 blockargs["learnable_rope"] = self.learnable_rope  # default:False
                 blockargs["rope_theta"] = self.rope_theta  # default:100.0
@@ -2561,6 +2562,7 @@ class Network(nn.Module):
                 block = TransformerAttentionBlock
                 additional_block = TransformerFFNBlock
             elif component == "NestedBottleneckTransformerBlock":
+                self.is_pre_act = True  # used Transformer
                 blockargs["bottleneck_channels"] = channels // 2
                 assert channels % 2 == 0, ""
                 blockargs["positional_encoding"] = self.positional_encoding  # default:"RoPE"
@@ -2669,19 +2671,7 @@ class Network(nn.Module):
         self.global_pool = GlobalPool(is_value_head=False)
         self.global_pool_val = GlobalPool(is_value_head=True)
 
-        if not self.is_pre_act:
-            for block in self.stack:
-                components = list()
-                if type(block) == str:
-                    components = block.strip().split('-')
-                else:
-                    components = block["Block"].strip().split('-')
-                for component in components:
-                    if component == "TransformerBlock" or component == "NestedBottleneckTransformerBlock":
-                        self.is_pre_act = True  # used Transformer
-                        break
-                if self.is_pre_act:
-                    break
+        self.create_residual_tower()
 
         if self.is_pre_act:
             self.input_conv = Convolve(
@@ -2703,8 +2693,6 @@ class Network(nn.Module):
                 activation=self.activation,            # default::"relu"
                 collector=self.layers_collector
             )
-
-        self.create_residual_tower()
 
         # Trunk channel gating: per-channel learned gate that interpolates between
         # trunk and residual at each block.
@@ -2941,7 +2929,13 @@ class Network(nn.Module):
         x = self.final_block(x, mask)
         x = self.final_act(x)
 
+        # Use fp32 for output heads to handle potentially large values
         with autocast("cuda", enabled=False):
+            x = x.float()
+            mask = mask.float()
+            mask_sum_hw = mask_sum_hw.float() if isinstance(mask_sum_hw, torch.Tensor) else mask_sum_hw
+            mask_sum_hw_sqrt = mask_sum_hw_sqrt.float() if isinstance(mask_sum_hw_sqrt, torch.Tensor) else mask_sum_hw_sqrt
+            mask_buffers = (mask, mask_sum_hw, mask_sum_hw_sqrt)
             # policy head
             pol = self.policy_conv(x, mask)
             if self.policy_head_type["Type"] == "RepLK":  # default:"Normal"
