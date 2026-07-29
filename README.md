@@ -28,29 +28,36 @@ You can check these features by setting the following in selfplay-setting.json.
 ```
     "NeuralNetwork" : {
         "BatchNormMode" : "renorm", ... "renorm"(default), "norm" to use the conventional function
-        "PositionalEncoding" :"RoPE", ... "RoPE"(default), "GAB", "TAB", "TAB+FreqMix", "RoPE+GAB", "RoPE+TAB", "RoPE+TAB+FreqMix"
-        "RoPETheta" : 100.0,
-        "LearnableRoPE" : false,
-        "AttentionQKNorm" : true,
-        "GABD1" : 16,
-        "GABD2" : 16,
-        "GABNumTemplates" : 32,
-        "GABNumFourierFeatures" : 12,
-        "GABMLPHidden" : 96,
-        "TABCZ" : 32,
-        "TABNumTemplates" : 32,
-        "TABNumFreqs" : 8,
-        "TABNumBlocks" : 3,
-        "TABDilation" : 3,
-        "UseSwiGLU" : true,
-        "TransformerFFNDepthwiseConv" : true,
+        "PositionalEncoding" :"RoPE", ... "unuse"(default), "RoPE", "GAB", "TAB", "TAB+FreqMix", "RoPE+GAB", "RoPE+TAB", "RoPE+TAB+FreqMix"
+        "RoPETheta" : 100.0(default),
+        "LearnableRoPE" : false(default),
+        "AttentionNumRWRegisters" : 0(default),
+        "DiscardRegTokens" : false(default),
+        "AttentionQKNorm" : false(default),
+        "GABD1" : 16(default),
+        "GABD2" : 16(default),
+        "GABNumTemplates" : None(default),
+        "GABNumFourierFeatures" : None(default),
+        "GABMLPHidden" : None(default),
+        "TABCZ" : None(default),
+        "TABNumTemplates" : None(default),
+        "TABNumFreqs" : None(default),
+        "TABNumBlocks" : None(default),
+        "TABDilation" : None(default),
+        "UseSwiGLU" : true(default),
+        "TransformerFFNDepthwiseConv" : false(default),
         "TransformerHeads" : 3,
         "TransformerKVHheads" : 3,
         "AttentionQueryHeadDim" : 32,
         "AttentionValueHeadDim" : 32,
+        "LearnedRoPECastToInputDtype" : false(default),
         "TransformerFFNChannels" : 256
-        "UseTrunkChannelGate" : false, ... KataGo's unique new features
-        "UseTrunkResidualBackout" : false, ... KataGo's unique new features
+        "UseTrunkChannelGate" : false(default), ... KataGo's unique new features
+        "UseTrunkResidualBackout" : false(default), ... KataGo's unique new features
+        "UseFlexAttention" : false(default), ... KataGo's unique new features
+        "AttnLogitPenaltyCap" : None(default), ... KataGo's unique new features
+        "AttnLogitPenaltyCoeff" : 1e-3(default), ... KataGo's unique new features
+        "AttnLogitPenaltyBatchFrac" : 1.0(default), ... KataGo's unique new features
         "Stack" : [
             "TransformerBlock"
             or
@@ -71,6 +78,10 @@ You can check these features by setting the following in selfplay-setting.json.
                                           When using the Transformer model, used 3.2e-5.
         "ExportONNX" : true, ... New key(default:false)
         "UseCompile" : true, ... New key(default:false)
+        "UseBatchedMuonNs" : true, ... New key(default:false)
+        "UseForeachAuxAdam" : true, ... New key(default:false)
+        "MuonNsBatchSize" : 32, ... New key(default:32)
+        "AnnealingCycle" : 0, ... New key(default:0)
 ```
 
 ## About the Transformer model
@@ -198,6 +209,11 @@ Rank Name                               Elo     +    - games score oppo. draws T
 ---- ---------------------------------  ----   --   -- ----- ----- ----- ----- --------------
 KataGo weight: kata1-b6c96-s175395328-d26788732.txt.gz
 ```
+
+## Note (2026/07/30)
+
+Have incorporated KataGo's latest features.
+FlexAttention is currently frozen because exporting it to an ONNX file results in an error.
 
 
 
