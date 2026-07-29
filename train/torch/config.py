@@ -78,9 +78,13 @@ class Config:
         self.swa_max_count = train.get("SwaMaxCount", 16)
         self.swa_steps = train.get("SwaSteps", 100)
         self.warmup_steps = train.get("WarmUpSteps", 0)
+        self.annealing_cycle = train.get("AnnealingCycle", 0)
         self.policy_surprise_factor = train.get("PolicySurpriseFactor", 0.0)
         self.export_onnx = train.get("ExportONNX", False)
         self.use_compile = train.get("UseCompile", False)
+        self.use_batched_muon_ns = train.get("UseBatchedMuonNs", False)
+        self.use_foreach_aux_adam = train.get("UseForeachAuxAdam", False)
+        self.muon_ns_batch_size = train.get("MuonNsBatchSize", 32)
 
         assert self.train_dir != None, "TrainDirectory is not specified."
         assert self.store_path != None, "StorePath is not specified."
@@ -108,6 +112,8 @@ class Config:
         self.is_pre_act = network.get("PreActivation", False)
         self.positional_encoding = network.get("PositionalEncoding", "unuse")
         self.learnable_rope = network.get("LearnableRoPE", False)
+        self.attention_num_rw_registers = network.get("AttentionNumRWRegisters", 0)
+        self.discard_reg_tokens = network.get("DiscardRegTokens", False)
         self.rope_theta = network.get("RoPETheta", 100.0)
         self.attention_qk_norm = network.get("AttentionQKNorm", False)
         self.gab_d1 = network.get("GABD1", 16)
@@ -124,11 +130,16 @@ class Config:
         self.transformer_kv_heads = network.get("TransformerKVHheads", 3)
         self.attention_query_head_dim = network.get("AttentionQueryHeadDim", 32)
         self.attention_value_head_dim = network.get("AttentionValueHeadDim", 32)
+        self.learned_rope_cast_to_input_dtype = network.get("LearnedRoPECastToInputDtype", False)
         self.transformer_ffn_channels = network.get("TransformerFFNChannels", 256)
         self.use_swiglu = network.get("UseSwiGLU", True)
         self.transformer_ffn_depthwise_conv = network.get("TransformerFFNDepthwiseConv", False)
         self.use_trunk_channel_gate = network.get("UseTrunkChannelGate", False)
         self.use_trunk_residual_backout = network.get("UseTrunkResidualBackout", False)
+        self.use_flex_attention = network.get("UseFlexAttention", False)
+        self.attn_logit_penalty_cap = network.get("AttnLogitPenaltyCap", None)
+        self.attn_logit_penalty_coeff = network.get("AttnLogitPenaltyCoeff", 1e-3)
+        self.attn_logit_penalty_batch_frac = network.get("AttnLogitPenaltyBatchFrac", 1.0)
 
         assert self.input_channels != None, "InputChannels is not specified."
         assert self.residual_channels != None, "ResidualChannels is not specified."

@@ -1,6 +1,10 @@
 import faulthandler
 faulthandler.enable()
+import logging
+import os
+from dataclasses import dataclass
 from itertools import repeat
+from typing import List, Sequence, Tuple
 import torch
 torch.set_float32_matmul_precision('high')
 import torch.nn.functional as F
@@ -8,6 +12,7 @@ import torch.distributed as dist
 import numpy as np
 import random, time, math, os, glob, io, gzip, sys
 import argparse
+import math
 
 from config import Config
 from network import Network
@@ -234,7 +239,341 @@ def adam_update(grad, buf1, buf2, step, betas, eps):
     buf2c = buf2 / (1 - betas[1]**step)
     return buf1c / (buf2c.sqrt() + eps)
 
-class MuonWithAuxAdam(torch.optim.Optimizer):
+# Compiled variants used by the batched Newton-Schulz path.
+# The number of distinct (batch, rows, cols) shapes per model is small, so per-shape compilation settles quickly.
+# These functions accept stacked (B, m, n) input since the underlying implementations already support batched matrices.
+zeropower_via_newtonschulz5_compiled = torch.compile(zeropower_via_newtonschulz5)
+zeropower_via_polar_express_compiled = torch.compile(zeropower_via_polar_express)
+
+DEFAULT_DISTRIBUTED_BUCKET_CAP_BYTES = 16 * 1024 * 1024
+
+@dataclass(frozen=True)
+class _MuonBucketSegment:
+    param_index: int
+    param_offset: int
+    packed_offset: int
+    numel: int
+
+@dataclass(frozen=True)
+class _MuonFlatBucketPlan:
+    collective_numel: int
+    owner_numels: Tuple[int, ...]
+    segments_by_owner: Tuple[Tuple[_MuonBucketSegment, ...], ...]
+
+@dataclass
+class _MuonDistributedLayout:
+    params: Tuple[torch.Tensor, ...]
+    buckets: Tuple[_MuonFlatBucketPlan, ...]
+    send_buffer: torch.Tensor
+    gathered_buffer: torch.Tensor
+
+def _build_muon_flat_bucket_plan(
+    owner_param_numels: Sequence[Sequence[Tuple[int, int]]],
+    bucket_cap_numel: int,
+) -> Tuple[_MuonFlatBucketPlan, ...]:
+    """Build equal-sized all-gather buckets from one parameter stream per owner.
+
+    Each input item is ``(param_index, numel)``.
+    A parameter may be split across buckets, but every element appears exactly once and in parameter-stream order.
+    The collective size of a bucket is the largest owner payload in that bucket.
+    Shorter owner payloads are padded by the caller.
+    """
+    if bucket_cap_numel <= 0:
+        raise ValueError(f"bucket_cap_numel must be positive, got {bucket_cap_numel}")
+    if len(owner_param_numels) <= 0:
+        raise ValueError("owner_param_numels must contain at least one owner")
+
+    normalized_streams: List[Tuple[Tuple[int, int], ...]] = []
+    for stream in owner_param_numels:
+        normalized_stream = []
+        for param_index, numel in stream:
+            if param_index < 0:
+                raise ValueError(f"param_index must be nonnegative, got {param_index}")
+            if numel < 0:
+                raise ValueError(f"parameter numel must be nonnegative, got {numel}")
+            if numel > 0:
+                normalized_stream.append((param_index, numel))
+        normalized_streams.append(tuple(normalized_stream))
+
+    stream_indices = [0 for _ in normalized_streams]
+    param_offsets = [0 for _ in normalized_streams]
+    buckets: List[_MuonFlatBucketPlan] = []
+
+    while any(stream_indices[owner] < len(normalized_streams[owner]) for owner in range(len(normalized_streams))):
+        owner_numels: List[int] = []
+        segments_by_owner: List[Tuple[_MuonBucketSegment, ...]] = []
+
+        for owner, stream in enumerate(normalized_streams):
+            packed_offset = 0
+            owner_segments: List[_MuonBucketSegment] = []
+            while packed_offset < bucket_cap_numel and stream_indices[owner] < len(stream):
+                param_index, param_numel = stream[stream_indices[owner]]
+                param_offset = param_offsets[owner]
+                take = min(param_numel - param_offset, bucket_cap_numel - packed_offset)
+                assert take > 0
+                owner_segments.append(_MuonBucketSegment(
+                    param_index=param_index,
+                    param_offset=param_offset,
+                    packed_offset=packed_offset,
+                    numel=take,
+                ))
+                packed_offset += take
+                param_offset += take
+                if param_offset == param_numel:
+                    stream_indices[owner] += 1
+                    param_offsets[owner] = 0
+                else:
+                    param_offsets[owner] = param_offset
+
+            owner_numels.append(packed_offset)
+            segments_by_owner.append(tuple(owner_segments))
+
+        collective_numel = max(owner_numels)
+        assert collective_numel > 0
+        buckets.append(_MuonFlatBucketPlan(
+            collective_numel=collective_numel,
+            owner_numels=tuple(owner_numels),
+            segments_by_owner=tuple(segments_by_owner),
+        ))
+
+    return tuple(buckets)
+
+class _MuonWithAuxAdamBase(torch.optim.Optimizer):
+    """Shared implementation for the single-device and distributed variants.
+
+    Optimization toggles (set the environment variable to 0 to disable for
+    debugging or exact regression comparison against the historical kernels):
+      KATAGO_MUON_BATCHED_NS (default 1): stack Muon updates with the same
+        matrix shape (up to KATAGO_MUON_NS_BATCH_SIZE, default 32) into a single
+        compiled Newton-Schulz iteration rather than one launch sequence per
+        parameter. Same update equations, but not bitwise identical to the
+        scalar launches.
+      KATAGO_AUX_ADAM_FOREACH (default 1): use torch._foreach multi-tensor
+        kernels for the auxiliary Adam parameter groups.
+    """
+    def __init__(self, param_groups, adjust_lr_fn="match_rms_adamw", adam_betas=(0.95, 0.995), adam_eps=1e-6,
+                 use_normuon=False, normuon_beta2=0.95, normuon_eps=1e-8,
+                 use_aurora=False, aurora_pp_iterations=2, aurora_pp_beta=0.5, aurora_eps=1e-7,
+                 ns_steps=5, use_polar_express=False, sort_muon_params=False,
+                 use_batched_muon_ns=False, use_foreach_aux_adam=False, muon_ns_batch_size=32):
+        self.use_normuon = use_normuon
+        self.normuon_beta2 = normuon_beta2
+        self.normuon_eps = normuon_eps
+        self.use_aurora = use_aurora
+        self.aurora_pp_iterations = aurora_pp_iterations
+        self.aurora_pp_beta = aurora_pp_beta
+        self.aurora_eps = aurora_eps
+        self.ns_steps = ns_steps
+        self.use_polar_express = use_polar_express
+        # Aurora's data-dependent preconditioning loop stays on the scalar path.
+        self.use_batched_muon_ns = use_batched_muon_ns and not use_aurora
+        self.use_foreach_aux_adam = use_foreach_aux_adam
+        self.muon_ns_batch_size = int(muon_ns_batch_size)
+        if self.muon_ns_batch_size <= 0:
+            raise ValueError(f"MuonNsBatchSize must be positive, got {self.muon_ns_batch_size}")
+        if self.use_batched_muon_ns:
+            logging.info(f"Muon: using batched Newton-Schulz with batch size {self.muon_ns_batch_size}")
+        if self.use_foreach_aux_adam:
+            logging.info("Muon: using foreach kernels for auxiliary Adam parameter groups")
+        for group in param_groups:
+            assert "use_muon" in group
+            if group["use_muon"]:
+                if sort_muon_params:
+                    group["params"] = sorted(group["params"], key=lambda x: x.size(), reverse=True)
+                # defaults
+                group["lr"] = group.get("lr", 0.02)
+                group["momentum"] = group.get("momentum", 0.95)
+                group["weight_decay"] = group.get("weight_decay", 0)
+                group["adjust_lr_fn"] = group.get("adjust_lr_fn", adjust_lr_fn)
+            else:
+                # defaults
+                group["lr"] = group.get("lr", 3e-4)
+                group["betas"] = group.get("betas", adam_betas)
+                group["eps"] = group.get("eps", adam_eps)
+                group["weight_decay"] = group.get("weight_decay", 0)
+        super().__init__(param_groups, dict())
+
+    def _ensure_muon_state(self, p):
+        if p.grad is None:
+            # continue
+            p.grad = torch.zeros_like(p)  # Force synchronization
+        state = self.state[p]
+        if len(state) == 0:
+            state["momentum_buffer"] = torch.zeros_like(p)
+            if self.use_normuon:
+                state["normuon_v"] = torch.zeros(p.shape[0], device=p.device, dtype=p.dtype)
+        return state
+
+    def _step_muon_param_scalar(self, group, p):
+        state = self._ensure_muon_state(p)
+        if self.use_aurora:
+            update = aurora_update(
+                p.grad, state["momentum_buffer"],
+                ns_steps=self.ns_steps,
+                beta=group["momentum"], adjust_lr_fn=group["adjust_lr_fn"],
+                pp_iterations=self.aurora_pp_iterations,
+                pp_beta=self.aurora_pp_beta, eps=self.aurora_eps,
+                use_polar_express=self.use_polar_express,
+            )
+        else:
+            update = muon_update(
+                p.grad, state["momentum_buffer"],
+                ns_steps=self.ns_steps,
+                beta=group["momentum"], adjust_lr_fn=group["adjust_lr_fn"],
+                normuon_v=state.get("normuon_v"),
+                normuon_beta2=self.normuon_beta2, normuon_eps=self.normuon_eps,
+                use_polar_express=self.use_polar_express,
+            )
+        p.mul_(1 - group["lr"] * group["weight_decay"])
+        p.add_(update.reshape(p.shape), alpha=-group["lr"])
+
+    def _step_muon_params_batched(self, group, param_indices):
+        """Same equations as the scalar path, but Newton-Schulz iterations for
+        same-shape matrices are launched as one batched computation, and the
+        elementwise momentum/Nesterov/scale/weight-decay/apply passes use
+        multi-tensor (foreach / stacked) kernels.
+
+        Per-parameter momentum/Nesterov mutation semantics are preserved.
+        Only independent computations are regrouped.
+        """
+        params = group["params"]
+        chosen = []
+        for param_index in param_indices:
+            p = params[param_index]
+            state = self._ensure_muon_state(p)
+            chosen.append((p, state))
+        if len(chosen) == 0:
+            return
+
+        # Momentum + Nesterov for all parameters in a few multi-tensor launches,
+        # matching muon_update: momentum.lerp_(grad, 1-beta); grad.lerp_(momentum, beta).
+        grads = [p.grad for p, state in chosen]
+        momenta = [state["momentum_buffer"] for p, state in chosen]
+        torch._foreach_lerp_(momenta, grads, 1 - group["momentum"])
+        torch._foreach_lerp_(grads, momenta, group["momentum"])
+
+        entries_by_shape = {}
+        for p, state in chosen:
+            update = p.grad
+            matrix = update.view(len(update), -1) if update.ndim == 4 else update
+            assert matrix.ndim == 2
+            # Normalize orientation to rows <= cols so that transposed shape pairs share a batch.
+            # Zeropower of the transpose is the transpose of zeropower, so this is equivalent to the scalar path.
+            was_transposed = matrix.shape[0] > matrix.shape[1]
+            normalized = matrix.mT if was_transposed else matrix
+            key = (normalized.device, normalized.dtype, normalized.shape[0], normalized.shape[1])
+            entries_by_shape.setdefault(key, []).append((p, normalized, was_transposed, state))
+
+        apply_params = []
+        apply_updates = []
+        for entries in entries_by_shape.values():
+            for chunk_begin in range(0, len(entries), self.muon_ns_batch_size):
+                chunk = entries[chunk_begin:chunk_begin + self.muon_ns_batch_size]
+                stacked = torch.stack([entry[1] for entry in chunk], dim=0)
+                if self.use_polar_express:
+                    orthogonalized = zeropower_via_polar_express_compiled(stacked, steps=self.ns_steps)
+                else:
+                    orthogonalized = zeropower_via_newtonschulz5_compiled(stacked, steps=self.ns_steps)
+
+                if not self.use_normuon and group["adjust_lr_fn"] == "match_rms_adamw":
+                    # The adjust-lr scale depends only on the (shared) matrix
+                    # shape, so scale the whole stacked chunk in one launch,
+                    # in parameter dtype for the foreach apply below.
+                    m, n = orthogonalized.shape[-2], orthogonalized.shape[-1]
+                    scale = (0.1825 if self.use_polar_express else 0.2) * max(m, n)**0.5
+                    scaled = orthogonalized.to(chunk[0][0].dtype) * scale
+                    for (p, _, was_transposed, state), update in zip(chunk, scaled.unbind(dim=0)):
+                        if was_transposed:
+                            update = update.mT
+                        apply_params.append(p)
+                        apply_updates.append(update.reshape(p.shape))
+                    continue
+
+                for (p, _, was_transposed, state), update in zip(chunk, orthogonalized.unbind(dim=0)):
+                    if was_transposed:
+                        update = update.mT
+                    normuon_v = state.get("normuon_v")
+                    if normuon_v is not None:
+                        assert group["adjust_lr_fn"] == "match_rms_adamw", \
+                            f"NorMuon requires adjust_lr_fn='match_rms_adamw', got '{group['adjust_lr_fn']}'"
+                        normuon_v.lerp_(update.square().mean(dim=-1).to(normuon_v.dtype), 1 - self.normuon_beta2)
+                        update = update / (normuon_v.sqrt().unsqueeze(-1) + self.normuon_eps)
+                        update = update * (0.1825 * (update.size(-2) * update.size(-1))**0.5 / (update.norm() + 1e-30))
+                    elif group["adjust_lr_fn"] == "match_rms_adamw":
+                        if self.use_polar_express:
+                            update = update * (0.1825 * max(update.size(-2), update.size(-1))**0.5)
+                        else:
+                            update = update * (0.2 * max(update.size(-2), update.size(-1))**0.5)
+                    elif group["adjust_lr_fn"] == "original":
+                        update = update * (max(1, update.size(-2) / update.size(-1))**0.5)
+                    else:
+                        raise AssertionError(f"Unexpected value adjust_lr_fn={group['adjust_lr_fn']}")
+                    apply_params.append(p)
+                    apply_updates.append(update.reshape(p.shape).to(p.dtype))
+
+        torch._foreach_mul_(apply_params, 1 - group["lr"] * group["weight_decay"])
+        torch._foreach_add_(apply_params, apply_updates, alpha=-group["lr"])
+
+    def _step_muon_group(self, group, param_indices):
+        if self.use_batched_muon_ns:
+            self._step_muon_params_batched(group, param_indices)
+        else:
+            for param_index in param_indices:
+                self._step_muon_param_scalar(group, group["params"][param_index])
+
+    def _ensure_adam_state(self, p):
+        if p.grad is None:
+            # continue
+            p.grad = torch.zeros_like(p)  # Force synchronization
+        state = self.state[p]
+        if len(state) == 0:
+            state["exp_avg"] = torch.zeros_like(p)
+            state["exp_avg_sq"] = torch.zeros_like(p)
+            state["step"] = 0
+        return state
+
+    def _step_adam_group(self, group):
+        if self.use_foreach_aux_adam:
+            self._step_adam_group_foreach(group)
+            return
+        for p in group["params"]:
+            state = self._ensure_adam_state(p)
+            state["step"] += 1
+            update = adam_update(p.grad, state["exp_avg"], state["exp_avg_sq"],
+                                 state["step"], group["betas"], group["eps"])
+            p.mul_(1 - group["lr"] * group["weight_decay"])
+            p.add_(update, alpha=-group["lr"])
+
+    def _step_adam_group_foreach(self, group):
+        """Update an auxiliary Adam group with one multi-tensor launch per operation.
+        Same update equations as adam_update."""
+        entries_by_step = {}
+        for p in group["params"]:
+            state = self._ensure_adam_state(p)
+            state["step"] += 1
+            entries_by_step.setdefault(state["step"], []).append((
+                p, p.grad, state["exp_avg"], state["exp_avg_sq"],
+            ))
+
+        beta1, beta2 = group["betas"]
+        adam_lr = group["lr"]
+        for step, entries in entries_by_step.items():
+            params, grads, exp_avgs, exp_avg_sqs = map(list, zip(*entries))
+            torch._foreach_lerp_(exp_avgs, grads, 1 - beta1)
+            grads_sq = torch._foreach_mul(grads, grads)
+            torch._foreach_lerp_(exp_avg_sqs, grads_sq, 1 - beta2)
+
+            bias_correction1 = 1 - beta1**step
+            bias_correction2_sqrt = (1 - beta2**step) ** 0.5
+            denominators = torch._foreach_sqrt(exp_avg_sqs)
+            torch._foreach_div_(denominators, bias_correction2_sqrt)
+            torch._foreach_add_(denominators, group["eps"])
+            updates = torch._foreach_div(exp_avgs, denominators)
+
+            torch._foreach_mul_(params, 1 - adam_lr * group["weight_decay"])
+            torch._foreach_add_(params, updates, alpha=-adam_lr / bias_correction1)
+
+class MuonWithAuxAdam(_MuonWithAuxAdamBase):
     """
     Distributed Muon variant that can be used for all parameters in the network, since it runs an
     internal AdamW for the parameters that are not compatible with Muon. The user must manually
@@ -243,6 +582,10 @@ class MuonWithAuxAdam(torch.optim.Optimizer):
 
     The point of this class is to allow the user to have a single optimizer in their code, rather
     than having both a Muon and an Adam which each need to be stepped.
+
+    Muon parameter ownership is sharded round-robin across ranks.
+    After each step the updated parameters are synchronized in reusable flat buckets
+    (one all-gather per ~16 MiB bucket) rather than one collective per parameter.
 
     Set use_normuon=True to enable NorMuon (neuron-wise normalized Muon), which adds row-wise
     adaptive learning rates after orthogonalization. See https://arxiv.org/abs/2510.05491
@@ -271,32 +614,207 @@ class MuonWithAuxAdam(torch.optim.Optimizer):
     def __init__(self, param_groups, adjust_lr_fn="match_rms_adamw", adam_betas=(0.95, 0.995), adam_eps=1e-6,
                  use_normuon=False, normuon_beta2=0.95, normuon_eps=1e-8,
                  use_aurora=False, aurora_pp_iterations=2, aurora_pp_beta=0.5, aurora_eps=1e-7,
-                 ns_steps=5, use_polar_express=False):
-        self.use_normuon = use_normuon
-        self.normuon_beta2 = normuon_beta2
-        self.normuon_eps = normuon_eps
-        self.use_aurora = use_aurora
-        self.aurora_pp_iterations = aurora_pp_iterations
-        self.aurora_pp_beta = aurora_pp_beta
-        self.aurora_eps = aurora_eps
-        self.ns_steps = ns_steps
-        self.use_polar_express = use_polar_express
-        for group in param_groups:
-            assert "use_muon" in group
-            if group["use_muon"]:
-                group["params"] = sorted(group["params"], key=lambda x: x.size(), reverse=True)
-                # defaults
-                group["lr"] = group.get("lr", 0.02)
-                group["momentum"] = group.get("momentum", 0.95)
-                group["weight_decay"] = group.get("weight_decay", 0)
-                group["adjust_lr_fn"] = group.get("adjust_lr_fn", adjust_lr_fn)
-            else:
-                # defaults
-                group["lr"] = group.get("lr", 3e-4)
-                group["betas"] = group.get("betas", adam_betas)
-                group["eps"] = group.get("eps", adam_eps)
-                group["weight_decay"] = group.get("weight_decay", 0)
-        super().__init__(param_groups, dict())
+                 ns_steps=5, use_polar_express=False,
+                 distributed_bucket_cap_bytes=DEFAULT_DISTRIBUTED_BUCKET_CAP_BYTES,
+                 use_batched_muon_ns=False, use_foreach_aux_adam=False, muon_ns_batch_size=32):
+        self.distributed_bucket_cap_bytes = int(distributed_bucket_cap_bytes)
+        if self.distributed_bucket_cap_bytes <= 0:
+            raise ValueError(f"distributed_bucket_cap_bytes must be positive, got {distributed_bucket_cap_bytes}")
+        self._muon_distributed_layouts = None
+        super().__init__(
+            param_groups, adjust_lr_fn=adjust_lr_fn, adam_betas=adam_betas, adam_eps=adam_eps,
+            use_normuon=use_normuon, normuon_beta2=normuon_beta2, normuon_eps=normuon_eps,
+            use_aurora=use_aurora, aurora_pp_iterations=aurora_pp_iterations,
+            aurora_pp_beta=aurora_pp_beta, aurora_eps=aurora_eps,
+            ns_steps=ns_steps, use_polar_express=use_polar_express,
+            sort_muon_params=True,
+            use_batched_muon_ns=use_batched_muon_ns,
+            use_foreach_aux_adam=use_foreach_aux_adam,
+            muon_ns_batch_size=muon_ns_batch_size
+        )
+
+    def _initialize_muon_distributed_layouts(self):
+        world_size = dist.get_world_size()
+
+        # Insertion order follows parameter traversal and is therefore identical
+        # across ranks even though each rank's CUDA device index is different.
+        layout_builders = {}
+        for group in self.param_groups:
+            if not group["use_muon"]:
+                continue
+            for local_index, param in enumerate(group["params"]):
+                if not param.is_contiguous():
+                    raise ValueError(
+                        "Distributed Muon parameter synchronization requires contiguous parameters, "
+                        f"got shape={tuple(param.shape)} stride={param.stride()}"
+                    )
+                key = (param.device, param.dtype)
+                if key not in layout_builders:
+                    layout_builders[key] = {
+                        "params": [],
+                        "owner_param_numels": [[] for _ in range(world_size)],
+                    }
+                builder = layout_builders[key]
+                param_index = len(builder["params"])
+                builder["params"].append(param)
+                owner = local_index % world_size
+                builder["owner_param_numels"][owner].append((param_index, param.numel()))
+
+        layouts = []
+        total_buckets = 0
+        total_workspace_bytes = 0
+        for builder in layout_builders.values():
+            params = tuple(builder["params"])
+            if len(params) <= 0:
+                continue
+            element_size = params[0].element_size()
+            bucket_cap_numel = max(1, self.distributed_bucket_cap_bytes // element_size)
+            buckets = _build_muon_flat_bucket_plan(
+                builder["owner_param_numels"],
+                bucket_cap_numel,
+            )
+            if len(buckets) <= 0:
+                continue
+            max_collective_numel = max(bucket.collective_numel for bucket in buckets)
+            send_buffer = torch.empty(
+                max_collective_numel,
+                dtype=params[0].dtype,
+                device=params[0].device,
+            )
+            gathered_buffer = torch.empty(
+                world_size * max_collective_numel,
+                dtype=params[0].dtype,
+                device=params[0].device,
+            )
+            layouts.append(_MuonDistributedLayout(
+                params=params,
+                buckets=buckets,
+                send_buffer=send_buffer,
+                gathered_buffer=gathered_buffer,
+            ))
+            total_buckets += len(buckets)
+            total_workspace_bytes += (world_size + 1) * max_collective_numel * element_size
+
+        self._muon_distributed_layouts = tuple(layouts)
+        logging.info(
+            "Muon DDP flat parameter synchronization: %d bucket(s), %.1f MiB reusable workspace per rank",
+            total_buckets,
+            total_workspace_bytes / (1024.0 * 1024.0),
+        )
+
+    def state_dict_for_checkpoint(self):
+        """Full optimizer state dict including Muon states owned by other ranks.
+
+        Muon momentum (and NorMuon second-moment) buffers are sharded: each rank
+        only steps params[rank::world_size] within each Muon group, so a plain
+        rank-0 state_dict() would silently drop the other ranks' buffers and
+        they would reinitialize to zero on resume. This gathers every rank's
+        owned Muon states onto rank 0.
+
+        COLLECTIVE: every rank must call this at the same point. Returns the
+        complete state dict on rank 0 and None on other ranks.
+        """
+        optimizer_state_dict = self.state_dict()
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+
+        local_muon_state = {}
+        for group in optimizer_state_dict["param_groups"]:
+            if not group.get("use_muon", False):
+                continue
+            for local_index, param_id in enumerate(group["params"]):
+                if local_index % world_size != rank:
+                    continue
+                if param_id not in optimizer_state_dict["state"]:
+                    continue
+                state = optimizer_state_dict["state"][param_id]
+                local_muon_state[param_id] = {
+                    key: (value.detach().cpu() if isinstance(value, torch.Tensor) else value)
+                    for key, value in state.items()
+                }
+
+        gathered_muon_state = [None for _ in range(world_size)] if rank == 0 else None
+        dist.gather_object(local_muon_state, gathered_muon_state, dst=0)
+        if rank != 0:
+            return None
+        for rank_state in gathered_muon_state:
+            if rank_state is None:
+                continue
+            for param_id, state in rank_state.items():
+                optimizer_state_dict["state"][param_id] = state
+        return optimizer_state_dict
+
+    def load_state_dict_for_checkpoint(self, state_dict):
+        """Load a checkpoint produced by state_dict_for_checkpoint, keeping only
+        the locally-owned Muon states on this rank. Because the checkpoint holds
+        every rank's Muon states, resuming with a different world size works as
+        long as the parameter groups and their ordering are unchanged."""
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+        muon_non_local_param_ids = set()
+        for group in state_dict["param_groups"]:
+            if not group.get("use_muon", False):
+                continue
+            for local_index, param_id in enumerate(group["params"]):
+                if local_index % world_size != rank:
+                    muon_non_local_param_ids.add(param_id)
+        filtered_state = {
+            param_id: state
+            for param_id, state in state_dict["state"].items()
+            if param_id not in muon_non_local_param_ids
+        }
+        self.load_state_dict({
+            "state": filtered_state,
+            "param_groups": state_dict["param_groups"],
+        })
+
+    def _synchronize_muon_parameters(self):
+        if self._muon_distributed_layouts is None:
+            self._initialize_muon_distributed_layouts()
+
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+        for layout in self._muon_distributed_layouts:
+            for bucket in layout.buckets:
+                collective_numel = bucket.collective_numel
+                owner_numel = bucket.owner_numels[rank]
+                send = layout.send_buffer[:collective_numel]
+
+                local_parts = [
+                    layout.params[segment.param_index].detach().view(-1)[
+                        segment.param_offset:segment.param_offset + segment.numel
+                    ]
+                    for segment in bucket.segments_by_owner[rank]
+                ]
+                if len(local_parts) == 1:
+                    send[:owner_numel].copy_(local_parts[0])
+                elif len(local_parts) > 1:
+                    torch.cat(local_parts, dim=0, out=send[:owner_numel])
+                else:
+                    assert owner_numel == 0
+                if owner_numel < collective_numel:
+                    send[owner_numel:].zero_()
+
+                gathered = layout.gathered_buffer[:world_size * collective_numel]
+                dist.all_gather_into_tensor(gathered, send)
+                gathered_by_owner = gathered.view(world_size, collective_numel)
+
+                destination_parts = []
+                source_parts = []
+                for owner in range(world_size):
+                    if owner == rank:
+                        continue
+                    for segment in bucket.segments_by_owner[owner]:
+                        destination_parts.append(
+                            layout.params[segment.param_index].view(-1)[
+                                segment.param_offset:segment.param_offset + segment.numel
+                            ]
+                        )
+                        source_parts.append(
+                            gathered_by_owner[owner, segment.packed_offset:segment.packed_offset + segment.numel]
+                        )
+                if len(destination_parts) > 0:
+                    torch._foreach_copy_(destination_parts, source_parts)
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -306,92 +824,42 @@ class MuonWithAuxAdam(torch.optim.Optimizer):
             with torch.enable_grad():
                 loss = closure()
 
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
         for group in self.param_groups:
             if group["use_muon"]:
-                params = group["params"]
-                params_pad = params + [torch.empty_like(params[-1])] * (dist.get_world_size() - len(params) % dist.get_world_size())
-                for base_i in range(len(params))[::dist.get_world_size()]:
-                    if base_i + dist.get_rank() < len(params):
-                        p = params[base_i + dist.get_rank()]
-                        if p.grad is None:
-                            # continue
-                            p.grad = torch.zeros_like(p)  # Force synchronization
-                        state = self.state[p]
-                        if len(state) == 0:
-                            state["momentum_buffer"] = torch.zeros_like(p)
-                            if self.use_normuon:
-                                state["normuon_v"] = torch.zeros(p.shape[0], device=p.device, dtype=p.dtype)
-                        if self.use_aurora:
-                            update = aurora_update(
-                                p.grad, state["momentum_buffer"],
-                                ns_steps=self.ns_steps,
-                                beta=group["momentum"], adjust_lr_fn=group["adjust_lr_fn"],
-                                pp_iterations=self.aurora_pp_iterations,
-                                pp_beta=self.aurora_pp_beta, eps=self.aurora_eps,
-                                use_polar_express=self.use_polar_express,
-                            )
-                        else:
-                            update = muon_update(
-                                p.grad, state["momentum_buffer"],
-                                ns_steps=self.ns_steps,
-                                beta=group["momentum"], adjust_lr_fn=group["adjust_lr_fn"],
-                                normuon_v=state.get("normuon_v"),
-                                normuon_beta2=self.normuon_beta2, normuon_eps=self.normuon_eps,
-                                use_polar_express=self.use_polar_express,
-                            )
-                        p.mul_(1 - group["lr"] * group["weight_decay"])
-                        p.add_(update.reshape(p.shape), alpha=-group["lr"])
-                    dist.all_gather(params_pad[base_i:base_i + dist.get_world_size()], params_pad[base_i + dist.get_rank()])
+                # Round-robin ownership matching the historical layout. All
+                # ranks must agree on this assignment; parameters this rank
+                # does not own are filled in by the flat synchronization below.
+                param_indices = range(rank, len(group["params"]), world_size)
+                self._step_muon_group(group, param_indices)
             else:
-                for p in group["params"]:
-                    if p.grad is None:
-                        # continue
-                        p.grad = torch.zeros_like(p)  # Force synchronization
-                    state = self.state[p]
-                    if len(state) == 0:
-                        state["exp_avg"] = torch.zeros_like(p)
-                        state["exp_avg_sq"] = torch.zeros_like(p)
-                        state["step"] = 0
-                    state["step"] += 1
-                    update = adam_update(p.grad, state["exp_avg"], state["exp_avg_sq"],
-                                         state["step"], group["betas"], group["eps"])
-                    p.mul_(1 - group["lr"] * group["weight_decay"])
-                    p.add_(update, alpha=-group["lr"])
+                self._step_adam_group(group)
+
+        self._synchronize_muon_parameters()
 
         return loss
 
-class SingleDeviceMuonWithAuxAdam(torch.optim.Optimizer):
+class SingleDeviceMuonWithAuxAdam(_MuonWithAuxAdamBase):
     """
     Non-distributed variant of MuonWithAuxAdam.
     """
     def __init__(self, param_groups, adjust_lr_fn="match_rms_adamw", adam_betas=(0.95, 0.995), adam_eps=1e-6,
                  use_normuon=False, normuon_beta2=0.95, normuon_eps=1e-8,
                  use_aurora=False, aurora_pp_iterations=2, aurora_pp_beta=0.5, aurora_eps=1e-7,
-                 ns_steps=5, use_polar_express=False):
-        self.use_normuon = use_normuon
-        self.normuon_beta2 = normuon_beta2
-        self.normuon_eps = normuon_eps
-        self.use_aurora = use_aurora
-        self.aurora_pp_iterations = aurora_pp_iterations
-        self.aurora_pp_beta = aurora_pp_beta
-        self.aurora_eps = aurora_eps
-        self.ns_steps = ns_steps
-        self.use_polar_express = use_polar_express
-        for group in param_groups:
-            assert "use_muon" in group
-            if group["use_muon"]:
-                # defaults
-                group["lr"] = group.get("lr", 0.02)
-                group["momentum"] = group.get("momentum", 0.95)
-                group["weight_decay"] = group.get("weight_decay", 0)
-                group["adjust_lr_fn"] = group.get("adjust_lr_fn", adjust_lr_fn)
-            else:
-                # defaults
-                group["lr"] = group.get("lr", 3e-4)
-                group["betas"] = group.get("betas", adam_betas)
-                group["eps"] = group.get("eps", adam_eps)
-                group["weight_decay"] = group.get("weight_decay", 0)
-        super().__init__(param_groups, dict())
+                 ns_steps=5, use_polar_express=False,
+                 use_batched_muon_ns=False, use_foreach_aux_adam=False, muon_ns_batch_size=32):
+        super().__init__(
+            param_groups, adjust_lr_fn=adjust_lr_fn, adam_betas=adam_betas, adam_eps=adam_eps,
+            use_normuon=use_normuon, normuon_beta2=normuon_beta2, normuon_eps=normuon_eps,
+            use_aurora=use_aurora, aurora_pp_iterations=aurora_pp_iterations,
+            aurora_pp_beta=aurora_pp_beta, aurora_eps=aurora_eps,
+            ns_steps=ns_steps, use_polar_express=use_polar_express,
+            sort_muon_params=False,
+            use_batched_muon_ns=use_batched_muon_ns,
+            use_foreach_aux_adam=use_foreach_aux_adam,
+            muon_ns_batch_size=muon_ns_batch_size
+        )
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -403,50 +871,9 @@ class SingleDeviceMuonWithAuxAdam(torch.optim.Optimizer):
 
         for group in self.param_groups:
             if group["use_muon"]:
-                for p in group["params"]:
-                    if p.grad is None:
-                        # continue
-                        p.grad = torch.zeros_like(p)  # Force synchronization
-                    state = self.state[p]
-                    if len(state) == 0:
-                        state["momentum_buffer"] = torch.zeros_like(p)
-                        if self.use_normuon:
-                            state["normuon_v"] = torch.zeros(p.shape[0], device=p.device, dtype=p.dtype)
-                    if self.use_aurora:
-                        update = aurora_update(
-                            p.grad, state["momentum_buffer"],
-                            ns_steps=self.ns_steps,
-                            beta=group["momentum"], adjust_lr_fn=group["adjust_lr_fn"],
-                            pp_iterations=self.aurora_pp_iterations,
-                            pp_beta=self.aurora_pp_beta, eps=self.aurora_eps,
-                            use_polar_express=self.use_polar_express,
-                        )
-                    else:
-                        update = muon_update(
-                            p.grad, state["momentum_buffer"],
-                            ns_steps=self.ns_steps,
-                            beta=group["momentum"], adjust_lr_fn=group["adjust_lr_fn"],
-                            normuon_v=state.get("normuon_v"),
-                            normuon_beta2=self.normuon_beta2, normuon_eps=self.normuon_eps,
-                            use_polar_express=self.use_polar_express,
-                        )
-                    p.mul_(1 - group["lr"] * group["weight_decay"])
-                    p.add_(update.reshape(p.shape), alpha=-group["lr"])
+                self._step_muon_group(group, range(len(group["params"])))
             else:
-                for p in group["params"]:
-                    if p.grad is None:
-                        # continue
-                        p.grad = torch.zeros_like(p)  # Force synchronization
-                    state = self.state[p]
-                    if len(state) == 0:
-                        state["exp_avg"] = torch.zeros_like(p)
-                        state["exp_avg_sq"] = torch.zeros_like(p)
-                        state["step"] = 0
-                    state["step"] += 1
-                    update = adam_update(p.grad, state["exp_avg"], state["exp_avg_sq"],
-                                         state["step"], group["betas"], group["eps"])
-                    p.mul_(1 - group["lr"] * group["weight_decay"])
-                    p.add_(update, alpha=-group["lr"])
+                self._step_adam_group(group)
 
         return loss
 
@@ -751,15 +1178,23 @@ class TrainingPipe():
 
         # Warm up steps.
         self.warmup_steps = self.cfg.warmup_steps
+        self.annealing_cycle = self.cfg.annealing_cycle
 
         # The sample rate factor for policy
         self.policy_surprise_factor = self.cfg.policy_surprise_factor
+
+        self.attn_logit_penalty_cap = self.cfg.attn_logit_penalty_cap
+        self.attn_logit_penalty_coeff = self.cfg.attn_logit_penalty_coeff
+        self.attn_logit_penalty_batch_frac = self.cfg.attn_logit_penalty_batch_frac
 
         self._setup()
 
     def _setup(self):
         if self.cfg.use_compile:
             self.net = self.net.to(self.device)
+            if self.attn_logit_penalty_cap is not None:
+                self.net.attn_logit_penalty_cap = self.attn_logit_penalty_cap
+                self.net.attn_logit_penalty_batch_frac = self.attn_logit_penalty_batch_frac
             self.module = self.net # linking
             self.net = torch.compile(
                 self.net
@@ -774,10 +1209,16 @@ class TrainingPipe():
         else:
             if self.use_gpu:
                 self.net = self.net.to(self.device)
+                if self.attn_logit_penalty_cap is not None:
+                    self.net.attn_logit_penalty_cap = self.attn_logit_penalty_cap
+                    self.net.attn_logit_penalty_batch_frac = self.attn_logit_penalty_batch_frac
                 self.net = DataParallel(self.net) 
                 self.module  = self.net.module
                 self.swa_net = self.swa_net.to(self.device)
             else:
+                if self.attn_logit_penalty_cap is not None:
+                    self.net.attn_logit_penalty_cap = self.attn_logit_penalty_cap
+                    self.net.attn_logit_penalty_batch_frac = self.attn_logit_penalty_batch_frac
                 self.module  = self.net.module
 
         # Copy the initial weights.
@@ -803,7 +1244,10 @@ class TrainingPipe():
                 aurora_pp_iterations=2,  # Number of preconditioning-polar iterations for aurora
                 aurora_pp_beta=0.5,      # Damping parameter for aurora diagonal preconditioner
                 ns_steps=5,              # Number of Newton-Schulz iterations for muon/aurora
-                use_polar_express=True)  # polar factor projection
+                use_polar_express=True,  # polar factor projection
+                use_batched_muon_ns=self.cfg.use_batched_muon_ns,
+                use_foreach_aux_adam=self.cfg.use_foreach_aux_adam,
+                muon_ns_batch_size=self.cfg.muon_ns_batch_size)
         elif self.opt_name == "SGD" or not self.opt_name in ["Adam", "SGD"]:
             self.opt_name = "SGD"
             # Recommanded optimizer, the SGD is better than Adam
@@ -958,6 +1402,11 @@ class TrainingPipe():
 
         if self.warmup_steps > 0 and num_steps < self.warmup_steps:
             curr_lr = curr_lr * ((num_steps+1)/self.warmup_steps)
+            return curr_lr
+
+        if self.annealing_cycle > 0 and (self.opt_name == "Aurora" or self.opt_name == "Muon"):
+            curr_lr = curr_lr * 0.8 + 0.5 * curr_lr * 0.2 * (
+                1. + math.cos(math.pi * (((num_steps + 1) % self.annealing_cycle) + 1) / self.annealing_cycle))
         return curr_lr
 
     def _load_current_status(self):
@@ -1329,6 +1778,14 @@ class TrainingPipe():
                             loss_weight_dict=self._loss_weight_dict
                         )
                     loss, all_loss_dict = self._handle_loss(all_loss_dict)
+
+                    # Attention logit bound penalty (kept out of loss_sum so the main loss stays comparable
+                    # across runs; logged as its own metrics). mean * batch_size rather than sum: with
+                    # attn-logit-penalty-batch-frac < 1 the penalty is computed on a slice of the batch,
+                    # and this keeps it an unbiased estimate of the full-batch sum (coeff meaning unchanged).
+                    if self.attn_logit_penalty_cap is not None:
+                        attn_pen_sum = self.module.attn_logit_penalty_per_sample.mean() * self.batchsize
+                        loss = loss + self.attn_logit_penalty_coeff * attn_pen_sum
 
                 if self.use_fp16:
                     self.scaler.scale(loss).backward()
