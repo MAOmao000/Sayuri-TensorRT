@@ -14,6 +14,7 @@ Also added the following features:
 * Aurora+AdamW optimizer
 * torch.compile
 * Transformer model for demonstration purposes
+* Cyclic cosine annealing
 
 ## Requirements
 
