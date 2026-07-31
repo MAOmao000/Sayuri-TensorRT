@@ -2543,7 +2543,7 @@ class Network(nn.Module):
         self.use_trunk_channel_gate = cfg.use_trunk_channel_gate          # default:False
         self.use_trunk_residual_backout = cfg.use_trunk_residual_backout  # default:False
         if self.use_trunk_residual_backout:
-            assert num_rw_registers == 0, \
+            assert self.num_rw_registers == 0, \
                 "Inline registers are not compatible with trunk residual backout"
         # Currently fixed to False because ONNX export results in an error.
         self.use_flex_attention = False  # cfg.use_flex_attention
