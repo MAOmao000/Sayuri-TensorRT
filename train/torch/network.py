@@ -872,8 +872,8 @@ class ResidualBlock(nn.Module):
         out = self.conv2(out, mask)
         if self.use_se and not self.is_pre_act:
             out = self.se_module(out, mask_buffers)
+        out = out + x
         if not self.is_pre_act:
-            out = out + x
             out = self.act(out)
         return out
 
@@ -977,8 +977,8 @@ class BottleneckBlock(nn.Module):
         out = self.post_btl_conv(out, mask)
         if self.use_se and not self.is_pre_act:
             out = self.se_module(out, mask_buffers)
+        out = out + x
         if not self.is_pre_act:
-            out = out + x
             out = self.act(out)
         return out
 
@@ -1074,8 +1074,8 @@ class NestedBottleneckBlock(nn.Module):
         out = self.post_btl_conv(out, mask)
         if self.use_se and not self.is_pre_act:
             out = self.se_module(out, mask_buffers)
+        out = out + x
         if not self.is_pre_act:
-            out = out + x
             out = self.act(out)
         return out
 
@@ -1177,8 +1177,8 @@ class MixerBlock(nn.Module):
             out = self.ffn2(out, mask)
             if self.use_se and not self.is_pre_act:
                 out = self.se_module(out, mask_buffers)
+            out = out + x
             if not self.is_pre_act:
-                out = out + x
                 out = self.act(out)
         return out
 
@@ -2531,10 +2531,8 @@ class Network(nn.Module):
             if isinstance(block, TransformerAttentionBlock):
                 if i == len(self.residual_tower) - 1:
                     last_norm = True
-                elif isinstance(self.residual_tower[i + 1], TransformerAttentionBlock):
-                    last_norm = False
                 else:
-                    last_norm = True
+                    last_norm = False
                 x = block(x,
                     mask=mask,
                     mask_sum_hw=mask_sum_hw_transformer,
