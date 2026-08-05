@@ -29,17 +29,14 @@ You can check these features by setting the following in selfplay-setting.json.
 ```
     "NeuralNetwork" : {
         "BatchNormMode" : "renorm", ... "renorm"(default), "norm" to use the conventional function
-        "PositionalEncoding" :"RoPE", ... "unuse"(default), "RoPE", "GAB", "TAB", "TAB+FreqMix", "RoPE+GAB", "RoPE+TAB", "RoPE+TAB+FreqMix"
+        "PositionalEncoding" :"RoPE", ... "unuse"(default), "RoPE", "TAB", "FreqMix", "RoPE+TAB", "RoPE+FreqMix"
         "RoPETheta" : 100.0(default),
         "LearnableRoPE" : false(default),
         "AttentionNumRWRegisters" : 0(default),
         "DiscardRegTokens" : false(default),
         "AttentionQKNorm" : false(default),
-        "GABD1" : 16(default),
-        "GABD2" : 16(default),
-        "GABNumTemplates" : None(default),
-        "GABNumFourierFeatures" : None(default),
-        "GABMLPHidden" : None(default),
+        "TABD1" : 16(default),
+        "TABD2" : 16(default),
         "TABCZ" : None(default),
         "TABNumTemplates" : None(default),
         "TABNumFreqs" : None(default),
@@ -53,9 +50,6 @@ You can check these features by setting the following in selfplay-setting.json.
         "AttentionValueHeadDim" : 32,
         "LearnedRoPECastToInputDtype" : false(default),
         "TransformerFFNChannels" : 256
-        "UseTrunkChannelGate" : false(default), ... KataGo's unique new features
-        "UseTrunkResidualBackout" : false(default), ... KataGo's unique new features
-        "UseFlexAttention" : false(default), ... KataGo's unique new features
         "AttnLogitPenaltyCap" : None(default), ... KataGo's unique new features
         "AttnLogitPenaltyCoeff" : 1e-3(default), ... KataGo's unique new features
         "AttnLogitPenaltyBatchFrac" : 1.0(default), ... KataGo's unique new features
@@ -215,6 +209,30 @@ KataGo weight: kata1-b6c96-s175395328-d26788732.txt.gz
 
 Have incorporated KataGo's latest features.
 FlexAttention is currently frozen because exporting it to an ONNX file results in an error.
+
+## Note (2026/08/05)
+
+The following features have been removed from the Python source code.
+The source files prior to removal are `config_full.py` and `network_full.py`.
+```
+  "PositionalEncoding"
+    "GAB", "RoPE+GAB"
+    "TAB+FreqMix" -> "FreqMix"
+    "RoPE+TAB+FreqMix" -> "RoPE+FreqMix"
+  "RoPETheta"
+  "LearnableRoPE"
+  "AttentionNumRWRegisters"
+  "DiscardRegTokens"
+  "AttentionQKNorm"
+  "GABD1" -> "TABD1"
+  "GABD2" -> "TABD2"
+  "GABNumTemplates"
+  "GABNumFourierFeatures"
+  "GABMLPHidden"
+  "UseTrunkChannelGate"
+  "UseTrunkResidualBackout"
+  "UseFlexAttention"
+```
 
 
 

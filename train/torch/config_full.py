@@ -111,9 +111,16 @@ class Config:
         self.mode = network.get("BatchNormMode", "renorm")
         self.is_pre_act = network.get("PreActivation", False)
         self.positional_encoding = network.get("PositionalEncoding", "unuse")
+        self.learnable_rope = network.get("LearnableRoPE", False)
+        self.attention_num_rw_registers = network.get("AttentionNumRWRegisters", 0)
+        self.discard_reg_tokens = network.get("DiscardRegTokens", False)
+        self.rope_theta = network.get("RoPETheta", 100.0)
         self.attention_qk_norm = network.get("AttentionQKNorm", False)
-        self.tab_d1 = network.get("TABD1", 16)
-        self.tab_d2 = network.get("TABD2", 16)
+        self.gab_d1 = network.get("GABD1", 16)
+        self.gab_d2 = network.get("GABD2", 16)
+        self.gab_num_templates = network.get("GABNumTemplates", None)
+        self.gab_num_fourier_features = network.get("GABNumFourierFeatures", None)
+        self.gab_mlp_hidden = network.get("GABMLPHidden", None)
         self.tab_c_z = network.get("TABCZ", None)
         self.tab_num_templates = network.get("TABNumTemplates", None)
         self.tab_num_freqs = network.get("TABNumFreqs", None)
@@ -127,6 +134,9 @@ class Config:
         self.transformer_ffn_channels = network.get("TransformerFFNChannels", 256)
         self.use_swiglu = network.get("UseSwiGLU", True)
         self.transformer_ffn_depthwise_conv = network.get("TransformerFFNDepthwiseConv", False)
+        self.use_trunk_channel_gate = network.get("UseTrunkChannelGate", False)
+        self.use_trunk_residual_backout = network.get("UseTrunkResidualBackout", False)
+        self.use_flex_attention = network.get("UseFlexAttention", False)
         self.attn_logit_penalty_cap = network.get("AttnLogitPenaltyCap", None)
         self.attn_logit_penalty_coeff = network.get("AttnLogitPenaltyCoeff", 1e-3)
         self.attn_logit_penalty_batch_frac = network.get("AttnLogitPenaltyBatchFrac", 1.0)
@@ -140,5 +150,5 @@ class Config:
         ), f"{self.mode} cannot be assigned to BatchNormMode."
         assert (
             self.positional_encoding in
-            ["RoPE", "TAB", "FreqMix", "RoPE+TAB", "RoPE+FreqMix", "unuse"]
+            ["RoPE", "GAB", "TAB", "TAB+FreqMix", "RoPE+GAB", "RoPE+TAB", "RoPE+TAB+FreqMix", "unuse"]
         ), f"{self.positional_encoding} cannot be assigned to PositionalEncoding."
