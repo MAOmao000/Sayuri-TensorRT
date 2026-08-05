@@ -1245,9 +1245,11 @@ class TrainingPipe():
                 aurora_pp_beta=0.5,      # Damping parameter for aurora diagonal preconditioner
                 ns_steps=5,              # Number of Newton-Schulz iterations for muon/aurora
                 use_polar_express=True,  # polar factor projection
-                use_batched_muon_ns=self.cfg.use_batched_muon_ns,
+                use_batched_muon_ns=self.cfg.use_batched_muon_ns if self.opt_name == "Muon" else False,
                 use_foreach_aux_adam=self.cfg.use_foreach_aux_adam,
-                muon_ns_batch_size=self.cfg.muon_ns_batch_size)
+                muon_ns_batch_size=self.cfg.muon_ns_batch_size
+                    if self.opt_name == "Muon" and self.cfg.use_batched_muon_ns else 32
+            )
         elif self.opt_name == "SGD" or not self.opt_name in ["Adam", "SGD"]:
             self.opt_name = "SGD"
             # Recommanded optimizer, the SGD is better than Adam
