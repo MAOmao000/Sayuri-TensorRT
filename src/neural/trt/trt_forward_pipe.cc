@@ -257,7 +257,9 @@ bool TrtForwardPipe::TrtEngine::Build(bool dump_gpu_info,
         config->setBuilderOptimizationLevel(2);
     }
     config->setProfileStream(cudaStreamPerThread);
-    config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, 1U << 31);
+    // config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, 1U << 31);
+    // Leave workspace at TensorRT's device-dependent default (the GPU's total memory). This is a
+    // tactic-selection cap, not a preallocation; fixed caps can reject all tactics for larger profiles.
 
     if (!CreatePlan(network, config, builder, max_batch_, logger)) {
         return false;
