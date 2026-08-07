@@ -2452,14 +2452,14 @@ class Network(nn.Module):
         self.attention_qk_norm = cfg.attention_qk_norm  # default:False
         self.gab_d1 = cfg.gab_d1    # default:16
         self.gab_d2 = cfg.gab_d2    # default:16
-        self.gab_num_templates = cfg.gab_num_templates  # default:None
-        self.gab_num_fourier_features = cfg.gab_num_fourier_features  # default:None
-        self.gab_mlp_hidden = cfg.gab_mlp_hidden  # default:None
-        self.tab_c_z = cfg.tab_c_z  # default:None
-        self.tab_num_templates = cfg.tab_num_templates  # default:None
-        self.tab_num_freqs = cfg.tab_num_freqs    # default:None
-        self.tab_num_blocks = cfg.tab_num_blocks  # default:None
-        self.tab_dilation = cfg.tab_dilation      # default:None
+        self.gab_num_templates = cfg.gab_num_templates if self.use_gab else 0 # default:32
+        self.gab_num_fourier_features = cfg.gab_num_fourier_features  # default:12
+        self.gab_mlp_hidden = cfg.gab_mlp_hidden  # default:96
+        self.tab_c_z = cfg.tab_c_z  # default:32
+        self.tab_num_templates = cfg.tab_num_templates if self.use_tab or self.use_tab_freq_mix else 0 # default:32
+        self.tab_num_freqs = cfg.tab_num_freqs    # default:8
+        self.tab_num_blocks = cfg.tab_num_blocks  # default:3
+        self.tab_dilation = cfg.tab_dilation      # default:3
         self.transformer_heads = cfg.transformer_heads  # default:3
         self.transformer_kv_heads = cfg.transformer_kv_heads  # default:3
         self.attention_query_head_dim = cfg.attention_query_head_dim  # default:32
@@ -2838,6 +2838,7 @@ class Network(nn.Module):
                 pos_len=self.pos_len,  # default:19
                 activation=self.activation,  # default:"relu"
             )
+            self.gab_template_mlp.initialize()
         else:
             self.gab_template_mlp = None
 
@@ -2851,6 +2852,7 @@ class Network(nn.Module):
                 activation=self.activation,                # default:"relu"
                 pos_len=self.pos_len                       # default:19
             )
+            self.tab_module.initialize()
         elif self.use_tab:  # default:False
             self.tab_module = TABModule(
                 trunk_channels=self.residual_channels,     # default:None
@@ -2862,6 +2864,7 @@ class Network(nn.Module):
                 activation=self.activation,                # default:"relu"
                 pos_len=self.pos_len                       # default:19
             )
+            self.tab_module.initialize()
         else:
             self.tab_module = None
 
