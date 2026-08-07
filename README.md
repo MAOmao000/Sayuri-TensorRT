@@ -30,18 +30,14 @@ You can check these features by setting the following in selfplay-setting.json.
     "NeuralNetwork" : {
         "BatchNormMode" : "renorm", ... "renorm"(default), "norm" to use the conventional function
         "PositionalEncoding" :"RoPE", ... "unuse"(default), "RoPE", "TAB", "FreqMix", "RoPE+TAB", "RoPE+FreqMix"
-        "RoPETheta" : 100.0(default),
-        "LearnableRoPE" : false(default),
-        "AttentionNumRWRegisters" : 0(default),
-        "DiscardRegTokens" : false(default),
         "AttentionQKNorm" : false(default),
         "TABD1" : 16(default),
         "TABD2" : 16(default),
-        "TABCZ" : None(default),
-        "TABNumTemplates" : None(default),
-        "TABNumFreqs" : None(default),
-        "TABNumBlocks" : None(default),
-        "TABDilation" : None(default),
+        "TABCZ" : 32(default),
+        "TABNumTemplates" :32(default),
+        "TABNumFreqs" : 8(default),
+        "TABNumBlocks" : 3(default),
+        "TABDilation" : 3(default),
         "UseSwiGLU" : true(default),
         "TransformerFFNDepthwiseConv" : false(default),
         "TransformerHeads" : 3,

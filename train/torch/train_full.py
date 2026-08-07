@@ -1287,7 +1287,7 @@ class TrainingPipe():
         }
 
     def _get_is_muon_suitable(self, group_name):
-        if group_name == "normal" or group_name == "normal_attn" or group_name == "normal_tab"or group_name == "tab_module":
+        if group_name == "normal" or group_name == "normal_attn" or group_name == "normal_gab" or group_name == "gab_mlp" or group_name == "tab_module":
             return True
         elif group_name in ["normal_gamma", "noreg", "output", "output_noreg", "input", "input_noreg"]:
             return False
@@ -1307,8 +1307,9 @@ class TrainingPipe():
         if (group_name == "input" or
             group_name == "normal" or
             group_name == "normal_attn" or
-            group_name == "normal_tab" or
+            group_name == "normal_gab" or
             group_name == "normal_gamma" or
+            group_name == "gab_mlp" or
             group_name == "tab_module"
         ):
             if self.opt_name == "Muon" or self.opt_name == "Aurora":
@@ -1327,8 +1328,10 @@ class TrainingPipe():
                 wd_group_factor = 1.0
             elif group_name == "normal_attn":
                 wd_group_factor = 0.5
-            elif group_name == "normal_tab":
+            elif group_name == "normal_gab":
                 wd_group_factor = 0.3
+            elif group_name == "gab_mlp":
+                wd_group_factor = 0.1
             elif group_name == "tab_module":
                 wd_group_factor = 0.1
             elif group_name == "normal_gamma":
@@ -1429,10 +1432,7 @@ class TrainingPipe():
 
         if self.opt_name == "Muon" or self.opt_name == "Aurora":
             for param in self.opt.param_groups:
-                if (param["group_name"] == "normal" or
-                    param["group_name"] == "normal_attn" or
-                    param["group_name"] == "normal_tab" or
-                    param["group_name"] == "tab_module"):
+                if param["group_name"] == "normal" or param["group_name"] == "normal_attn" or param["group_name"] == "normal_gab" or param["group_name"] == "gab_mlp" or param["group_name"] == "tab_module":
                     param["lr"] = curr_lr * 2.0
                 elif param["group_name"] == "output" or param["group_name"] == "output_noreg":
                     param["lr"] = curr_lr * 0.5
@@ -1852,7 +1852,8 @@ class TrainingPipe():
                         for param in self.opt.param_groups:
                             if (param["group_name"] == "normal" or
                                 param["group_name"] == "normal_attn" or
-                                param["group_name"] == "normal_tab" or
+                                param["group_name"] == "normal_gab" or
+                                param["group_name"] == "gab_mlp" or
                                 param["group_name"] == "tab_module"
                             ):
                                 param["lr"] = curr_lr * 2.0
