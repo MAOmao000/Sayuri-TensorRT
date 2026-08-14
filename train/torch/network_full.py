@@ -229,6 +229,10 @@ class SqueezeAndExcitation(nn.Module):
             collector=collector
         )
 
+    def initialize(self, scale, xavier_init):
+        self.squeeze.initialize(scale=scale, xavier_init=xavier_init)
+        self.excite.initialize(scale=scale, xavier_init=xavier_init)
+
     def add_reg_dict(self, reg_dict):
         self.squeeze.add_reg_dict(reg_dict)
         self.excite.add_reg_dict(reg_dict)
@@ -491,17 +495,20 @@ class FullyConnect(nn.Module):
         )
         self.activation = activation
         self.act = activation_func(self.activation, inplace=True)
-        self._init_weights()
         self._try_collect(collector)
-
-    def _init_weights(self):
-        nn.init.xavier_normal_(
-            self.linear.weight, gain=compute_gain(self.activation))
-        nn.init.zeros_(self.linear.bias)
 
     def _try_collect(self, collector):
         if collector is not None:
             collector.append(self)
+
+    def initialize(self, scale, xavier_init, bias_scale=0.2):
+        if xavier_init:
+            nn.init.xavier_normal_(
+                self.linear.weight, gain=compute_gain(self.activation))
+            nn.init.zeros_(self.linear.bias)
+        else:
+            init_weights(self.linear.weight, self.activation, scale=scale)
+            init_weights(self.linear.bias, self.activation, scale=bias_scale, fan_tensor=self.linear.weight)
 
     def add_reg_dict(self, reg_dict, placement="in_block"):
         if placement == "in_block":
@@ -553,18 +560,22 @@ class Convolve(nn.Module):
         )
         self.activation = activation
         self.act = activation_func(self.activation, inplace=True)
-        self._init_weights()
         self._try_collect(collector)
-
-    def _init_weights(self):
-        nn.init.xavier_normal_(
-            self.conv.weight, gain=compute_gain(self.activation))
-        if self.bias:
-            nn.init.zeros_(self.conv.bias)
 
     def _try_collect(self, collector):
         if collector is not None:
             collector.append(self)
+
+    def initialize(self, scale, xavier_init, bias_scale=0.2):
+        if xavier_init:
+            nn.init.xavier_normal_(
+                self.conv.weight, gain=compute_gain(self.activation))
+            if self.bias:
+                nn.init.zeros_(self.conv.bias)
+        else:
+            init_weights(self.conv.weight, self.activation, scale=scale)
+            if self.bias:
+                init_weights(self.conv.bias, self.activation, scale=bias_scale, fan_tensor=self.conv.weight)
 
     def add_reg_dict(self, reg_dict, placement="in_block"):
         if placement == "in_block":
@@ -646,16 +657,18 @@ class ConvBlock(nn.Module):
             )
             self.act = activation_func(self.activation, inplace=True)
 
-        self._init_weights()
         self._try_collect(collector)
-
-    def _init_weights(self):
-        nn.init.xavier_normal_(
-            self.conv.weight, gain=compute_gain(self.activation))
 
     def _try_collect(self, collector):
         if collector is not None:
             collector.append(self)
+
+    def initialize(self, scale, xavier_init):
+        if xavier_init:
+            nn.init.xavier_normal_(
+                self.conv.weight, gain=compute_gain(self.activation))
+        else:
+            init_weights(self.conv.weight, self.activation, scale=scale)
 
     def add_reg_dict(self, reg_dict, placement="in_block"):
         if placement == "in_block":
@@ -751,14 +764,17 @@ class DepthwiseConvBlock(nn.Module):
             )
             self.act = activation_func(self.activation, inplace=True)
 
-        self._init_weights()
         self._try_collect(collector)
 
-    def _init_weights(self):
-        nn.init.xavier_normal_(
-            self.conv.weight, gain=compute_gain(self.activation))
-        nn.init.xavier_normal_(
-            self.rep3x3.weight, gain=compute_gain(self.activation))
+    def initialize(self, scale, xavier_init):
+        if xavier_init:
+            nn.init.xavier_normal_(
+                self.conv.weight, gain=compute_gain(self.activation))
+            nn.init.xavier_normal_(
+                self.rep3x3.weight, gain=compute_gain(self.activation))
+        else:
+            init_weights(self.conv.weight, self.activation, scale=scale * 0.8)
+            init_weights(self.rep3x3.weight, self.activation, scale=scale * 0.6)
 
     def add_reg_dict(self, reg_dict, placement="in_block"):
         self.conv.add_reg_dict(reg_dict, placement)
@@ -855,6 +871,21 @@ class ResidualBlock(nn.Module):
             self.act = nn.Identity()
         else:
             self.act = activation_func(self.activation, inplace=True)
+
+    def initialize(self, fixup_scale, se_fixup_scale, xavier_init):
+        if xavier_init:
+            self.conv1.initialize(scale=1.0, xavier_init=xavier_init)
+            self.conv2.initialize(scale=1.0, xavier_init=xavier_init)
+            if self.use_se:
+                self.se_module.initialize(scale=1.0, xavier_init=xavier_init)
+        else:
+            if self.use_se:
+                self.conv1.initialize(scale=se_fixup_scale, xavier_init=xavier_init)
+                self.conv2.initialize(scale=0.0, xavier_init=xavier_init)
+                self.se_module.initialize(scale=se_fixup_scale, xavier_init=xavier_init)
+            else:
+                self.conv1.initialize(scale=fixup_scale, xavier_init=xavier_init)
+                self.conv2.initialize(scale=0.0, xavier_init=xavier_init)
 
     def add_reg_dict(self, reg_dict):
         self.conv1.add_reg_dict(reg_dict)
@@ -957,6 +988,35 @@ class BottleneckBlock(nn.Module):
         else:
             self.act = activation_func(self.activation, inplace=True)
 
+    def initialize(self, fixup_scale, se_fixup_scale, xavier_init):
+        if xavier_init:
+            self.pre_btl_conv.initialize(scale=1.0, xavier_init=xavier_init)
+            self.conv1.initialize(scale=1.0, xavier_init=xavier_init)
+            self.conv2.initialize(scale=1.0, xavier_init=xavier_init)
+            self.post_btl_conv.initialize(scale=1.0, xavier_init=xavier_init)
+            if self.use_se:
+                self.se_module.initialize(scale=1.0, xavier_init=xavier_init)
+        else:
+            if self.use_se:
+                self.pre_btl_conv.initialize(
+                    scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                self.conv1.initialize(
+                    scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                self.conv2.initialize(
+                    scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                self.post_btl_conv.initialize(
+                    scale=0.0, xavier_init=xavier_init)
+                self.se_module.initialize(scale=se_fixup_scale, xavier_init=xavier_init)
+            else:
+                self.pre_btl_conv.initialize(
+                    scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                self.conv1.initialize(
+                    scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                self.conv2.initialize(
+                    scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                self.post_btl_conv.initialize(
+                    scale=0.0, xavier_init=xavier_init)
+
     def add_reg_dict(self, reg_dict):
         self.pre_btl_conv.add_reg_dict(reg_dict)
         self.conv1.add_reg_dict(reg_dict)
@@ -1054,6 +1114,41 @@ class NestedBottleneckBlock(nn.Module):
         else:
             self.act = activation_func(self.activation, inplace=True)
 
+    def initialize(self, fixup_scale, se_fixup_scale, xavier_init):
+        if xavier_init:
+            self.pre_btl_conv.initialize(scale=1.0, xavier_init=xavier_init)
+            self.block1.initialize(fixup_scale=1.0, se_fixup_scale=1.0, xavier_init=xavier_init)
+            self.block2.initialize(fixup_scale=1.0, se_fixup_scale=1.0, xavier_init=xavier_init)
+            self.post_btl_conv.initialize(scale=1.0, xavier_init=xavier_init)
+            if self.use_se:
+                self.se_module.initialize(scale=1.0, xavier_init=xavier_init)
+        else:
+            if self.use_se:
+                self.pre_btl_conv.initialize(
+                    scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                self.block1.initialize(
+                    fixup_scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)),
+                    se_fixup_scale=1.0,
+                    xavier_init=xavier_init)
+                self.block2.initialize(
+                    fixup_scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)),
+                    se_fixup_scale=1.0,
+                    xavier_init=xavier_init)
+                self.post_btl_conv.initialize(scale=0.0, xavier_init=xavier_init)
+                self.se_module.initialize(scale=se_fixup_scale, xavier_init=xavier_init)
+            else:
+                self.pre_btl_conv.initialize(
+                    scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                self.block1.initialize(
+                    fixup_scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)),
+                    se_fixup_scale=1.0,
+                    xavier_init=xavier_init)
+                self.block2.initialize(
+                    fixup_scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)),
+                    se_fixup_scale=1.0,
+                    xavier_init=xavier_init)
+                self.post_btl_conv.initialize(scale=0.0, xavier_init=xavier_init)
+
     def add_reg_dict(self, reg_dict):
         self.pre_btl_conv.add_reg_dict(reg_dict)
         self.block1.add_reg_dict(reg_dict)
@@ -1145,6 +1240,30 @@ class MixerBlock(nn.Module):
         else:
             self.act = activation_func(self.activation, inplace=True)
 
+    def initialize(self, fixup_scale, se_fixup_scale, xavier_init):
+        if xavier_init:
+            self.depthwise_conv.initialize(scale=1.0, xavier_init=xavier_init)
+            self.ffn1.initialize(scale=1.0, xavier_init=xavier_init)
+            self.ffn2.initialize(scale=1.0, xavier_init=xavier_init)
+            if self.use_se:
+                self.se_module.initialize(scale=1.0, xavier_init=xavier_init)
+        else:
+            if self.use_se:
+                self.depthwise_conv.initialize(
+                    scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                self.ffn1.initialize(
+                    scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                self.ffn2.initialize(
+                    scale=0.0, xavier_init=xavier_init)
+                self.se_module.initialize(scale=se_fixup_scale, xavier_init=xavier_init)
+            else:
+                self.depthwise_conv.initialize(
+                    scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                self.ffn1.initialize(
+                    scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                self.ffn2.initialize(
+                    scale=0.0, xavier_init=xavier_init)
+
     def add_reg_dict(self, reg_dict):
         self.depthwise_conv.add_reg_dict(reg_dict)
         self.ffn1.add_reg_dict(reg_dict)
@@ -1195,6 +1314,60 @@ class CustomRMSNorm(nn.Module):
     def forward(self, x):
         output = self._norm(x.float()).type_as(x)
         return output * self.weight
+
+class RMSNormMask(torch.nn.Module):
+    """RMSNorm applied per spatial position across channels, with masking for off-board positions.
+    Computes RMS across both channels and spatial positions (masked), producing
+    one scalar RMS per sample instead of per position.
+    If cgroup_size is not None, breaks channels into groups of the given size
+    and normalizes within each group across channels_in_group x H x W (like group norm but RMS only,
+    no mean centering).
+    """
+    def __init__(self, c_in, cgroup_size):
+        super(RMSNormMask, self).__init__()
+        self.c_in = c_in
+        self.cgroup_size = cgroup_size
+        self.eps = 1e-6
+        if cgroup_size is not None:
+            assert c_in % cgroup_size == 0, f"c_in ({c_in}) must be divisible by cgroup_size ({cgroup_size})"
+            self.num_groups = c_in // cgroup_size
+        self.gamma = torch.nn.Parameter(torch.ones(c_in))
+        self.beta = torch.nn.Parameter(torch.zeros(c_in))
+
+    def add_reg_dict(self, reg_dict, placement="after_block"):
+        reg_dict["output"].append(self.gamma)
+        reg_dict["output"].append(self.beta)
+
+    def forward(self, x, mask, mask_sum_hw, mask_sum: float):
+        """
+        Parameters:
+        x: NCHW
+        mask: N1HW
+        mask_sum_hw: N111
+        mask_sum: scalar
+
+        Returns: NCHW
+        """
+        if self.cgroup_size is not None:
+            # Group-wise spatial RMS: normalize within each group of channels across group_channels x H x W
+            N, C, H, W = x.shape
+            x_grouped = x.view(N, self.num_groups, self.cgroup_size, H, W)
+            mask_grouped = mask.view(N, 1, 1, H, W)
+            # mean of x^2 over group channels and masked spatial positions
+            mean_sq = torch.sum(
+                x_grouped * x_grouped * mask_grouped,
+                dim=(2, 3, 4),
+                keepdim=True) / (self.cgroup_size * mask_sum_hw.unsqueeze(2) + self.eps)
+            rms = torch.sqrt(mean_sq + self.eps)
+            out = x_grouped / rms
+            out = out.view(N, C, H, W)
+        else:
+            # RMS across C,H,W for masked positions only, one scalar per sample
+            # mean of x^2 over C and masked spatial positions
+            mean_sq = torch.sum(x * x * mask, dim=(1, 2, 3), keepdim=True) / (self.c_in * mask_sum_hw + self.eps)
+            rms = torch.sqrt(mean_sq + self.eps)
+            out = x / rms
+        return (out * self.gamma.view(1, -1, 1, 1) + self.beta.view(1, -1, 1, 1)) * mask
 
 def precompute_freqs_cos_sin_2d(dim, pos_len, theta=100.0):
     """Precompute cos and sin tables of 2D frequencies for RoPE (real-valued, interleaved layout).
@@ -2348,7 +2521,7 @@ class NestedBottleneckTransformerBlock(nn.Module):
 
         self.activation = kwargs.get("activation", DEFAULT_ACTIVATION)
         self.bottleneck_channels = kwargs.get("bottleneck_channels", None)
-        self.mode = kwargs.get("mode", "renorm")
+        self.mode = kwargs.get("mode", "fixup")
         self.is_pre_act = kwargs.get("is_pre_act", True)
         self.internal_length = kwargs.get("internal_length", 2)
         assert self.internal_length >= 1, ""
@@ -2434,6 +2607,7 @@ class Network(nn.Module):
         self.version = 5
         self.mode = cfg.mode  # default:"renorm"
         self.is_pre_act = cfg.is_pre_act
+        self.final_block_cgroup_size = cfg.final_block_cgroup_size  # default:None
         self.use_rope = False
         self.use_gab = False
         self.use_tab = False
@@ -2450,16 +2624,6 @@ class Network(nn.Module):
         self.learnable_rope = cfg.learnable_rope  # default:False
         self.rope_theta = cfg.rope_theta  # default:100.0
         self.attention_qk_norm = cfg.attention_qk_norm  # default:False
-        self.gab_d1 = cfg.gab_d1    # default:16
-        self.gab_d2 = cfg.gab_d2    # default:16
-        self.gab_num_templates = cfg.gab_num_templates if self.use_gab else 0 # default:32
-        self.gab_num_fourier_features = cfg.gab_num_fourier_features  # default:12
-        self.gab_mlp_hidden = cfg.gab_mlp_hidden  # default:96
-        self.tab_c_z = cfg.tab_c_z  # default:32
-        self.tab_num_templates = cfg.tab_num_templates if self.use_tab or self.use_tab_freq_mix else 0 # default:32
-        self.tab_num_freqs = cfg.tab_num_freqs    # default:8
-        self.tab_num_blocks = cfg.tab_num_blocks  # default:3
-        self.tab_dilation = cfg.tab_dilation      # default:3
         self.transformer_heads = cfg.transformer_heads  # default:3
         self.transformer_kv_heads = cfg.transformer_kv_heads  # default:3
         self.attention_query_head_dim = cfg.attention_query_head_dim  # default:32
@@ -2470,6 +2634,16 @@ class Network(nn.Module):
         self.discard_reg_tokens = cfg.discard_reg_tokens  # default:False
         self.use_swiglu = cfg.use_swiglu        # default:True
         self.transformer_ffn_depthwise_conv = cfg.transformer_ffn_depthwise_conv  # default:False
+        self.gab_d1 = cfg.gab_d1    # default:16
+        self.gab_d2 = cfg.gab_d2    # default:16
+        self.gab_num_templates = cfg.gab_num_templates if self.use_gab else 0 # default:32
+        self.gab_num_fourier_features = cfg.gab_num_fourier_features  # default:12
+        self.gab_mlp_hidden = cfg.gab_mlp_hidden  # default:96
+        self.tab_c_z = cfg.tab_c_z  # default:32
+        self.tab_num_templates = cfg.tab_num_templates if self.use_tab or self.use_tab_freq_mix else 0 # default:32
+        self.tab_num_freqs = cfg.tab_num_freqs    # default:8
+        self.tab_num_blocks = cfg.tab_num_blocks  # default:3
+        self.tab_dilation = cfg.tab_dilation      # default:3
         self.use_trunk_channel_gate = cfg.use_trunk_channel_gate          # default:False
         self.use_trunk_residual_backout = cfg.use_trunk_residual_backout  # default:False
         if self.use_trunk_residual_backout:
@@ -2480,6 +2654,38 @@ class Network(nn.Module):
         self.opt_name = cfg.optimizer
 
         self.construct_layers()
+
+        num_total_blocks = len(self.residual_tower)
+        xavier_init = self.mode != "fixup"
+        with torch.no_grad():
+            if self.gab_template_mlp is not None:
+                self.gab_template_mlp.initialize()
+            if self.tab_module is not None:
+                self.tab_module.initialize()
+            self.input_conv.initialize(scale=1.0, xavier_init=xavier_init)
+            if self.mode == "fixup":  # default:"renorm"
+                fixup_scale = 1.0 / math.sqrt(num_total_blocks)
+                se_fixup_scale = math.pow(num_total_blocks, -1.0 / (2 * 4 - 2))
+                for block in self.residual_tower:
+                    block.initialize(fixup_scale=fixup_scale,
+                        se_fixup_scale=se_fixup_scale, xavier_init=xavier_init)
+            else:  # default:"renorm"
+                fixup_scale = 1.0
+                for block in self.residual_tower:
+                    block.initialize(fixup_scale=fixup_scale,
+                        se_fixup_scale=fixup_scale, xavier_init=xavier_init)
+
+            self.policy_conv.initialize(scale=0.8, xavier_init=xavier_init)
+            if self.policy_head_type["Type"] == "RepLK":  # default:"Normal"
+                self.policy_depthwise_conv.initialize(scale=1.0, xavier_init=xavier_init)
+                self.policy_pointwise_conv.initialize(scale=1.0, xavier_init=xavier_init)
+            self.policy_intermediate_fc.initialize(scale=0.6, xavier_init=xavier_init)
+            self.pol_misc.initialize(scale=0.3, xavier_init=xavier_init)
+            self.pol_misc_pass_fc.initialize(scale=0.3, xavier_init=xavier_init)
+            self.value_conv.initialize(scale=1.0, xavier_init=xavier_init)
+            self.value_intermediate_fc.initialize(scale=1.0, xavier_init=xavier_init)
+            self.ownership_conv.initialize(scale=0.2, xavier_init=xavier_init)
+            self.value_misc_fc.initialize(scale=0.2, xavier_init=xavier_init)
 
     def create_policy_head(self):
         self.policy_conv = ConvBlock(
@@ -2597,12 +2803,18 @@ class Network(nn.Module):
             elif component == "MixerBlockV2":
                 block = MixerBlock
                 blockargs["version"] = 2
-            elif component == "TransformerBlock":
+            elif component in ["TransformerBlock", "NestedBottleneckTransformerBlock"]:
                 self.is_pre_act = True  # used Transformer
                 blockargs["positional_encoding"] = self.positional_encoding  # default:"RoPE"
                 blockargs["learnable_rope"] = self.learnable_rope  # default:False
                 blockargs["rope_theta"] = self.rope_theta  # default:100.0
                 blockargs["attention_qk_norm"] = self.attention_qk_norm  # default:False
+                blockargs["transformer_heads"] = self.transformer_heads  # default:3
+                blockargs["transformer_kv_heads"] = self.transformer_kv_heads  # default:3
+                blockargs["attention_query_head_dim"] = self.attention_query_head_dim  # default:32
+                blockargs["attention_value_head_dim"] = self.attention_value_head_dim  # default:32
+                blockargs["learned_rope_cast_to_input_dtype"] = self.learned_rope_cast_to_input_dtype  # default:False
+                blockargs["transformer_ffn_channels"] = self.transformer_ffn_channels  # default:256
                 blockargs["gab_d1"] = self.gab_d1    # default:16
                 blockargs["gab_d2"] = self.gab_d2    # default:16
                 blockargs["gab_num_templates"] = self.gab_num_templates  # default:None
@@ -2613,45 +2825,16 @@ class Network(nn.Module):
                 blockargs["tab_num_freqs"] = self.tab_num_freqs  # default:None
                 blockargs["tab_num_blocks"] = self.tab_num_blocks  # default:None
                 blockargs["tab_dilation"] = self.tab_dilation  # default:None
-                blockargs["transformer_heads"] = self.transformer_heads  # default:3
-                blockargs["transformer_kv_heads"] = self.transformer_kv_heads  # default:3
-                blockargs["attention_query_head_dim"] = self.attention_query_head_dim  # default:32
-                blockargs["attention_value_head_dim"] = self.attention_value_head_dim  # default:32
-                blockargs["learned_rope_cast_to_input_dtype"] = self.learned_rope_cast_to_input_dtype  # default:False
-                blockargs["transformer_ffn_channels"] = self.transformer_ffn_channels  # default:256
                 blockargs["attention_num_rw_registers"] = self.num_rw_registers  # default:0
                 blockargs["use_swiglu"] = self.use_swiglu  # default:True
                 blockargs["transformer_ffn_depthwise_conv"] = self.transformer_ffn_depthwise_conv  # default:False
-                block = TransformerAttentionBlock
-                additional_block = TransformerFFNBlock
-            elif component == "NestedBottleneckTransformerBlock":
-                self.is_pre_act = True  # used Transformer
-                blockargs["bottleneck_channels"] = channels // 2
-                assert channels % 2 == 0, ""
-                blockargs["positional_encoding"] = self.positional_encoding  # default:"RoPE"
-                blockargs["learnable_rope"] = self.learnable_rope  # default:False
-                blockargs["rope_theta"] = self.rope_theta  # default:100.0
-                blockargs["attention_qk_norm"] = self.attention_qk_norm  # default:False
-                blockargs["gab_d1"] = self.gab_d1    # default:16
-                blockargs["gab_d2"] = self.gab_d2    # default:16
-                blockargs["gab_num_templates"] = self.gab_num_templates  # default:None
-                blockargs["gab_num_fourier_features"] = self.gab_num_fourier_features  # default:None
-                blockargs["gab_mlp_hidden"] = self.gab_mlp_hidden  # default:None
-                blockargs["tab_c_z"] = self.tab_c_z  # default:None
-                blockargs["tab_num_templates"] = self.tab_num_templates  # default:None
-                blockargs["tab_num_freqs"] = self.tab_num_freqs  # default:None
-                blockargs["tab_num_blocks"] = self.tab_num_blocks  # default:None
-                blockargs["tab_dilation"] = self.tab_dilation  # default:None
-                blockargs["transformer_heads"] = self.transformer_heads  # default:3
-                blockargs["transformer_kv_heads"] = self.transformer_kv_heads  # default:3
-                blockargs["attention_query_head_dim"] = self.attention_query_head_dim  # default:32
-                blockargs["attention_value_head_dim"] = self.attention_value_head_dim  # default:32
-                blockargs["learned_rope_cast_to_input_dtype"] = self.learned_rope_cast_to_input_dtype  # default:False
-                blockargs["transformer_ffn_channels"] = self.transformer_ffn_channels  # default:256
-                blockargs["attention_num_rw_registers"] = self.num_rw_registers  # default:0
-                blockargs["use_swiglu"] = self.use_swiglu  # default:True
-                blockargs["transformer_ffn_depthwise_conv"] = self.transformer_ffn_depthwise_conv  # default:False
-                block = NestedBottleneckTransformerBlock
+                if component == "TransformerBlock":
+                    block = TransformerAttentionBlock
+                    additional_block = TransformerFFNBlock
+                else:
+                    blockargs["bottleneck_channels"] = channels // 2
+                    assert channels % 2 == 0, ""
+                    block = NestedBottleneckTransformerBlock
             elif component == "SE":
                 blockargs["se_size"] = channels // self.se_ratio
                 assert channels % self.se_ratio == 0, ""
@@ -2691,10 +2874,6 @@ class Network(nn.Module):
                 blockargs["rope_theta"] = value
             elif key == "AttentionQKNorm":
                 blockargs["attention_qk_norm"] = value
-            elif key == "GABD1":
-                blockargs["gab_d1"] = value
-            elif key == "GABD2":
-                blockargs["gab_d2"] = value
             elif key == "TransformerHeads":
                 blockargs["transformer_heads"] = value
             elif key == "TransformerKVHheads":
@@ -2742,19 +2921,17 @@ class Network(nn.Module):
         self.global_pool = GlobalPool(is_value_head=False)
         self.global_pool_val = GlobalPool(is_value_head=True)
 
-        if not self.is_pre_act:
-            for block in self.stack:
-                components = list()
-                if type(block) == str:
-                    components = block.strip().split('-')
-                else:
-                    components = block["Block"].strip().split('-')
-                for component in components:
-                    if component == "TransformerBlock" or component == "NestedBottleneckTransformerBlock":
-                        self.is_pre_act = True  # used Transformer
-                        break
-                if self.is_pre_act:
-                    break
+        for block in self.stack:
+            last_is_tran = False
+            components = list()
+            if type(block) == str:
+                components = block.strip().split('-')
+            else:
+                components = block["Block"].strip().split('-')
+            for component in components:
+                if component in ["TransformerBlock", "NestedBottleneckTransformerBlock"]:
+                    self.is_pre_act = True  # used Transformer
+                    last_is_tran = True
 
         if self.is_pre_act:
             self.input_conv = Convolve(
@@ -2832,39 +3009,36 @@ class Network(nn.Module):
         # Create shared GAB template MLP if any block uses GAB
         if self.use_gab:  # default:False
             self.gab_template_mlp = GABTemplateMLP(
-                gab_num_templates=self.gab_num_templates,  # default:None
-                gab_num_fourier_features=self.gab_num_fourier_features,  # default:None
-                gab_mlp_hidden=self.gab_mlp_hidden,  # default:None
+                gab_num_templates=self.gab_num_templates,  # default:32
+                gab_num_fourier_features=self.gab_num_fourier_features,  # default:12
+                gab_mlp_hidden=self.gab_mlp_hidden,  # default:96
                 pos_len=self.pos_len,  # default:19
                 activation=self.activation,  # default:"relu"
             )
-            self.gab_template_mlp.initialize()
         else:
             self.gab_template_mlp = None
 
         if self.use_tab_freq_mix:  # default:False
             self.tab_module = FrequencyMixingTABModule(
                 trunk_channels=self.residual_channels,     # default:None
-                tab_c_z=self.tab_c_z,                      # default:None
-                tab_num_templates=self.tab_num_templates,  # default:None
-                tab_num_blocks=self.tab_num_blocks,        # default:None
-                tab_dilation=self.tab_dilation,            # default:None
+                tab_c_z=self.tab_c_z,                      # default:32
+                tab_num_templates=self.tab_num_templates,  # default:32
+                tab_num_blocks=self.tab_num_blocks,        # default:3
+                tab_dilation=self.tab_dilation,            # default:3
                 activation=self.activation,                # default:"relu"
                 pos_len=self.pos_len                       # default:19
             )
-            self.tab_module.initialize()
         elif self.use_tab:  # default:False
             self.tab_module = TABModule(
                 trunk_channels=self.residual_channels,     # default:None
-                tab_c_z=self.tab_c_z,                      # default:None
-                tab_num_templates=self.tab_num_templates,  # default:None
-                tab_num_freqs=self.tab_num_freqs,          # default:None
-                tab_num_blocks=self.tab_num_blocks,        # default:None
-                tab_dilation=self.tab_dilation,            # default:None
+                tab_c_z=self.tab_c_z,                      # default:32
+                tab_num_templates=self.tab_num_templates,  # default:32
+                tab_num_freqs=self.tab_num_freqs,          # default:8
+                tab_num_blocks=self.tab_num_blocks,        # default:3
+                tab_dilation=self.tab_dilation,            # default:3
                 activation=self.activation,                # default:"relu"
                 pos_len=self.pos_len                       # default:19
             )
-            self.tab_module.initialize()
         else:
             self.tab_module = None
 
@@ -2913,11 +3087,17 @@ class Network(nn.Module):
         self.attn_logit_penalty_batch_frac = self.cfg.attn_logit_penalty_batch_frac
 
         if self.is_pre_act:  # default:False
-            self.final_block = BatchNorm2d(
-                num_features=self.residual_channels,  # default:None
-                use_gamma=False,
-                mode="fixup"  # Better results are obteined without the norm than by speciflying self.mode
-            )
+            if last_is_tran and self.mode == "fixup" and self.final_block_cgroup_size is not None:
+                self.final_block = RMSNormMask(
+                    c_in=self.residual_channels,  # default:None
+                    cgroup_size=self.final_block_cgroup_size  # default:None
+                )
+            else:
+                self.final_block = BatchNorm2d(
+                    num_features=self.residual_channels,  # default:None
+                    use_gamma=False,
+                    mode=self.mode                        # default:"renorm"
+                )
             self.final_act = activation_func(self.activation, inplace=True)  # default:"relu"
         else:
             self.final_block = CustomIdentity()
@@ -3171,7 +3351,10 @@ class Network(nn.Module):
             self.attn_logit_ub_batch_max = ubs.detach().amax()
 
         # Use original mask for final norm and heads (NCHW format)
-        x = self.final_block(x, orig_mask)
+        if isinstance(self.final_block, RMSNormMask):
+            x = self.final_block(x, orig_mask, mask_sum_hw_transformer, mask_sum_transformer)
+        else:
+            x = self.final_block(x, orig_mask)
         x = self.final_act(x)
 
         # Use fp32 for output heads to handle potentially large values
@@ -3561,10 +3744,10 @@ class Network(nn.Module):
         reg_dict["normal"] = []
         reg_dict["normal_gamma"] = []
         reg_dict["normal_attn"] = []
-        reg_dict["normal_gab"] = []
         reg_dict["output"] = []
         reg_dict["noreg"] = []
         reg_dict["output_noreg"] = []
+        reg_dict["normal_gab"] = []
         reg_dict["gab_mlp"] = []
         reg_dict["tab_module"] = []
 

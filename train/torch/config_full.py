@@ -45,6 +45,9 @@ class Config:
             if self.use_trunk_residual_backout:
                 print("Warning: The UseTrunkResidualBackout can only be specified for the ONNX conversion engine. The specification will be ignored.")
                 self.use_trunk_residual_backout = False
+        if self.mode == "fixup" and not self.is_pre_act:
+            print("Warning: The fixup only works with PreActivation. It is forced to operate in PreActivation mode.")
+            self.is_pre_act = True
 
     def parse_training_config(self, json_data):
         train = json_data.get("Train", None)
@@ -110,12 +113,21 @@ class Config:
         self.netname_postfix = network.get("NamePostfix", "")
         self.mode = network.get("BatchNormMode", "renorm")
         self.is_pre_act = network.get("PreActivation", False)
+        self.final_block_cgroup_size = network.get("FinalBlockCgroupSize", None)
         self.positional_encoding = network.get("PositionalEncoding", "unuse")
         self.learnable_rope = network.get("LearnableRoPE", False)
         self.attention_num_rw_registers = network.get("AttentionNumRWRegisters", 0)
         self.discard_reg_tokens = network.get("DiscardRegTokens", False)
         self.rope_theta = network.get("RoPETheta", 100.0)
         self.attention_qk_norm = network.get("AttentionQKNorm", False)
+        self.transformer_heads = network.get("TransformerHeads", 3)
+        self.transformer_kv_heads = network.get("TransformerKVHheads", 3)
+        self.attention_query_head_dim = network.get("AttentionQueryHeadDim", 32)
+        self.attention_value_head_dim = network.get("AttentionValueHeadDim", 32)
+        self.learned_rope_cast_to_input_dtype = network.get("LearnedRoPECastToInputDtype", False)
+        self.transformer_ffn_channels = network.get("TransformerFFNChannels", 256)
+        self.use_swiglu = network.get("UseSwiGLU", True)
+        self.transformer_ffn_depthwise_conv = network.get("TransformerFFNDepthwiseConv", False)
         self.gab_d1 = network.get("GABD1", 16)
         self.gab_d2 = network.get("GABD2", 16)
         self.gab_num_templates = network.get("GABNumTemplates", 32)
@@ -126,14 +138,6 @@ class Config:
         self.tab_num_freqs = network.get("TABNumFreqs", 8)
         self.tab_num_blocks = network.get("TABNumBlocks", 3)
         self.tab_dilation = network.get("TABDilation", 3)
-        self.transformer_heads = network.get("TransformerHeads", 3)
-        self.transformer_kv_heads = network.get("TransformerKVHheads", 3)
-        self.attention_query_head_dim = network.get("AttentionQueryHeadDim", 32)
-        self.attention_value_head_dim = network.get("AttentionValueHeadDim", 32)
-        self.learned_rope_cast_to_input_dtype = network.get("LearnedRoPECastToInputDtype", False)
-        self.transformer_ffn_channels = network.get("TransformerFFNChannels", 256)
-        self.use_swiglu = network.get("UseSwiGLU", True)
-        self.transformer_ffn_depthwise_conv = network.get("TransformerFFNDepthwiseConv", False)
         self.use_trunk_channel_gate = network.get("UseTrunkChannelGate", False)
         self.use_trunk_residual_backout = network.get("UseTrunkResidualBackout", False)
         self.use_flex_attention = network.get("UseFlexAttention", False)
@@ -146,7 +150,7 @@ class Config:
         assert self.policy_head_channels != None, "PolicyHeadChannels or PolicyExtract is not specified."
         assert self.value_head_channels != None, "ValueHeadChannels or ValueExtract is not specified."
         assert (
-            self.mode in ["norm", "renorm"]
+            self.mode in ["norm", "renorm", "fixup"]
         ), f"{self.mode} cannot be assigned to BatchNormMode."
         assert (
             self.positional_encoding in

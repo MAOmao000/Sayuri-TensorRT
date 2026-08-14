@@ -39,12 +39,9 @@ class Config:
             if use_transformer:
                 print("Warning: The transformer block can only be specified for the ONNX conversion engine. It is being changed ONNX conversion engine.")
                 self.export_onnx = True
-            if self.use_trunk_channel_gate:
-                print("Warning: The UseTrunkChannelGate can only be specified for the ONNX conversion engine. The specification will be ignored.")
-                self.use_trunk_channel_gate = False
-            if self.use_trunk_residual_backout:
-                print("Warning: The UseTrunkResidualBackout can only be specified for the ONNX conversion engine. The specification will be ignored.")
-                self.use_trunk_residual_backout = False
+        if self.mode == "fixup" and not self.is_pre_act:
+            print("Warning: The fixup only works with PreActivation. It is forced to operate in PreActivation mode.")
+            self.is_pre_act = True
 
     def parse_training_config(self, json_data):
         train = json_data.get("Train", None)
@@ -110,15 +107,8 @@ class Config:
         self.netname_postfix = network.get("NamePostfix", "")
         self.mode = network.get("BatchNormMode", "renorm")
         self.is_pre_act = network.get("PreActivation", False)
-        self.positional_encoding = network.get("PositionalEncoding", "unuse")
+        self.final_block_cgroup_size = network.get("FinalBlockCgroupSize", None)
         self.attention_qk_norm = network.get("AttentionQKNorm", False)
-        self.tab_d1 = network.get("TABD1", 16)
-        self.tab_d2 = network.get("TABD2", 16)
-        self.tab_c_z = network.get("TABCZ", 32)
-        self.tab_num_templates = network.get("TABNumTemplates", 32)
-        self.tab_num_freqs = network.get("TABNumFreqs", 8)
-        self.tab_num_blocks = network.get("TABNumBlocks", 3)
-        self.tab_dilation = network.get("TABDilation", 3)
         self.transformer_heads = network.get("TransformerHeads", 3)
         self.transformer_kv_heads = network.get("TransformerKVHheads", 3)
         self.attention_query_head_dim = network.get("AttentionQueryHeadDim", 32)
@@ -127,6 +117,14 @@ class Config:
         self.transformer_ffn_channels = network.get("TransformerFFNChannels", 256)
         self.use_swiglu = network.get("UseSwiGLU", True)
         self.transformer_ffn_depthwise_conv = network.get("TransformerFFNDepthwiseConv", False)
+        self.use_tab = network.get("UseTAB", False)
+        self.tab_d1 = network.get("TABD1", 16)
+        self.tab_d2 = network.get("TABD2", 16)
+        self.tab_c_z = network.get("TABCZ", 32)
+        self.tab_num_templates = network.get("TABNumTemplates", 32)
+        self.tab_num_freqs = network.get("TABNumFreqs", 8)
+        self.tab_num_blocks = network.get("TABNumBlocks", 3)
+        self.tab_dilation = network.get("TABDilation", 3)
         self.attn_logit_penalty_cap = network.get("AttnLogitPenaltyCap", None)
         self.attn_logit_penalty_coeff = network.get("AttnLogitPenaltyCoeff", 1e-3)
         self.attn_logit_penalty_batch_frac = network.get("AttnLogitPenaltyBatchFrac", 1.0)
@@ -136,9 +134,5 @@ class Config:
         assert self.policy_head_channels != None, "PolicyHeadChannels or PolicyExtract is not specified."
         assert self.value_head_channels != None, "ValueHeadChannels or ValueExtract is not specified."
         assert (
-            self.mode in ["norm", "renorm"]
+            self.mode in ["norm", "renorm", "fixup"]
         ), f"{self.mode} cannot be assigned to BatchNormMode."
-        assert (
-            self.positional_encoding in
-            ["RoPE", "TAB", "FreqMix", "RoPE+TAB", "RoPE+FreqMix", "unuse"]
-        ), f"{self.positional_encoding} cannot be assigned to PositionalEncoding."

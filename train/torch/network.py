@@ -229,6 +229,10 @@ class SqueezeAndExcitation(nn.Module):
             collector=collector
         )
 
+    def initialize(self, scale, xavier_init):
+        self.squeeze.initialize(scale=scale, xavier_init=xavier_init)
+        self.excite.initialize(scale=scale, xavier_init=xavier_init)
+
     def add_reg_dict(self, reg_dict):
         self.squeeze.add_reg_dict(reg_dict)
         self.excite.add_reg_dict(reg_dict)
@@ -491,17 +495,20 @@ class FullyConnect(nn.Module):
         )
         self.activation = activation
         self.act = activation_func(self.activation, inplace=True)
-        self._init_weights()
         self._try_collect(collector)
-
-    def _init_weights(self):
-        nn.init.xavier_normal_(
-            self.linear.weight, gain=compute_gain(self.activation))
-        nn.init.zeros_(self.linear.bias)
 
     def _try_collect(self, collector):
         if collector is not None:
             collector.append(self)
+
+    def initialize(self, scale, xavier_init, bias_scale=0.2):
+        if xavier_init:
+            nn.init.xavier_normal_(
+                self.linear.weight, gain=compute_gain(self.activation))
+            nn.init.zeros_(self.linear.bias)
+        else:
+            init_weights(self.linear.weight, self.activation, scale=scale)
+            init_weights(self.linear.bias, self.activation, scale=bias_scale, fan_tensor=self.linear.weight)
 
     def add_reg_dict(self, reg_dict, placement="in_block"):
         if placement == "in_block":
@@ -553,18 +560,22 @@ class Convolve(nn.Module):
         )
         self.activation = activation
         self.act = activation_func(self.activation, inplace=True)
-        self._init_weights()
         self._try_collect(collector)
-
-    def _init_weights(self):
-        nn.init.xavier_normal_(
-            self.conv.weight, gain=compute_gain(self.activation))
-        if self.bias:
-            nn.init.zeros_(self.conv.bias)
 
     def _try_collect(self, collector):
         if collector is not None:
             collector.append(self)
+
+    def initialize(self, scale, xavier_init, bias_scale=0.2):
+        if xavier_init:
+            nn.init.xavier_normal_(
+                self.conv.weight, gain=compute_gain(self.activation))
+            if self.bias:
+                nn.init.zeros_(self.conv.bias)
+        else:
+            init_weights(self.conv.weight, self.activation, scale=scale)
+            if self.bias:
+                init_weights(self.conv.bias, self.activation, scale=bias_scale, fan_tensor=self.conv.weight)
 
     def add_reg_dict(self, reg_dict, placement="in_block"):
         if placement == "in_block":
@@ -646,16 +657,18 @@ class ConvBlock(nn.Module):
             )
             self.act = activation_func(self.activation, inplace=True)
 
-        self._init_weights()
         self._try_collect(collector)
-
-    def _init_weights(self):
-        nn.init.xavier_normal_(
-            self.conv.weight, gain=compute_gain(self.activation))
 
     def _try_collect(self, collector):
         if collector is not None:
             collector.append(self)
+
+    def initialize(self, scale, xavier_init):
+        if xavier_init:
+            nn.init.xavier_normal_(
+                self.conv.weight, gain=compute_gain(self.activation))
+        else:
+            init_weights(self.conv.weight, self.activation, scale=scale)
 
     def add_reg_dict(self, reg_dict, placement="in_block"):
         if placement == "in_block":
@@ -751,14 +764,17 @@ class DepthwiseConvBlock(nn.Module):
             )
             self.act = activation_func(self.activation, inplace=True)
 
-        self._init_weights()
         self._try_collect(collector)
 
-    def _init_weights(self):
-        nn.init.xavier_normal_(
-            self.conv.weight, gain=compute_gain(self.activation))
-        nn.init.xavier_normal_(
-            self.rep3x3.weight, gain=compute_gain(self.activation))
+    def initialize(self, scale, xavier_init):
+        if xavier_init:
+            nn.init.xavier_normal_(
+                self.conv.weight, gain=compute_gain(self.activation))
+            nn.init.xavier_normal_(
+                self.rep3x3.weight, gain=compute_gain(self.activation))
+        else:
+            init_weights(self.conv.weight, self.activation, scale=scale * 0.8)
+            init_weights(self.rep3x3.weight, self.activation, scale=scale * 0.6)
 
     def add_reg_dict(self, reg_dict, placement="in_block"):
         self.conv.add_reg_dict(reg_dict, placement)
@@ -855,6 +871,21 @@ class ResidualBlock(nn.Module):
             self.act = nn.Identity()
         else:
             self.act = activation_func(self.activation, inplace=True)
+
+    def initialize(self, fixup_scale, se_fixup_scale, xavier_init):
+        if xavier_init:
+            self.conv1.initialize(scale=1.0, xavier_init=xavier_init)
+            self.conv2.initialize(scale=1.0, xavier_init=xavier_init)
+            if self.use_se:
+                self.se_module.initialize(scale=1.0, xavier_init=xavier_init)
+        else:
+            if self.use_se:
+                self.conv1.initialize(scale=se_fixup_scale, xavier_init=xavier_init)
+                self.conv2.initialize(scale=0.0, xavier_init=xavier_init)
+                self.se_module.initialize(scale=se_fixup_scale, xavier_init=xavier_init)
+            else:
+                self.conv1.initialize(scale=fixup_scale, xavier_init=xavier_init)
+                self.conv2.initialize(scale=0.0, xavier_init=xavier_init)
 
     def add_reg_dict(self, reg_dict):
         self.conv1.add_reg_dict(reg_dict)
@@ -957,6 +988,35 @@ class BottleneckBlock(nn.Module):
         else:
             self.act = activation_func(self.activation, inplace=True)
 
+    def initialize(self, fixup_scale, se_fixup_scale, xavier_init):
+        if xavier_init:
+            self.pre_btl_conv.initialize(scale=1.0, xavier_init=xavier_init)
+            self.conv1.initialize(scale=1.0, xavier_init=xavier_init)
+            self.conv2.initialize(scale=1.0, xavier_init=xavier_init)
+            self.post_btl_conv.initialize(scale=1.0, xavier_init=xavier_init)
+            if self.use_se:
+                self.se_module.initialize(scale=1.0, xavier_init=xavier_init)
+        else:
+            if self.use_se:
+                self.pre_btl_conv.initialize(
+                    scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                self.conv1.initialize(
+                    scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                self.conv2.initialize(
+                    scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                self.post_btl_conv.initialize(
+                    scale=0.0, xavier_init=xavier_init)
+                self.se_module.initialize(scale=se_fixup_scale, xavier_init=xavier_init)
+            else:
+                self.pre_btl_conv.initialize(
+                    scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                self.conv1.initialize(
+                    scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                self.conv2.initialize(
+                    scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                self.post_btl_conv.initialize(
+                    scale=0.0, xavier_init=xavier_init)
+
     def add_reg_dict(self, reg_dict):
         self.pre_btl_conv.add_reg_dict(reg_dict)
         self.conv1.add_reg_dict(reg_dict)
@@ -1054,6 +1114,41 @@ class NestedBottleneckBlock(nn.Module):
         else:
             self.act = activation_func(self.activation, inplace=True)
 
+    def initialize(self, fixup_scale, se_fixup_scale, xavier_init):
+        if xavier_init:
+            self.pre_btl_conv.initialize(scale=1.0, xavier_init=xavier_init)
+            self.block1.initialize(fixup_scale=1.0, se_fixup_scale=1.0, xavier_init=xavier_init)
+            self.block2.initialize(fixup_scale=1.0, se_fixup_scale=1.0, xavier_init=xavier_init)
+            self.post_btl_conv.initialize(scale=1.0, xavier_init=xavier_init)
+            if self.use_se:
+                self.se_module.initialize(scale=1.0, xavier_init=xavier_init)
+        else:
+            if self.use_se:
+                self.pre_btl_conv.initialize(
+                    scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                self.block1.initialize(
+                    fixup_scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)),
+                    se_fixup_scale=1.0,
+                    xavier_init=xavier_init)
+                self.block2.initialize(
+                    fixup_scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)),
+                    se_fixup_scale=1.0,
+                    xavier_init=xavier_init)
+                self.post_btl_conv.initialize(scale=0.0, xavier_init=xavier_init)
+                self.se_module.initialize(scale=se_fixup_scale, xavier_init=xavier_init)
+            else:
+                self.pre_btl_conv.initialize(
+                    scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                self.block1.initialize(
+                    fixup_scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)),
+                    se_fixup_scale=1.0,
+                    xavier_init=xavier_init)
+                self.block2.initialize(
+                    fixup_scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)),
+                    se_fixup_scale=1.0,
+                    xavier_init=xavier_init)
+                self.post_btl_conv.initialize(scale=0.0, xavier_init=xavier_init)
+
     def add_reg_dict(self, reg_dict):
         self.pre_btl_conv.add_reg_dict(reg_dict)
         self.block1.add_reg_dict(reg_dict)
@@ -1145,6 +1240,30 @@ class MixerBlock(nn.Module):
         else:
             self.act = activation_func(self.activation, inplace=True)
 
+    def initialize(self, fixup_scale, se_fixup_scale, xavier_init):
+        if xavier_init:
+            self.depthwise_conv.initialize(scale=1.0, xavier_init=xavier_init)
+            self.ffn1.initialize(scale=1.0, xavier_init=xavier_init)
+            self.ffn2.initialize(scale=1.0, xavier_init=xavier_init)
+            if self.use_se:
+                self.se_module.initialize(scale=1.0, xavier_init=xavier_init)
+        else:
+            if self.use_se:
+                self.depthwise_conv.initialize(
+                    scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                self.ffn1.initialize(
+                    scale=math.pow(se_fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                self.ffn2.initialize(
+                    scale=0.0, xavier_init=xavier_init)
+                self.se_module.initialize(scale=se_fixup_scale, xavier_init=xavier_init)
+            else:
+                self.depthwise_conv.initialize(
+                    scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                self.ffn1.initialize(
+                    scale=math.pow(fixup_scale, 1.0 / (1.0 + 2.0)), xavier_init=xavier_init)
+                self.ffn2.initialize(
+                    scale=0.0, xavier_init=xavier_init)
+
     def add_reg_dict(self, reg_dict):
         self.depthwise_conv.add_reg_dict(reg_dict)
         self.ffn1.add_reg_dict(reg_dict)
@@ -1195,6 +1314,60 @@ class CustomRMSNorm(nn.Module):
     def forward(self, x):
         output = self._norm(x.float()).type_as(x)
         return output * self.weight
+
+class RMSNormMask(torch.nn.Module):
+    """RMSNorm applied per spatial position across channels, with masking for off-board positions.
+    Computes RMS across both channels and spatial positions (masked), producing
+    one scalar RMS per sample instead of per position.
+    If cgroup_size is not None, breaks channels into groups of the given size
+    and normalizes within each group across channels_in_group x H x W (like group norm but RMS only,
+    no mean centering).
+    """
+    def __init__(self, c_in, cgroup_size):
+        super(RMSNormMask, self).__init__()
+        self.c_in = c_in
+        self.cgroup_size = cgroup_size
+        self.eps = 1e-6
+        if cgroup_size is not None:
+            assert c_in % cgroup_size == 0, f"c_in ({c_in}) must be divisible by cgroup_size ({cgroup_size})"
+            self.num_groups = c_in // cgroup_size
+        self.gamma = torch.nn.Parameter(torch.ones(c_in))
+        self.beta = torch.nn.Parameter(torch.zeros(c_in))
+
+    def add_reg_dict(self, reg_dict, placement="after_block"):
+        reg_dict["output"].append(self.gamma)
+        reg_dict["output"].append(self.beta)
+
+    def forward(self, x, mask, mask_sum_hw, mask_sum: float):
+        """
+        Parameters:
+        x: NCHW
+        mask: N1HW
+        mask_sum_hw: N111
+        mask_sum: scalar
+
+        Returns: NCHW
+        """
+        if self.cgroup_size is not None:
+            # Group-wise spatial RMS: normalize within each group of channels across group_channels x H x W
+            N, C, H, W = x.shape
+            x_grouped = x.view(N, self.num_groups, self.cgroup_size, H, W)
+            mask_grouped = mask.view(N, 1, 1, H, W)
+            # mean of x^2 over group channels and masked spatial positions
+            mean_sq = torch.sum(
+                x_grouped * x_grouped * mask_grouped,
+                dim=(2, 3, 4),
+                keepdim=True) / (self.cgroup_size * mask_sum_hw.unsqueeze(2) + self.eps)
+            rms = torch.sqrt(mean_sq + self.eps)
+            out = x_grouped / rms
+            out = out.view(N, C, H, W)
+        else:
+            # RMS across C,H,W for masked positions only, one scalar per sample
+            # mean of x^2 over C and masked spatial positions
+            mean_sq = torch.sum(x * x * mask, dim=(1, 2, 3), keepdim=True) / (self.c_in * mask_sum_hw + self.eps)
+            rms = torch.sqrt(mean_sq + self.eps)
+            out = x / rms
+        return (out * self.gamma.view(1, -1, 1, 1) + self.beta.view(1, -1, 1, 1)) * mask
 
 def compute_learnable_rope_cos_sin(s_x, s_y, freqs):
     """Compute cos/sin rotation tables from spatial positions and learnable 2D frequencies.
@@ -1463,242 +1636,6 @@ class TABModule(torch.nn.Module):
         reg_dict["tab_module"].append(self.query_proj.real_kernel)
         reg_dict["tab_module"].append(self.query_proj.imag_kernel)
 
-class FrequencyMixingTABBlock(torch.nn.Module):
-    """One residual block for frequency-mixing TAB.
-
-    Depthwise convs are per-frequency in the rotated frame (equivariant).
-    1x1 convs mix freely across all 2*c_z channels in the unrotated frame (equivariant).
-    """
-    def __init__(self, c_z, activation, dilation):
-        super().__init__()
-        self.c_z = c_z
-        self.act1 = activation_func(activation)
-        self.dw_conv1 = ComplexDepthwiseConv2d(c_z, kernel_size=3, dilation=dilation)
-        self.mix1 = torch.nn.Conv2d(2 * c_z, 2 * c_z, kernel_size=1, bias=False)
-        self.act2 = activation_func(activation)
-        self.dw_conv2 = ComplexDepthwiseConv2d(c_z, kernel_size=3, dilation=1)
-        self.mix2 = torch.nn.Conv2d(2 * c_z, 2 * c_z, kernel_size=1, bias=False)
-
-    def forward(self, z, cos_a, sin_a, block_idx):
-        """
-        z: (N, 2, c_z, H, W) - [real, imag] x c_z frequency channels
-        cos_a, sin_a: (1, 1, c_z, H, W) - per-frequency angles, broadcastable
-        block_idx: int, for variance normalization
-        """
-        N, _, c_z, H, W = z.shape
-        zskip = z
-
-        # Normalize variance (same logic as TABEquivariantBlock)
-        z = z * (1.0 / math.sqrt(block_idx + 1))
-
-        z = self.act1(z)
-
-        # Depthwise conv in rotated frame
-        z = tab_rotate(z, cos_a, sin_a)
-        z_flat = z.reshape(N, 2 * c_z, H, W)
-        z_flat = self.dw_conv1(z_flat)
-        z = z_flat.view(N, 2, c_z, H, W)
-        z = tab_rotate(z, cos_a, -sin_a)
-
-        # 1x1 channel mixing in unrotated frame
-        z_flat = z.reshape(N, 2 * c_z, H, W)
-        z_flat = self.mix1(z_flat)
-        z = z_flat.view(N, 2, c_z, H, W)
-
-        z = self.act2(z)
-
-        # Depthwise conv in rotated frame
-        z = tab_rotate(z, cos_a, sin_a)
-        z_flat = z.reshape(N, 2 * c_z, H, W)
-        z_flat = self.dw_conv2(z_flat)
-        z = z_flat.view(N, 2, c_z, H, W)
-        z = tab_rotate(z, cos_a, -sin_a)
-
-        # 1x1 channel mixing in unrotated frame
-        z_flat = z.reshape(N, 2 * c_z, H, W)
-        z_flat = self.mix2(z_flat)
-        z = z_flat.view(N, 2, c_z, H, W)
-
-        z = z + zskip
-        return z
-
-    def initialize(self, activation):
-        self.dw_conv1.initialize(activation, scale=1.0)
-        self.dw_conv2.initialize(activation, scale=1.0)
-        init_weights(self.mix1.weight, activation, scale=1.0)
-        init_weights(self.mix2.weight, "identity", scale=1.0)
-
-    def add_reg_dict(self, reg_dict):
-        reg_dict["tab_module"].append(self.dw_conv1.real_kernel)
-        reg_dict["tab_module"].append(self.dw_conv1.imag_kernel)
-        reg_dict["tab_module"].append(self.mix1.weight)
-        reg_dict["tab_module"].append(self.dw_conv2.real_kernel)
-        reg_dict["tab_module"].append(self.dw_conv2.imag_kernel)
-        reg_dict["tab_module"].append(self.mix2.weight)
-
-class FrequencyMixingTABModule(torch.nn.Module):
-    """TAB module with frequency mixing.
-
-    Unlike TABModule where each frequency has an independent c_z-channel convnet,
-    here c_z IS the number of frequencies. Frequencies interact via pointwise (1x1)
-    convs in the unrotated frame, spatial mixing happens via depthwise convs in the
-    rotated frame. This preserves translational equivariance.
-    """
-    def __init__(self, trunk_channels, tab_c_z, tab_num_templates, tab_num_blocks, tab_dilation, activation, pos_len):
-        super().__init__()
-        self.tab_c_z = tab_c_z  # = number of frequencies
-        self.tab_num_templates = tab_num_templates
-        self.tab_num_blocks = tab_num_blocks
-        self.activation = activation
-
-        # 1x1 conv to project trunk channels -> 2*c_z (interpreted as c_z complex values)
-        self.input_proj = torch.nn.Conv2d(trunk_channels, 2 * tab_c_z, kernel_size=1, bias=False)
-
-        # Learnable 2D RoPE frequencies: (c_z, 2) for (omega_X, omega_Y)
-        # Geometric initialization from 1 rad/square to 1/50 rad/square
-        log_lo = math.log(1.0 / 50.0)
-        log_hi = math.log(1.0)
-        init_freqs = torch.exp(torch.empty(tab_c_z, 2).uniform_(log_lo, log_hi))
-        init_freqs = init_freqs * (torch.randint(0, 2, (tab_c_z, 2)) * 2 - 1).float()
-        self.rope_freqs = torch.nn.Parameter(init_freqs)
-
-        self.blocks = torch.nn.ModuleList()
-        for _ in range(tab_num_blocks):
-            self.blocks.append(FrequencyMixingTABBlock(tab_c_z, activation, tab_dilation))
-
-        self.final_act = activation_func(activation)
-        self.key_proj = torch.nn.Conv2d(2 * tab_c_z, 2 * tab_c_z, kernel_size=1, bias=False)
-        self.query_proj = torch.nn.Conv2d(2 * tab_c_z, 2 * tab_c_z * tab_num_templates, kernel_size=1, bias=False)
-
-    def forward(self, x, mask):
-        """
-        x: (N, C, H, W) trunk output
-        mask: (N, 1, H, W) or None
-        Returns: (keys, queries) with keys (N, 2*c_z, 1, S) and queries (N, 2*c_z, T, S), pre-scaled
-        """
-        N, C, H, W = x.shape
-        S = H * W
-        c_z = self.tab_c_z
-        T = self.tab_num_templates
-
-        z = self.input_proj(x)
-
-        # Apply mask to zero off-board positions
-        if mask is not None:
-            z = z * mask
-
-        z = z.view(N, 2, c_z, H, W)
-
-        # Precompute angles
-        gy = torch.arange(H, device=x.device, dtype=x.dtype)
-        gx = torch.arange(W, device=x.device, dtype=x.dtype)
-        grid_y, grid_x = torch.meshgrid(gy, gx, indexing='ij')  # (H, W)
-        angles = self.rope_freqs[:, 0:1].unsqueeze(-1) * grid_x.unsqueeze(0) + \
-                 self.rope_freqs[:, 1:2].unsqueeze(-1) * grid_y.unsqueeze(0)  # (c_z, H, W)
-        # Shape (1, 1, c_z, H, W) to broadcast with (N, 2, c_z, H, W) in tab_rotate
-        cos_a = torch.cos(angles).view(1, 1, c_z, H, W)
-        sin_a = torch.sin(angles).view(1, 1, c_z, H, W)
-
-        block_idx = 0
-        for block in self.blocks:
-            z = block(z, cos_a, sin_a, block_idx)
-            block_idx += 1
-
-        # Normalize variance
-        z = z * (1.0 / math.sqrt(block_idx + 1))
-
-        # Final: activate, project keys/queries in unrotated space, then rotate
-        z = self.final_act(z)
-        z_flat = z.reshape(N, 2 * c_z, H, W)
-
-        # cos/sin for final rotation: (1, c_z, 1, 1, H, W) -> tile across N samples
-        # After folding N*c_z into batch, need (N*c_z, 1, 1, H, W)
-        cos_a_out = cos_a.view(1, c_z, 1, 1, H, W).expand(N, c_z, 1, 1, H, W).reshape(N * c_z, 1, 1, H, W)
-        sin_a_out = sin_a.view(1, c_z, 1, 1, H, W).expand(N, c_z, 1, 1, H, W).reshape(N * c_z, 1, 1, H, W)
-
-        # Keys: mix in unrotated space first, reshape per-frequency, then rotate
-        keys = self.key_proj(z_flat)  # (N, 2*c_z, H, W)
-        keys = keys.view(N * c_z, 2, 1, H, W)
-        keys = tab_rotate(keys, cos_a_out, sin_a_out)
-
-        # Queries: mix in unrotated space first, reshape per-frequency, then rotate
-        queries = self.query_proj(z_flat)  # (N, 2*c_z*T, H, W)
-        queries = queries.view(N * c_z, 2, T, H, W)
-        queries = tab_rotate(queries, cos_a_out, sin_a_out)
-
-        keys = keys.reshape(N, 2 * c_z, 1, S)
-        queries = queries.reshape(N, 2 * c_z, T, S)
-        return keys / math.sqrt(c_z), queries / math.sqrt(T)
-
-    def initialize(self):
-        init_weights(self.input_proj.weight, self.activation, scale=1.0)
-        for block in self.blocks:
-            block.initialize(self.activation)
-        init_weights(self.key_proj.weight, self.activation, scale=1.0)
-        init_weights(self.query_proj.weight, self.activation, scale=1.0)
-
-    def add_reg_dict(self, reg_dict):
-        reg_dict["tab_module"].append(self.input_proj.weight)
-        reg_dict["noreg"].append(self.rope_freqs)
-        for block in self.blocks:
-            block.add_reg_dict(reg_dict)
-        reg_dict["tab_module"].append(self.key_proj.weight)
-        reg_dict["tab_module"].append(self.query_proj.weight)
-
-class ComplexDepthwiseConv2d(torch.nn.Module):
-    """Depthwise 2D complex convolution.
-
-    Each of the c channels gets its own K x K complex kernel (no cross-channel mixing).
-    Stores real_kernel and imag_kernel of shape (c, 1, K, K).
-
-    Computes complex multiplication via two separate depthwise convolutions (groups=c):
-        out_real = real_kernel * in_real - imag_kernel * in_imag
-        out_imag = imag_kernel * in_real + real_kernel * in_imag
-
-    Input: (*, 2*c, H, W) where channels are [re_0..re_{c-1}, im_0..im_{c-1}].
-    Output: same layout.
-    """
-    def __init__(self, c, kernel_size=3, dilation=1):
-        super().__init__()
-        self.c = c
-        self.kernel_size = kernel_size
-        self.dilation = dilation
-        self.real_kernel = torch.nn.Parameter(torch.empty(c, 1, kernel_size, kernel_size))
-        self.imag_kernel = torch.nn.Parameter(torch.empty(c, 1, kernel_size, kernel_size))
-
-    def forward(self, x):
-        # x: (*, 2*c, H, W) laid out as [re_0, ..., re_{c-1}, im_0, ..., im_{c-1}]
-        padding = self.dilation * (self.kernel_size // 2)
-        x_re = x[..., :self.c, :, :]   # (*, c, H, W)
-        x_im = x[..., self.c:, :, :]   # (*, c, H, W)
-
-        # Conv 1: convolve [re; im] with [rk; ik], fully depthwise (groups=2c)
-        x_ri = torch.cat([x_re, x_im], dim=-3)              # (*, 2c, H, W)
-        k_ri = torch.cat([self.real_kernel, self.imag_kernel], dim=0)  # (2c, 1, K, K)
-        conv1 = torch.nn.functional.conv2d(x_ri, k_ri, padding=padding, dilation=self.dilation, groups=2 * self.c)
-        # conv1: (*, 2c, H, W) = [rk*re; ik*im]
-
-        # Conv 2: convolve [re; im] with [-ik; rk], fully depthwise (groups=2c)
-        k_neg_ir = torch.cat([-self.imag_kernel, self.real_kernel], dim=0)  # (2c, 1, K, K)
-        conv2 = torch.nn.functional.conv2d(
-            x_ri,
-            k_neg_ir,
-            padding=padding,
-            dilation=self.dilation,
-            groups=2 * self.c
-        )
-        # conv2: (*, 2c, H, W) = [-ik*re; rk*im]
-
-        # out_re = rk*re - ik*im = conv1[:c] - conv1[c:]
-        # out_im = ik*re + rk*im = -conv2[:c] + conv2[c:]
-        out_re = conv1[..., :self.c, :, :] - conv1[..., self.c:, :, :]
-        out_im = conv2[..., self.c:, :, :] - conv2[..., :self.c, :, :]
-        return torch.cat([out_re, out_im], dim=-3)
-
-    def initialize(self, activation, scale=1.0):
-        init_weights(self.real_kernel, activation, scale=scale / math.sqrt(2.0))
-        init_weights(self.imag_kernel, activation, scale=scale / math.sqrt(2.0))
-
 class TransformerAttentionBlock(nn.Module):
     """Self-attention half and Feed-forward half of a transformer block with its own residual connection.
     Contains: RMSNorm -> Q/K/V projections -> (optional RoPE) -> attention -> output projection
@@ -1711,16 +1648,7 @@ class TransformerAttentionBlock(nn.Module):
 
         self.activation = kwargs.get("activation", DEFAULT_ACTIVATION)
         self.pos_len = kwargs.get("pos_len", 19)
-        self.positional_encoding = kwargs.get("positional_encoding", "RoPE")
-        self.use_rope = False
-        self.use_tab = False
-        self.use_tab_freq_mix = False
-        if self.positional_encoding in ["RoPE", "RoPE+TAB", "RoPE+FreqMix"]:
-            self.use_rope = True
-        if self.positional_encoding in ["TAB", "RoPE+TAB"]:
-            self.use_tab = True
-        if self.positional_encoding in ["FreqMix", "RoPE+FreqMix"]:
-            self.use_tab_freq_mix = True
+        self.use_tab = kwargs.get("use_tab", False)
         self.use_qk_norm = kwargs.get("attention_qk_norm", False)
         self.num_heads = kwargs.get("transformer_heads", 3)
         self.num_kv_heads = kwargs.get("transformer_kv_heads", self.num_heads)
@@ -1736,8 +1664,7 @@ class TransformerAttentionBlock(nn.Module):
         # intermediates to FP32. The trigonometric functions themselves remain FP32.
         self.learned_rope_cast_to_input_dtype = kwargs.get("learned_rope_cast_to_input_dtype", False)
 
-        if self.use_rope:
-            assert self.q_head_dim % 4 == 0, f"Query head dim must be divisible by 4 for 2D RoPE"
+        assert self.q_head_dim % 4 == 0, f"Query head dim must be divisible by 4 for 2D RoPE"
         assert self.num_heads % self.num_kv_heads == 0, \
             f"Query heads ({self.num_heads}) must be divisible by KV heads ({self.num_kv_heads})"
         self.q_proj = torch.nn.Linear(channels, self.num_heads * self.q_head_dim, bias=False)
@@ -1751,19 +1678,18 @@ class TransformerAttentionBlock(nn.Module):
             self.q_norm = CustomRMSNorm(self.q_head_dim, eps=1e-6)
             self.k_norm = CustomRMSNorm(self.q_head_dim, eps=1e-6)
 
-        if self.use_rope:
-            num_pairs = self.q_head_dim // 2
-            # Learnable 2D RoPE frequencies.
-            # Geometric initialization from 1 rad/square to 1/50 rad/square
-            log_lo = math.log(1.0 / 50.0)
-            log_hi = math.log(1.0)
-            init_freqs = (
-                torch.exp(torch.empty(self.num_kv_heads, num_pairs, 2).uniform_(log_lo, log_hi))
-                * (torch.randint(0, 2, (self.num_kv_heads, num_pairs, 2)) * 2 - 1).float()
-            )
-            self.rope_freqs = torch.nn.Parameter(init_freqs)  # (num_kv_heads, P, 2)
+        num_pairs = self.q_head_dim // 2
+        # Learnable 2D RoPE frequencies.
+        # Geometric initialization from 1 rad/square to 1/50 rad/square
+        log_lo = math.log(1.0 / 50.0)
+        log_hi = math.log(1.0)
+        init_freqs = (
+            torch.exp(torch.empty(self.num_kv_heads, num_pairs, 2).uniform_(log_lo, log_hi))
+            * (torch.randint(0, 2, (self.num_kv_heads, num_pairs, 2)) * 2 - 1).float()
+        )
+        self.rope_freqs = torch.nn.Parameter(init_freqs)  # (num_kv_heads, P, 2)
 
-        if self.use_tab or self.use_tab_freq_mix:
+        if self.use_tab:
             tab_d1 = kwargs.get("tab_d1", 16)
             tab_d2 = kwargs.get("tab_d2", 16)
             self.tab_num_templates = kwargs.get("tab_num_templates", 32)
@@ -1791,7 +1717,6 @@ class TransformerAttentionBlock(nn.Module):
                 self.ffn_dim, self.ffn_dim, kernel_size=3, padding=1, groups=self.ffn_dim, bias=False)
         self.ffn_linear2 = torch.nn.Linear(self.ffn_dim, channels, bias=False)
         self.ffn_norm = CustomRMSNorm(channels, eps=1e-6)
-        self.last_norm = CustomRMSNorm(channels, eps=1e-6)
 
     def add_reg_dict(self, reg_dict):
         for name, param in self.named_parameters():
@@ -1808,7 +1733,7 @@ class TransformerAttentionBlock(nn.Module):
             else:
                 reg_dict["noreg"].append(param)
 
-    def initialize(self, fixup_scale, xavier_init):
+    def initialize(self, fixup_scale, se_fixup_scale, xavier_init):
         pass
 
     def _compute_tab_bias(self, x_norm, mask, mask_sum_hw, block_shared_data):
@@ -1817,8 +1742,7 @@ class TransformerAttentionBlock(nn.Module):
         mask: (N, 1, H, W) or None
         mask_sum_hw: (N, 1, 1, 1) or None
         block_shared_data: dict with precomputed template/key-query data
-        Returns: (template_bias, extra_kq) where
-            template_bias: (B, H, S, S) materialized attention bias, or None
+        Returns: (extra_kq) where
             extra_kq: (extra_k, extra_q) to concatenate onto main K/Q, or None
         """
         batch_size, seq_len, _ = x_norm.shape
@@ -1843,7 +1767,6 @@ class TransformerAttentionBlock(nn.Module):
         z = self.tab_norm2(z)
         z = z.view(batch_size, self.num_heads, self.total_num_weights)  # (B, H, W_total)
 
-        bias = None
         extra_k_parts = []
         extra_q_parts = []
         idx = 0
@@ -1874,9 +1797,9 @@ class TransformerAttentionBlock(nn.Module):
             extra_q = torch.cat(extra_q_parts, dim=-1)  # (B, H, S, D_extra)
             extra_kq = (extra_k, extra_q)
 
-        return bias, extra_kq
+        return extra_kq
 
-    def forward(self, x, mask, mask_sum_hw, mask_sum, block_shared_data=None, last_norm=False):
+    def forward(self, x, mask, mask_sum_hw, mask_sum, block_shared_data=None):
         """
         Parameters:
         x: NCHW
@@ -1900,32 +1823,31 @@ class TransformerAttentionBlock(nn.Module):
         k = k.view(batch_size, seq_len, self.num_kv_heads, self.q_head_dim)
         v = v.view(batch_size, seq_len, self.num_kv_heads, self.v_head_dim)
 
-        if self.use_rope:
-            # compute from arange.
-            s_idx = torch.arange(seq_len, device=q.device)
-            s_y = (s_idx // self.pos_len).float()  # row
-            s_x = (s_idx % self.pos_len).float()   # col
-            cos_k, sin_k = compute_learnable_rope_cos_sin(s_x, s_y, self.rope_freqs)  # ([B,] S, H_kv, P)
-            # For Q: expand kv head freqs to match num_heads if using grouped-query attention.
-            # cos_k/sin_k are ([B,] S, H_kv, P); repeat each kv head n_rep times along a new axis
-            # inserted right after the head axis, so query head h maps to kv head h // n_rep --
-            # matching the k/v expansion below and the C++ backends' kvh = h * num_kv / num_heads.
-            if self.n_rep > 1:
-                cos_q = cos_k.unsqueeze(-2).expand(
-                    *cos_k.shape[:-1],
-                    self.n_rep,
-                    cos_k.shape[-1]
-                    ).reshape(*cos_k.shape[:-2], self.num_heads, -1)
-                sin_q = sin_k.unsqueeze(-2).expand(
-                    *sin_k.shape[:-1],
-                    self.n_rep,
-                    sin_k.shape[-1]
-                    ).reshape(*sin_k.shape[:-2], self.num_heads, -1)
-            else:
-                cos_q = cos_k
-                sin_q = sin_k
-            q, k = apply_learnable_rotary_emb(
-                q, k, cos_q, sin_q, cos_k, sin_k, self.learned_rope_cast_to_input_dtype)
+        # compute from arange.
+        s_idx = torch.arange(seq_len, device=q.device)
+        s_y = (s_idx // self.pos_len).float()  # row
+        s_x = (s_idx % self.pos_len).float()   # col
+        cos_k, sin_k = compute_learnable_rope_cos_sin(s_x, s_y, self.rope_freqs)  # ([B,] S, H_kv, P)
+        # For Q: expand kv head freqs to match num_heads if using grouped-query attention.
+        # cos_k/sin_k are ([B,] S, H_kv, P); repeat each kv head n_rep times along a new axis
+        # inserted right after the head axis, so query head h maps to kv head h // n_rep --
+        # matching the k/v expansion below and the C++ backends' kvh = h * num_kv / num_heads.
+        if self.n_rep > 1:
+            cos_q = cos_k.unsqueeze(-2).expand(
+                *cos_k.shape[:-1],
+                self.n_rep,
+                cos_k.shape[-1]
+                ).reshape(*cos_k.shape[:-2], self.num_heads, -1)
+            sin_q = sin_k.unsqueeze(-2).expand(
+                *sin_k.shape[:-1],
+                self.n_rep,
+                sin_k.shape[-1]
+                ).reshape(*sin_k.shape[:-2], self.num_heads, -1)
+        else:
+            cos_q = cos_k
+            sin_q = sin_k
+        q, k = apply_learnable_rotary_emb(
+            q, k, cos_q, sin_q, cos_k, sin_k, self.learned_rope_cast_to_input_dtype)
 
         q = q.permute(0, 2, 1, 3)
         k = k.permute(0, 2, 1, 3)
@@ -1941,10 +1863,9 @@ class TransformerAttentionBlock(nn.Module):
             q = self.q_norm(q)
             k = self.k_norm(k)
 
-        template_bias = None
         extra_kq = None
-        if self.use_tab or self.use_tab_freq_mix:
-            template_bias, extra_kq = self._compute_tab_bias(x_norm, mask, mask_sum_hw, block_shared_data)
+        if self.use_tab:
+            extra_kq = self._compute_tab_bias(x_norm, mask, mask_sum_hw, block_shared_data)
 
         if mask is not None:
             mask_flat = mask.reshape(batch_size, 1, 1, seq_len)
@@ -1952,12 +1873,6 @@ class TransformerAttentionBlock(nn.Module):
             attn_mask.masked_fill_(mask_flat == 0, float('-inf'))
         else:
             attn_mask = None
-
-        if template_bias is not None:
-            if attn_mask is not None:
-                attn_mask = attn_mask + template_bias
-            else:
-                attn_mask = template_bias
 
         # Default scaling for q/k dot product, 1/sqrt(query head dim)
         scale = 1.0 / math.sqrt(self.q_head_dim)
@@ -1989,7 +1904,7 @@ class TransformerAttentionBlock(nn.Module):
         #   scale * max_i ||q_i|| * max_j ||k_j|| >= max_ij |scale * q_i . k_j|.
         # The max deliberately includes off-board garbage positions, since inference backends
         # compute logits at those positions too before masking, and their magnitudes are what
-        # constrain the fp16-safe additive mask bias constants. (Correct for the extra_kq/gab/tab
+        # constrain the fp16-safe additive mask bias constants. (Correct for the extra_kq/tab
         # path too: there q is pre-multiplied by the true scale and `scale` is 1.0.)
         #
         # Cost notes: computed on only the first `num_batch_items` samples
@@ -2040,8 +1955,7 @@ class TransformerAttentionBlock(nn.Module):
             x1_spatial = self.ffn_dwconv(x1_spatial) * mask
             x1 = x1_spatial.view(batch_size, self.ffn_dim, -1).permute(0, 2, 1)
         x1 = ffn_in + self.ffn_linear2(x1)
-        if last_norm:
-            x1 = self.last_norm(x1)
+
         result = x1.permute(0, 2, 1).view(batch_size, channels, height, width)
 
         return result
@@ -2054,7 +1968,7 @@ class NestedBottleneckTransformerBlock(nn.Module):
 
         self.activation = kwargs.get("activation", DEFAULT_ACTIVATION)
         self.bottleneck_channels = kwargs.get("bottleneck_channels", None)
-        self.mode = kwargs.get("mode", "renorm")
+        self.mode = kwargs.get("mode", "fixup")
         self.is_pre_act = kwargs.get("is_pre_act", True)
         self.internal_length = kwargs.get("internal_length", 2)
         assert self.internal_length >= 1, ""
@@ -2094,6 +2008,15 @@ class NestedBottleneckTransformerBlock(nn.Module):
             activation=self.activation,
             collector=None
         )
+
+    def initialize(self, fixup_scale, se_fixup_scale, xavier_init):
+        if xavier_init:
+            self.pre_btl_conv.initialize(scale=1.0, xavier_init=xavier_init)
+            self.post_btl_conv.initialize(scale=1.0, xavier_init=xavier_init)
+        else:
+            self.pre_btl_conv.initialize(
+                scale=math.pow(fixup_scale, 1.0 / (1.0 + self.internal_length)), xavier_init=xavier_init)
+            self.post_btl_conv.initialize(scale=0.0, xavier_init=xavier_init)
 
     def add_reg_dict(self, reg_dict):
         self.pre_btl_conv.add_reg_dict(reg_dict)
@@ -2140,25 +2063,10 @@ class Network(nn.Module):
         self.stack = cfg.stack  # default:[]
         self.version = 5
         self.mode = cfg.mode  # default:"renorm"
-        self.is_pre_act = cfg.is_pre_act
-        self.use_rope = False
-        self.use_tab = False
-        self.use_tab_freq_mix = False
-        self.positional_encoding = cfg.positional_encoding # default:"RoPE"
-        if self.positional_encoding in ["RoPE", "RoPE+TAB", "RoPE+FreqMix"]:
-            self.use_rope = True
-        if self.positional_encoding in ["TAB", "RoPE+TAB"]:
-            self.use_tab = True
-        if self.positional_encoding in ["FreqMix", "RoPE+FreqMix"]:
-            self.use_tab_freq_mix = True
+        self.is_pre_act = cfg.is_pre_act # default:False
+        self.use_tab = cfg.use_tab # default:False
+        self.final_block_cgroup_size = cfg.final_block_cgroup_size  # default:None
         self.attention_qk_norm = cfg.attention_qk_norm  # default:False
-        self.tab_d1 = cfg.tab_d1    # default:16
-        self.tab_d2 = cfg.tab_d2    # default:16
-        self.tab_c_z = cfg.tab_c_z  # default:32
-        self.tab_num_templates = cfg.tab_num_templates if self.use_tab or self.use_tab_freq_mix else 0 # default:32
-        self.tab_num_freqs = cfg.tab_num_freqs    # default:8
-        self.tab_num_blocks = cfg.tab_num_blocks  # default:3
-        self.tab_dilation = cfg.tab_dilation      # default:3
         self.transformer_heads = cfg.transformer_heads  # default:3
         self.transformer_kv_heads = cfg.transformer_kv_heads  # default:3
         self.attention_query_head_dim = cfg.attention_query_head_dim  # default:32
@@ -2167,9 +2075,46 @@ class Network(nn.Module):
         self.transformer_ffn_channels = cfg.transformer_ffn_channels  # default:256
         self.use_swiglu = cfg.use_swiglu        # default:True
         self.transformer_ffn_depthwise_conv = cfg.transformer_ffn_depthwise_conv  # default:False
+        self.tab_d1 = cfg.tab_d1    # default:16
+        self.tab_d2 = cfg.tab_d2    # default:16
+        self.tab_c_z = cfg.tab_c_z  # default:32
+        self.tab_num_templates = cfg.tab_num_templates  # default:32
+        self.tab_num_freqs = cfg.tab_num_freqs    # default:8
+        self.tab_num_blocks = cfg.tab_num_blocks  # default:3
+        self.tab_dilation = cfg.tab_dilation      # default:3
         self.opt_name = cfg.optimizer
 
         self.construct_layers()
+
+        num_total_blocks = len(self.residual_tower)
+        xavier_init = self.mode != "fixup"
+        with torch.no_grad():
+            if self.use_tab:  # default:False
+                self.tab_module.initialize()
+            self.input_conv.initialize(scale=1.0, xavier_init=xavier_init)
+            if self.mode == "fixup":  # default:"renorm"
+                fixup_scale = 1.0 / math.sqrt(num_total_blocks)
+                se_fixup_scale = math.pow(num_total_blocks, -1.0 / (2 * 4 - 2))
+                for block in self.residual_tower:
+                    block.initialize(fixup_scale=fixup_scale,
+                        se_fixup_scale=se_fixup_scale, xavier_init=xavier_init)
+            else:  # default:"renorm"
+                fixup_scale = 1.0
+                for block in self.residual_tower:
+                    block.initialize(fixup_scale=fixup_scale,
+                        se_fixup_scale=fixup_scale, xavier_init=xavier_init)
+
+            self.policy_conv.initialize(scale=0.8, xavier_init=xavier_init)
+            if self.policy_head_type["Type"] == "RepLK":  # default:"Normal"
+                self.policy_depthwise_conv.initialize(scale=1.0, xavier_init=xavier_init)
+                self.policy_pointwise_conv.initialize(scale=1.0, xavier_init=xavier_init)
+            self.policy_intermediate_fc.initialize(scale=0.6, xavier_init=xavier_init)
+            self.pol_misc.initialize(scale=0.3, xavier_init=xavier_init)
+            self.pol_misc_pass_fc.initialize(scale=0.3, xavier_init=xavier_init)
+            self.value_conv.initialize(scale=1.0, xavier_init=xavier_init)
+            self.value_intermediate_fc.initialize(scale=1.0, xavier_init=xavier_init)
+            self.ownership_conv.initialize(scale=0.2, xavier_init=xavier_init)
+            self.value_misc_fc.initialize(scale=0.2, xavier_init=xavier_init)
 
     def create_policy_head(self):
         self.policy_conv = ConvBlock(
@@ -2286,10 +2231,16 @@ class Network(nn.Module):
             elif component == "MixerBlockV2":
                 block = MixerBlock
                 blockargs["version"] = 2
-            elif component == "TransformerBlock":
+            elif component in ["TransformerBlock", "NestedBottleneckTransformerBlock"]:
                 self.is_pre_act = True  # used Transformer
-                blockargs["positional_encoding"] = self.positional_encoding  # default:"RoPE"
                 blockargs["attention_qk_norm"] = self.attention_qk_norm  # default:False
+                blockargs["transformer_heads"] = self.transformer_heads  # default:3
+                blockargs["transformer_kv_heads"] = self.transformer_kv_heads  # default:3
+                blockargs["attention_query_head_dim"] = self.attention_query_head_dim  # default:32
+                blockargs["attention_value_head_dim"] = self.attention_value_head_dim  # default:32
+                blockargs["learned_rope_cast_to_input_dtype"] = self.learned_rope_cast_to_input_dtype  # default:False
+                blockargs["transformer_ffn_channels"] = self.transformer_ffn_channels  # default:256
+                blockargs["use_tab"] = self.use_tab  # default:False
                 blockargs["tab_d1"] = self.tab_d1    # default:16
                 blockargs["tab_d2"] = self.tab_d2    # default:16
                 blockargs["tab_c_z"] = self.tab_c_z  # default:None
@@ -2297,37 +2248,14 @@ class Network(nn.Module):
                 blockargs["tab_num_freqs"] = self.tab_num_freqs  # default:None
                 blockargs["tab_num_blocks"] = self.tab_num_blocks  # default:None
                 blockargs["tab_dilation"] = self.tab_dilation  # default:None
-                blockargs["transformer_heads"] = self.transformer_heads  # default:3
-                blockargs["transformer_kv_heads"] = self.transformer_kv_heads  # default:3
-                blockargs["attention_query_head_dim"] = self.attention_query_head_dim  # default:32
-                blockargs["attention_value_head_dim"] = self.attention_value_head_dim  # default:32
-                blockargs["learned_rope_cast_to_input_dtype"] = self.learned_rope_cast_to_input_dtype  # default:False
-                blockargs["transformer_ffn_channels"] = self.transformer_ffn_channels  # default:256
                 blockargs["use_swiglu"] = self.use_swiglu  # default:True
                 blockargs["transformer_ffn_depthwise_conv"] = self.transformer_ffn_depthwise_conv  # default:False
-                block = TransformerAttentionBlock
-            elif component == "NestedBottleneckTransformerBlock":
-                self.is_pre_act = True  # used Transformer
-                blockargs["bottleneck_channels"] = channels // 2
-                assert channels % 2 == 0, ""
-                blockargs["positional_encoding"] = self.positional_encoding  # default:"RoPE"
-                blockargs["attention_qk_norm"] = self.attention_qk_norm  # default:False
-                blockargs["tab_d1"] = self.tab_d1    # default:16
-                blockargs["tab_d2"] = self.tab_d2    # default:16
-                blockargs["tab_c_z"] = self.tab_c_z  # default:None
-                blockargs["tab_num_templates"] = self.tab_num_templates  # default:None
-                blockargs["tab_num_freqs"] = self.tab_num_freqs  # default:None
-                blockargs["tab_num_blocks"] = self.tab_num_blocks  # default:None
-                blockargs["tab_dilation"] = self.tab_dilation  # default:None
-                blockargs["transformer_heads"] = self.transformer_heads  # default:3
-                blockargs["transformer_kv_heads"] = self.transformer_kv_heads  # default:3
-                blockargs["attention_query_head_dim"] = self.attention_query_head_dim  # default:32
-                blockargs["attention_value_head_dim"] = self.attention_value_head_dim  # default:32
-                blockargs["learned_rope_cast_to_input_dtype"] = self.learned_rope_cast_to_input_dtype  # default:False
-                blockargs["transformer_ffn_channels"] = self.transformer_ffn_channels  # default:256
-                blockargs["use_swiglu"] = self.use_swiglu  # default:True
-                blockargs["transformer_ffn_depthwise_conv"] = self.transformer_ffn_depthwise_conv  # default:False
-                block = NestedBottleneckTransformerBlock
+                if component == "TransformerBlock":
+                    block = TransformerAttentionBlock
+                else:
+                    blockargs["bottleneck_channels"] = channels // 2
+                    assert channels % 2 == 0, ""
+                    block = NestedBottleneckTransformerBlock
             elif component == "SE":
                 blockargs["se_size"] = channels // self.se_ratio
                 assert channels % self.se_ratio == 0, ""
@@ -2348,23 +2276,8 @@ class Network(nn.Module):
                 blockargs["kernel_size"] = value
             elif key == "FfnExpansionRatio":
                 blockargs["ffn_expansion_ratio"] = value
-            elif key == "PositionalEncoding":
-                blockargs["positional_encoding"] = value
-                assert value in ["RoPE", "TAB", "FreqMix", "RoPE+TAB", "RoPE+FreqMix"], ""
-                if value in ["RoPE", "RoPE+TAB", "RoPE+FreqMix"]:
-                    self.use_rope = True
-                if value in ["TAB", "RoPE+TAB"]:
-                    assert not self.use_tab_freq_mix, ""
-                    self.use_tab = True
-                if value in ["FreqMix", "RoPE+FreqMix"]:
-                    assert not self.use_tab, ""
-                    self.use_tab_freq_mix = True
             elif key == "AttentionQKNorm":
                 blockargs["attention_qk_norm"] = value
-            elif key == "TABD1":
-                blockargs["tab_d1"] = value
-            elif key == "TABD2":
-                blockargs["tab_d2"] = value
             elif key == "TransformerHeads":
                 blockargs["transformer_heads"] = value
             elif key == "TransformerKVHheads":
@@ -2414,10 +2327,10 @@ class Network(nn.Module):
             else:
                 components = block["Block"].strip().split('-')
             for component in components:
-                if component == "TransformerBlock" or component == "NestedBottleneckTransformerBlock":
+                if component in ["TransformerBlock", "NestedBottleneckTransformerBlock"]:
                     self.is_pre_act = True  # used Transformer
-                    if component == "TransformerBlock":
-                        last_is_tran = True
+                    last_is_tran = True
+
         if self.is_pre_act:
             self.input_conv = Convolve(
                 in_channels=self.input_channels,  # default:43
@@ -2442,29 +2355,17 @@ class Network(nn.Module):
         self.create_residual_tower()
 
         # Create shared TAB template MLP if any block uses TAB
-        if self.use_tab_freq_mix:  # default:False
-            self.tab_module = FrequencyMixingTABModule(
-                trunk_channels=self.residual_channels,     # default:None
-                tab_c_z=self.tab_c_z,                      # default:None
-                tab_num_templates=self.tab_num_templates,  # default:None
-                tab_num_blocks=self.tab_num_blocks,        # default:None
-                tab_dilation=self.tab_dilation,            # default:None
-                activation=self.activation,                # default:"relu"
-                pos_len=self.pos_len                       # default:19
-            )
-            self.tab_module.initialize()
-        elif self.use_tab:  # default:False
+        if self.use_tab:  # default:False
             self.tab_module = TABModule(
                 trunk_channels=self.residual_channels,     # default:None
-                tab_c_z=self.tab_c_z,                      # default:None
-                tab_num_templates=self.tab_num_templates,  # default:None
-                tab_num_freqs=self.tab_num_freqs,          # default:None
-                tab_num_blocks=self.tab_num_blocks,        # default:None
-                tab_dilation=self.tab_dilation,            # default:None
+                tab_c_z=self.tab_c_z,                      # default:32
+                tab_num_templates=self.tab_num_templates,  # default:32
+                tab_num_freqs=self.tab_num_freqs,          # default:8
+                tab_num_blocks=self.tab_num_blocks,        # default:3
+                tab_dilation=self.tab_dilation,            # default:3
                 activation=self.activation,                # default:"relu"
                 pos_len=self.pos_len                       # default:19
             )
-            self.tab_module.initialize()
         else:
             self.tab_module = None
 
@@ -2483,13 +2384,16 @@ class Network(nn.Module):
         self.attn_logit_penalty_batch_frac = self.cfg.attn_logit_penalty_batch_frac
 
         if self.is_pre_act:  # default:False
-            if last_is_tran:
-                self.final_block = CustomIdentity()
+            if last_is_tran and self.mode == "fixup" and self.final_block_cgroup_size is not None:
+                self.final_block = RMSNormMask(
+                    c_in=self.residual_channels,  # default:None
+                    cgroup_size=self.final_block_cgroup_size  # default:None
+                )
             else:
                 self.final_block = BatchNorm2d(
                     num_features=self.residual_channels,  # default:None
                     use_gamma=False,
-                    mode="fixup"  # Better results are obteined without the norm than by speciflying self.mode
+                    mode=self.mode                        # default:"renorm"
                 )
             self.final_act = activation_func(self.activation, inplace=True)  # default:"relu"
         else:
@@ -2530,19 +2434,7 @@ class Network(nn.Module):
 
         # residual tower
         for i, block in enumerate(self.residual_tower):
-            if isinstance(block, TransformerAttentionBlock):
-                if i == len(self.residual_tower) - 1:
-                    last_norm = True
-                else:
-                    last_norm = False
-                x = block(x,
-                    mask=mask,
-                    mask_sum_hw=mask_sum_hw_transformer,
-                    mask_sum=mask_sum_transformer,
-                    block_shared_data=block_shared_data,
-                    last_norm=last_norm
-                )
-            elif isinstance(block, NestedBottleneckTransformerBlock):
+            if isinstance(block, TransformerAttentionBlock) or isinstance(block, NestedBottleneckTransformerBlock):
                 x = block(x,
                     mask=mask,
                     mask_sum_hw=mask_sum_hw_transformer,
@@ -2563,7 +2455,10 @@ class Network(nn.Module):
             self.attn_logit_ub_batch_max = ubs.detach().amax()
 
         # Use original mask for final norm and heads (NCHW format)
-        x = self.final_block(x, mask)
+        if isinstance(self.final_block, RMSNormMask):
+            x = self.final_block(x, mask, mask_sum_hw_transformer, mask_sum_transformer)
+        else:
+            x = self.final_block(x, mask)
         x = self.final_act(x)
 
         # Use fp32 for output heads to handle potentially large values
@@ -2953,10 +2848,10 @@ class Network(nn.Module):
         reg_dict["normal"] = []
         reg_dict["normal_gamma"] = []
         reg_dict["normal_attn"] = []
-        reg_dict["normal_tab"] = []
         reg_dict["output"] = []
         reg_dict["noreg"] = []
         reg_dict["output_noreg"] = []
+        reg_dict["normal_tab"] = []
         reg_dict["tab_module"] = []
 
         self.input_conv.add_reg_dict(reg_dict, placement="before_block")
