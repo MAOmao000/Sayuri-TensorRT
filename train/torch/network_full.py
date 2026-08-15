@@ -1319,7 +1319,7 @@ class RMSNormMask(torch.nn.Module):
     """RMSNorm applied per spatial position across channels, with masking for off-board positions.
     Computes RMS across both channels and spatial positions (masked), producing
     one scalar RMS per sample instead of per position.
-    If cgroup_size is not None, breaks channels into groups of the given size
+    If cgroup_size is not None and greater than 0, breaks channels into groups of the given size
     and normalizes within each group across channels_in_group x H x W (like group norm but RMS only,
     no mean centering).
     """
@@ -1328,7 +1328,7 @@ class RMSNormMask(torch.nn.Module):
         self.c_in = c_in
         self.cgroup_size = cgroup_size
         self.eps = 1e-6
-        if cgroup_size is not None:
+        if cgroup_size is not None and cgroup_size > 0:
             assert c_in % cgroup_size == 0, f"c_in ({c_in}) must be divisible by cgroup_size ({cgroup_size})"
             self.num_groups = c_in // cgroup_size
         self.gamma = torch.nn.Parameter(torch.ones(c_in))
@@ -1348,7 +1348,7 @@ class RMSNormMask(torch.nn.Module):
 
         Returns: NCHW
         """
-        if self.cgroup_size is not None:
+        if self.cgroup_size is not None and self.cgroup_size > 0:
             # Group-wise spatial RMS: normalize within each group of channels across group_channels x H x W
             N, C, H, W = x.shape
             x_grouped = x.view(N, self.num_groups, self.cgroup_size, H, W)
