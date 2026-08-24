@@ -242,6 +242,7 @@ def adam_update(grad, buf1, buf2, step, betas, eps):
 # Compiled variants used by the batched Newton-Schulz path.
 # The number of distinct (batch, rows, cols) shapes per model is small, so per-shape compilation settles quickly.
 # These functions accept stacked (B, m, n) input since the underlying implementations already support batched matrices.
+# logging.getLogger("torch._inductor").setLevel(logging.ERROR)
 zeropower_via_newtonschulz5_compiled = torch.compile(zeropower_via_newtonschulz5)
 zeropower_via_polar_express_compiled = torch.compile(zeropower_via_polar_express)
 
@@ -1196,6 +1197,7 @@ class TrainingPipe():
                 self.net.attn_logit_penalty_cap = self.attn_logit_penalty_cap
                 self.net.attn_logit_penalty_batch_frac = self.attn_logit_penalty_batch_frac
             self.module = self.net # linking
+            # logging.getLogger("torch._inductor").setLevel(logging.ERROR)
             self.net = torch.compile(
                 self.net
                 # fullgraph=True
@@ -1302,72 +1304,81 @@ class TrainingPipe():
         else:
             batch_scaling = self.batchsize / 256.0
 
-        warmup_scale = self._get_lr_schedule(self.current_steps) / self.lr_schedule[-1][1]
-        adaptive_scale = 1.0
-        if (group_name == "input" or
-            group_name == "normal" or
-            group_name == "normal_attn" or
-            group_name == "normal_gamma" or
-            group_name == "normal_gab" or
-            group_name == "gab_mlp" or
-            group_name == "tab_module"
-        ):
-            if self.opt_name == "Muon" or self.opt_name == "Aurora":
-                wd_with_lr_scale = math.pow(effective_lr_scale * warmup_scale, 0.70) * adaptive_scale
-            else:
-                wd_with_lr_scale = math.pow(effective_lr_scale * warmup_scale, 0.75) * adaptive_scale
-
-            if group_name == "input":
-                # Branch here is mostly preserving inconsistent historical behavior, there's not
-                # a great reason these should be different.
-                if self.opt_name == "Muon" or self.opt_name == "Aurora":
-                    wd_group_factor = 2.0 / 3.0
+        if self.cfg.mode == "fixup":
+            if group_name in ["input", "normal", "normal_gamma", "output"]:
+                if self.opt_name == "Muon":
+                    return 0.005000 * batch_scaling
                 else:
-                    wd_group_factor = 1.0
-            elif group_name == "normal":
-                wd_group_factor = 1.0
-            elif group_name == "normal_attn":
-                wd_group_factor = 0.5
-            elif group_name == "normal_gab":
-                wd_group_factor = 0.3
-            elif group_name == "gab_mlp":
-                wd_group_factor = 0.1
-            elif group_name == "tab_module":
-                wd_group_factor = 0.1
-            elif group_name == "normal_gamma":
-                # Batch norm gammas can be regularized a bit less,
-                # doing them just as much empirically seemed to be a bit more unstable
-                if self.opt_name == "Muon" or self.opt_name == "Aurora":
-                    wd_group_factor = 0.25
+                    return 0.000001 * batch_scaling
+            elif group_name in ["normal_attn", "normal_gab",  "gab_mlp", "tab_module"]:
+                if self.opt_name == "Muon":
+                    return 0.005000 * 0.5 * batch_scaling
                 else:
-                    wd_group_factor = 0.125
-            else:
-                assert False
-
-            if (self.opt_name == "Muon" or self.opt_name == "Aurora") and not is_muon_suitable:
-                return 0.00900 * batch_scaling * wd_with_lr_scale * wd_group_factor
-            elif self.opt_name == "Muon" or self.opt_name == "Aurora":
-                return 0.02000 * batch_scaling * wd_with_lr_scale * wd_group_factor
-            else:
-                return 0.00125 * batch_scaling * wd_with_lr_scale * wd_group_factor
-        elif group_name == "output":
-            if (self.opt_name == "Muon" or self.opt_name == "Aurora") and not is_muon_suitable:
-                return 0.00400 * batch_scaling
-            elif self.opt_name == "Muon" or self.opt_name == "Aurora":
-                assert False
-            else:
-                return 0.000001 * batch_scaling
-        elif group_name == "input_noreg" or group_name == "noreg":
-            return 0.000001 * batch_scaling * math.pow(effective_lr_scale * warmup_scale, 0.75)
-        elif group_name == "output_noreg":
-            if (self.opt_name == "Muon" or self.opt_name == "Aurora") and not is_muon_suitable:
-                return 0.000001 * batch_scaling
-            elif self.opt_name == "Muon" or self.opt_name == "Aurora":
-                assert False
-            else:
+                    return 0.000001 * 0.5 * batch_scaling
+            elif group_name in ["input_noreg", "noreg"]:
                 return 0.00000001 * batch_scaling
+            elif group_name == "output_noreg":
+                return 0.00000001 * batch_scaling
+            else:
+                assert False
         else:
-            assert False
+            warmup_scale = self._get_lr_schedule(self.current_steps) / self.lr_schedule[-1][1]
+            adaptive_scale = 1.0
+            if group_name in ["input", "normal", "normal_attn", "normal_gamma", "normal_gab", "gab_mlp", "tab_module"]:
+                if self.opt_name == "Muon" or self.opt_name == "Aurora":
+                    wd_with_lr_scale = math.pow(effective_lr_scale * warmup_scale, 0.70) * adaptive_scale
+                else:
+                    wd_with_lr_scale = math.pow(effective_lr_scale * warmup_scale, 0.75) * adaptive_scale
+                if group_name == "input":
+                    # Branch here is mostly preserving inconsistent historical behavior, there's not
+                    # a great reason these should be different.
+                    if self.opt_name == "Muon" or self.opt_name == "Aurora":
+                        wd_group_factor = 2.0 / 3.0
+                    else:
+                        wd_group_factor = 1.0
+                elif group_name == "normal":
+                    wd_group_factor = 1.0
+                elif group_name == "normal_attn":
+                    wd_group_factor = 0.5
+                elif group_name == "normal_gab":
+                    wd_group_factor = 0.3
+                elif group_name == "gab_mlp":
+                    wd_group_factor = 0.1
+                elif group_name == "tab_module":
+                    wd_group_factor = 0.1
+                elif group_name == "normal_gamma":
+                    # Batch norm gammas can be regularized a bit less,
+                    # doing them just as much empirically seemed to be a bit more unstable
+                    if self.opt_name == "Muon" or self.opt_name == "Aurora":
+                        wd_group_factor = 0.25
+                    else:
+                        wd_group_factor = 0.125
+                else:
+                    assert False
+                if (self.opt_name == "Muon" or self.opt_name == "Aurora") and not is_muon_suitable:
+                    return 0.00900 * batch_scaling * wd_with_lr_scale * wd_group_factor
+                elif self.opt_name == "Muon" or self.opt_name == "Aurora":
+                    return 0.02000 * batch_scaling * wd_with_lr_scale * wd_group_factor
+                else:
+                    return 0.00125 * batch_scaling * wd_with_lr_scale * wd_group_factor
+            elif group_name == "output":
+                if (self.opt_name == "Muon" or self.opt_name == "Aurora") and not is_muon_suitable:
+                    return 0.00400 * batch_scaling
+                elif self.opt_name == "Muon" or self.opt_name == "Aurora":
+                    assert False
+                else:
+                    return 0.000001 * batch_scaling
+            elif group_name == "input_noreg" or group_name == "noreg":
+                return 0.000001 * batch_scaling * math.pow(effective_lr_scale * warmup_scale, 0.75)
+            elif group_name == "output_noreg":
+                if (self.opt_name == "Muon" or self.opt_name == "Aurora") and not is_muon_suitable:
+                    return 0.000001 * batch_scaling
+                elif self.opt_name == "Muon" or self.opt_name == "Aurora":
+                    assert False
+                else:
+                    return 0.00000001 * batch_scaling
+            else:
+                assert False
 
     def _get_param_groups(self):
         reg_dict : Dict[str,List] = {}
@@ -1808,13 +1819,15 @@ class TrainingPipe():
 
                 if macro_steps % self.macrofactor == 0:
                     # clip grad
-                    if self.opt_name != "Muon" and self.opt_name != "Aurora":
-                        torch.nn.utils.clip_grad_norm_(self.net.parameters(), 10000.0)
-                    else:
+                    if self.opt_name == "Muon" or self.opt_name == "Aurora":
                         gnorm_cap = 11000.0
-                        gnorm_cap *= math.sqrt(self.batchsize / 256.0)
-                        torch.nn.utils.clip_grad_norm_(
-                            self.net.parameters(), max_norm=gnorm_cap).detach().cpu().item()
+                    elif self.cfg.mode == "fixup":
+                        gnorm_cap = 2500.0
+                    else:
+                        gnorm_cap = 5500.0
+                    gnorm_cap *= math.sqrt(self.batchsize / 256.0)
+                    torch.nn.utils.clip_grad_norm_(
+                        self.net.parameters(), max_norm=gnorm_cap).detach().cpu().item()
 
                     # update network parameters
                     if self.use_fp16:
