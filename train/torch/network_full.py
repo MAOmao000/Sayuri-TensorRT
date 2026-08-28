@@ -3087,7 +3087,7 @@ class Network(nn.Module):
         self.attn_logit_penalty_batch_frac = self.cfg.attn_logit_penalty_batch_frac
 
         if self.is_pre_act:  # default:False
-            if last_is_tran and self.mode == "fixup" and self.final_block_cgroup_size is not None:
+            if last_is_tran and self.final_block_cgroup_size is not None:
                 self.final_block = RMSNormMask(
                     c_in=self.residual_channels,  # default:None
                     cgroup_size=self.final_block_cgroup_size  # default:None
