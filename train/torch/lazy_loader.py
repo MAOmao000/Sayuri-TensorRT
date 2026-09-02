@@ -166,6 +166,8 @@ def _gather_batch(config, data_readers, batch_writer):
                     outs = shuf_buff.insert_item_and_pop(item)
                     if outs is not None:
                         data_list.append(outs)
+                        if len(data_list) >= config.batch_size:
+                            break
                 except:
                     return
 
