@@ -93,6 +93,7 @@ class Config:
         self.nntype = network.get("NNType", None)
         self.activation = network.get("Activation", "relu")
         self.input_channels = network.get("InputChannels", 43)
+        self.reduction_input = network.get("ReductionInput", True)
         self.residual_channels = network.get("ResidualChannels", None)
 
         self.policy_head_type = network.get("PolicyHeadType", { "Type" : "Normal" })

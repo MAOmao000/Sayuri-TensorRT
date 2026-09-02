@@ -2048,6 +2048,8 @@ class Network(nn.Module):
 
         self.activation = cfg.activation.lower()  # default:"relu"
         self.input_channels = cfg.input_channels  # default:43
+        self.reduction_input = cfg.reduction_input  # default:True
+        self.reductions = 0
         self.residual_channels = cfg.residual_channels  # default:None
         self.xsize = cfg.boardsize  # default:19
         self.ysize = cfg.boardsize  # default:19
@@ -2330,10 +2332,12 @@ class Network(nn.Module):
                 if component in ["TransformerBlock", "NestedBottleneckTransformerBlock"]:
                     self.is_pre_act = True  # used Transformer
                     last_is_tran = True
+                    if self.reduction_input:
+                        self.reductions = 13
 
         if self.is_pre_act:
             self.input_conv = Convolve(
-                in_channels=self.input_channels,  # default:43
+                in_channels=self.input_channels - self.reductions,  # default:43
                 out_channels=self.residual_channels,  # default:None
                 kernel_size=3,
                 activation="identity",
@@ -2342,7 +2346,7 @@ class Network(nn.Module):
             )
         else:
             self.input_conv = ConvBlock(
-                in_channels=self.input_channels,  # default:43
+                in_channels=self.input_channels - self.reductions,  # default:43
                 out_channels=self.residual_channels,   # default:None
                 kernel_size=3,
                 use_gamma=True,
@@ -2407,10 +2411,16 @@ class Network(nn.Module):
         target = kwargs.get("target", None)
         use_symm = kwargs.get("use_symm", False)
         loss_weight_dict = kwargs.get("loss_weight_dict", None)
+        if self.reductions > 0:
+            reduction_planes = torch.cat(
+                (planes[:, 0:24 , :, :].contiguous(), planes[:, 37:, :, :].contiguous()),
+                dim=1)
+        else:
+            reduction_planes = planes
 
         symm = int(np.random.choice(8, 1)[0])
         if use_symm:
-            planes = torch_symmetry(symm, planes, invert=False)
+            reduction_planes = torch_symmetry(symm, reduction_planes, invert=False)
 
         # mask buffers
         mask = planes[:, (self.input_channels-1):self.input_channels , :, :].contiguous()
@@ -2421,7 +2431,7 @@ class Network(nn.Module):
         mask_sum_transformer = torch.sum(mask)
 
         # input layer
-        x = self.input_conv(planes, mask)
+        x = self.input_conv(reduction_planes, mask)
 
         # Compute shared block data
         block_shared_data = {}
