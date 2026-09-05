@@ -2086,9 +2086,9 @@ class Network(nn.Module):
         self.tab_dilation = cfg.tab_dilation      # default:3
         self.opt_name = cfg.optimizer
 
-        self.construct_layers()
+        num_transformer_blocks = self.construct_layers()
 
-        num_total_blocks = len(self.residual_tower)
+        num_total_blocks = len(self.residual_tower) + num_transformer_blocks
         xavier_init = self.mode != "fixup"
         with torch.no_grad():
             if self.use_tab:  # default:False
@@ -2321,6 +2321,7 @@ class Network(nn.Module):
         self.global_pool = GlobalPool(is_value_head=False)
         self.global_pool_val = GlobalPool(is_value_head=True)
 
+        num_transformer_blocks = 0
         for block in self.stack:
             last_is_tran = False
             components = list()
@@ -2334,6 +2335,8 @@ class Network(nn.Module):
                     last_is_tran = True
                     if self.reduction_input:
                         self.reductions = 13
+                    if component ==  "TransformerBlock":
+                        num_transformer_blocks += 1
 
         if self.is_pre_act:
             self.input_conv = Convolve(
@@ -2406,6 +2409,8 @@ class Network(nn.Module):
 
         self.create_policy_head()
         self.create_value_head()
+
+        return num_transformer_blocks
 
     def forward(self, planes, *args, **kwargs):
         target = kwargs.get("target", None)
