@@ -1734,7 +1734,27 @@ class TransformerAttentionBlock(nn.Module):
                 reg_dict["noreg"].append(param)
 
     def initialize(self, fixup_scale, se_fixup_scale, xavier_init):
-        pass
+        nn.init.xavier_normal_(
+            self.q_proj.weight, gain=compute_gain(self.activation))
+        nn.init.xavier_normal_(
+            self.k_proj.weight, gain=compute_gain(self.activation))
+        nn.init.xavier_normal_(
+            self.v_proj.weight, gain=compute_gain(self.activation))
+        nn.init.xavier_normal_(
+            self.out_proj.weight, gain=compute_gain(self.activation))
+        if self.use_swiglu:
+            nn.init.xavier_normal_(
+                self.ffn_linear1.weight, gain=compute_gain("silu"))
+            nn.init.xavier_normal_(
+                self.ffn_linear_gate.weight, gain=compute_gain("silu"))
+        else:
+            nn.init.xavier_normal_(
+                self.ffn_linear1.weight, gain=compute_gain(self.activation))
+        if self.use_depthwise_conv:
+            nn.init.xavier_normal_(
+                self.ffn_dwconv.weight, gain=compute_gain(self.activation))
+            nn.init.xavier_normal_(
+                self.ffn_linear2.weight, gain=compute_gain(self.activation))
 
     def _compute_tab_bias(self, x_norm, mask, mask_sum_hw, block_shared_data):
         """Compute attention bias from TAB factored keys/queries.
@@ -2017,6 +2037,8 @@ class NestedBottleneckTransformerBlock(nn.Module):
             self.pre_btl_conv.initialize(
                 scale=math.pow(fixup_scale, 1.0 / (1.0 + self.internal_length)), xavier_init=xavier_init)
             self.post_btl_conv.initialize(scale=0.0, xavier_init=xavier_init)
+        for block in self.blockstack:
+            block.initialize(fixup_scale, se_fixup_scale, xavier_init)
 
     def add_reg_dict(self, reg_dict):
         self.pre_btl_conv.add_reg_dict(reg_dict)
@@ -2334,7 +2356,7 @@ class Network(nn.Module):
                     self.is_pre_act = True  # used Transformer
                     last_is_tran = True
                     if self.reduction_input:
-                        self.reductions = 13
+                        self.reductions = 13 + 8
                     if component ==  "TransformerBlock":
                         num_transformer_blocks += 1
 
@@ -2418,7 +2440,17 @@ class Network(nn.Module):
         loss_weight_dict = kwargs.get("loss_weight_dict", None)
         if self.reductions > 0:
             reduction_planes = torch.cat(
-                (planes[:, 0:24 , :, :].contiguous(), planes[:, 37:, :, :].contiguous()),
+                (
+                    planes[:, 0:2, :, :].contiguous(),
+                    planes[:, 3:5, :, :].contiguous(),
+                    planes[:, 6:8, :, :].contiguous(),
+                    planes[:, 9:11, :, :].contiguous(),
+                    planes[:, 12:14, :, :].contiguous(),
+                    planes[:, 15:17, :, :].contiguous(),
+                    planes[:, 18:20, :, :].contiguous(),
+                    planes[:, 21:23, :, :].contiguous(),
+                    planes[:, 37:, :, :].contiguous()
+                ),
                 dim=1)
         else:
             reduction_planes = planes
