@@ -150,7 +150,10 @@ std::string OutputSpec(const cudaDeviceProp& dev_prop) {
         << ", " << dev_prop.maxThreadsDim[2] << ")\n";
     out << "  Max grid size: (" << dev_prop.maxGridSize[0] << ", " << dev_prop.maxGridSize[1]
         << ", " << dev_prop.maxGridSize[2] << ")\n";
-    out << "  Clock: " << dev_prop.clockRate / 1000 << "(kHz)" << '\n';
+    // out << "  Clock: " << dev_prop.clockRate / 1000 << "(kHz)" << '\n';
+    int clockRateKHz;
+    cudaDeviceGetAttribute(&clockRateKHz, cudaDevAttrClockRate, 0);  // 0 here is the device number
+    out << "  Clock: " << clockRateKHz << "(kHz)" << '\n';
     out << "  Texture Alignment: " << dev_prop.textureAlignment << '\n';
 
     return out.str();
