@@ -1742,7 +1742,7 @@ class TrainingPipe():
                 else:
                     param["lr"] = curr_lr
                 # When using muon, scale all muon-ineligible (adam) param groups
-                if not self._get_is_muon_suitable(group_name=group["group_name"]):
+                if not self._get_is_muon_suitable(group_name=param["group_name"]):
                     param["lr"] *= self.muon_adam_lr_factor
                 param["weight_decay"] = self._get_weight_decay(group_name=param["group_name"])
         else:
@@ -2171,7 +2171,7 @@ class TrainingPipe():
                             else:
                                 param["lr"] = curr_lr
                             # When using muon, scale all muon-ineligible (adam) param groups
-                            if not self._get_is_muon_suitable(group_name=group["group_name"]):
+                            if not self._get_is_muon_suitable(group_name=param["group_name"]):
                                 param["lr"] *= self.muon_adam_lr_factor
                             param["weight_decay"] = self._get_weight_decay(group_name=param["group_name"])
 
