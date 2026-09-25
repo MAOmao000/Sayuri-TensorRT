@@ -1649,6 +1649,7 @@ class TransformerAttentionBlock(nn.Module):
         self.activation = kwargs.get("activation", DEFAULT_ACTIVATION)
         self.pos_len = kwargs.get("pos_len", 19)
         self.use_tab = kwargs.get("use_tab", False)
+        self.transformer_drop_rate = kwargs.get("transformer_drop_rate", 0.0)
         self.use_qk_norm = kwargs.get("attention_qk_norm", False)
         self.num_heads = kwargs.get("transformer_heads", 3)
         self.num_kv_heads = kwargs.get("transformer_kv_heads", self.num_heads)
@@ -1717,6 +1718,8 @@ class TransformerAttentionBlock(nn.Module):
                 self.ffn_dim, self.ffn_dim, kernel_size=3, padding=1, groups=self.ffn_dim, bias=False)
         self.ffn_linear2 = torch.nn.Linear(self.ffn_dim, channels, bias=False)
         self.ffn_norm = CustomRMSNorm(channels, eps=1e-6)
+        self.dropout1 = torch.nn.Dropout(self.transformer_drop_rate)
+        self.dropout2 = torch.nn.Dropout(self.transformer_drop_rate)
 
     def add_reg_dict(self, reg_dict):
         for name, param in self.named_parameters():
@@ -1969,12 +1972,15 @@ class TransformerAttentionBlock(nn.Module):
         else:
             x1 = self.ffn_linear1(xn)
             x1 = self.ffn_act(x1)
+        x1 = self.dropout1(x1)
         if self.use_depthwise_conv:
             # Reshape to NCHW for depthwise conv, apply mask, reshape back
             x1_spatial = x1.permute(0, 2, 1).view(batch_size, self.ffn_dim, height, width)
             x1_spatial = self.ffn_dwconv(x1_spatial) * mask
             x1 = x1_spatial.view(batch_size, self.ffn_dim, -1).permute(0, 2, 1)
-        x1 = ffn_in + self.ffn_linear2(x1)
+        x1 = self.ffn_linear2(x1)
+        x1 = self.dropout2(x1)
+        x1 = ffn_in + x1
 
         result = x1.permute(0, 2, 1).view(batch_size, channels, height, width)
 
@@ -2084,6 +2090,7 @@ class Network(nn.Module):
             self.policy_head_type = { "Type" : self.policy_head_type }  # default:{"Type" : "Normal"}
         self.value_misc = 15
         self.policy_outs = 5
+        self.transformer_drop_rate = cfg.transformer_drop_rate # default:0.0
         self.stack = cfg.stack  # default:[]
         self.version = 5
         self.mode = cfg.mode  # default:"renorm"
@@ -2257,6 +2264,7 @@ class Network(nn.Module):
                 blockargs["version"] = 2
             elif component in ["TransformerBlock", "NestedBottleneckTransformerBlock"]:
                 self.is_pre_act = True  # used Transformer
+                blockargs["transformer_drop_rate"] = self.transformer_drop_rate  # default:0.0
                 blockargs["attention_qk_norm"] = self.attention_qk_norm  # default:False
                 blockargs["transformer_heads"] = self.transformer_heads  # default:3
                 blockargs["transformer_kv_heads"] = self.transformer_kv_heads  # default:3
@@ -2296,10 +2304,10 @@ class Network(nn.Module):
             elif key == "SeRatio" :
                 blockargs["se_size"] = channels // value
                 assert channels % self.se_ratio == 0, ""
-            elif key == "KernelSize":
-                blockargs["kernel_size"] = value
             elif key == "FfnExpansionRatio":
                 blockargs["ffn_expansion_ratio"] = value
+            elif key == "TransformerDropRate":
+                blockargs["transformer_drop_rate"] = value
             elif key == "AttentionQKNorm":
                 blockargs["attention_qk_norm"] = value
             elif key == "TransformerHeads":

@@ -351,12 +351,21 @@ class _MuonWithAuxAdamBase(torch.optim.Optimizer):
         scalar launches.
       KATAGO_AUX_ADAM_FOREACH (default 1): use torch._foreach multi-tensor
         kernels for the auxiliary Adam parameter groups.
+      KATAGO_MUON_GATHER_BF16_UPDATES (default 1, distributed only): after the
+        sharded Newton-Schulz, all-gather the bf16 orthogonalized updates (the
+        precision Newton-Schulz already produces) and apply the fp32 scale /
+        weight decay / update step identically on every rank, instead of
+        all-gathering the updated fp32 parameters. This halves synchronization
+        bytes, and parameters stay bitwise identical across ranks and to the
+        fp32-gather path. Plain Muon with adjust_lr_fn "match_rms_adamw" on the
+        batched Newton-Schulz path only. NorMuon, Aurora, and the scalar path
+        keep the parameter all-gather.
     """
     def __init__(self, param_groups, adjust_lr_fn="match_rms_adamw", adam_betas=(0.95, 0.995), adam_eps=1e-6,
                  use_normuon=False, normuon_beta2=0.95, normuon_eps=1e-8,
                  use_aurora=False, aurora_pp_iterations=2, aurora_pp_beta=0.5, aurora_eps=1e-7,
                  ns_steps=5, use_polar_express=False, sort_muon_params=False,
-                 use_batched_muon_ns=False, use_foreach_aux_adam=False, muon_ns_batch_size=32):
+                 use_batched_muon_ns=True, use_foreach_aux_adam=True, gather_bf16_updates_requested=True, muon_ns_batch_size=32):
         self.use_normuon = use_normuon
         self.normuon_beta2 = normuon_beta2
         self.normuon_eps = normuon_eps
@@ -369,9 +378,14 @@ class _MuonWithAuxAdamBase(torch.optim.Optimizer):
         # Aurora's data-dependent preconditioning loop stays on the scalar path.
         self.use_batched_muon_ns = use_batched_muon_ns and not use_aurora
         self.use_foreach_aux_adam = use_foreach_aux_adam
+        self.gather_bf16_updates_requested = gather_bf16_updates_requested
         self.muon_ns_batch_size = int(muon_ns_batch_size)
         if self.muon_ns_batch_size <= 0:
             raise ValueError(f"MuonNsBatchSize must be positive, got {self.muon_ns_batch_size}")
+        # Parameter -> per-output-channel weight decay floor norm, see floored_weight_decay_.
+        # Empty means plain decay for everything. Not saved in the optimizer state dict, the
+        # caller recomputes the floors from stored initialization statistics at every startup.
+        self.weight_decay_floor_norms = {}
         if self.use_batched_muon_ns:
             logging.info(f"Muon: using batched Newton-Schulz with batch size {self.muon_ns_batch_size}")
         if self.use_foreach_aux_adam:
@@ -379,6 +393,10 @@ class _MuonWithAuxAdamBase(torch.optim.Optimizer):
         for group in param_groups:
             assert "use_muon" in group
             if group["use_muon"]:
+                # Both the distributed and the single-device optimizer sort, so that the position
+                # of each parameter in its group, which is what the optimizer state dict is keyed
+                # by, is the same whichever class wrote a checkpoint. The distributed class also
+                # relies on this order to balance round-robin parameter ownership across ranks.
                 if sort_muon_params:
                     group["params"] = sorted(group["params"], key=lambda x: x.size(), reverse=True)
                 # defaults
@@ -393,6 +411,107 @@ class _MuonWithAuxAdamBase(torch.optim.Optimizer):
                 group["eps"] = group.get("eps", adam_eps)
                 group["weight_decay"] = group.get("weight_decay", 0)
         super().__init__(param_groups, dict())
+
+    def load_state_dict(self, state_dict):
+        """Load optimizer state, but drop it with a warning if the saved per-parameter tensors do
+        not match the shapes of the parameters at their positions. That happens for checkpoints
+        written before the single-device optimizer sorted its Muon groups the same way as the
+
+        distributed one, and the mismatch cannot be repaired from the saved positions alone.
+        Momentum and Adam moments are short-lived, so starting them fresh is harmless."""
+        saved_groups = state_dict["param_groups"]
+        if len(saved_groups) != len(self.param_groups) or any(
+            len(saved["params"]) != len(group["params"]) for saved, group in zip(saved_groups, self.param_groups)
+        ):
+            logging.warning("Optimizer state dict has a different parameter group layout than this optimizer, dropping optimizer state")
+            return
+        param_of_id = {}
+        for saved, group in zip(saved_groups, self.param_groups):
+            for param_id, p in zip(saved["params"], group["params"]):
+                param_of_id[param_id] = p
+        for param_id, state in state_dict["state"].items():
+            p = param_of_id.get(param_id)
+            if p is None:
+                logging.warning(f"Optimizer state refers to unknown parameter id {param_id}, dropping optimizer state")
+                return
+            for key, value in state.items():
+                if not isinstance(value, torch.Tensor):
+                    continue
+                expected = (p.shape[0],) if key == "normuon_v" else tuple(p.shape)
+                if tuple(value.shape) != expected:
+                    logging.warning(
+                        f"Optimizer state {key} of shape {tuple(value.shape)} does not match its parameter of shape "
+                        f"{expected}, so the parameter order differs from when the checkpoint was written "
+                        "(e.g. a single-GPU Muon checkpoint from before Muon groups were sorted). Dropping optimizer state."
+                    )
+                    return
+        super().load_state_dict(state_dict)
+
+    def set_weight_decay_floor_norms(self, floor_norms):
+        """Set per-parameter weight decay floors, a dict from parameter to floor norm (see
+        floored_weight_decay_). Replaces any floors set before. Parameters absent from the dict,
+        or with a floor of 0 or less, get plain weight decay. Every rank must set identical floors."""
+        params = set()
+        for group in self.param_groups:
+            params.update(group["params"])
+        for p in floor_norms:
+            if p not in params:
+                raise ValueError("Weight decay floor given for a tensor that is not an optimizer parameter")
+        self.weight_decay_floor_norms = {p: float(f) for p, f in floor_norms.items() if float(f) > 0.0}
+
+    def _apply_updates_with_weight_decay(self, params, updates, lr, weight_decay):
+        """Apply p -= lr * (update + d * p) to each parameter, where d is weight_decay for a plain
+        parameter and weight_decay * max(0, r - floor) / r per output channel of norm r for a
+        parameter with a registered floor. This is the same decay as floored_weight_decay_ with
+        a = lr * weight_decay, folded into the update before the single add to the parameter.
+
+        The decay is folded in rather than applied as a separate multiply because the parameters
+        are fp32. A separate multiply by (1 - a) is quantized to the fp32 spacing below 1.0, about
+        6e-8, so it does nothing when a is below about 3e-8 and is off by tens of percent for a
+        up to about 1e-7, which is where a = lr * weight_decay lands at the low end of the learning
+        rate schedule and during warmup. Added to an update that is much larger than the fp32
+        spacing of the parameter, the decay term survives rounding in expectation. It is still
+        lost for an element whose update is zero, since nothing then separates the rounded sum
+        from the parameter itself. The expectation argument also assumes the update values are
+        spread evenly between fp32 grid points of the parameter. A Muon update is a bf16 value
+        times a scale, so its values lie on a coarse comb, and the realized decay is biased by an
+        amount that depends on the learning rate, about 1 percent at a = 1e-8 and larger still
+        for smaller a, where the decay is in any case negligible.
+
+        The per-channel factors of all floored parameters are computed with multi-tensor kernels,
+        so the per-tensor launches are only the row norm and the broadcast multiply-add. The
+        updates are consumed and may be modified in place. An update whose dtype differs from its
+        parameter is converted first, so the decay term is never rounded to a narrower dtype.
+        """
+        if len(params) == 0:
+            return
+        updates = [u if u.dtype == p.dtype else u.to(p.dtype) for p, u in zip(params, updates)]
+        if weight_decay != 0.0:
+            if len(self.weight_decay_floor_norms) == 0:
+                torch._foreach_add_(updates, params, alpha=weight_decay)
+            else:
+                is_floored = [p.dim() >= 2 and p in self.weight_decay_floor_norms for p in params]
+                plain_params = [p for p, f in zip(params, is_floored) if not f]
+                plain_updates = [u for u, f in zip(updates, is_floored) if not f]
+                floored_params = [p for p, f in zip(params, is_floored) if f]
+                floored_updates = [u for u, f in zip(updates, is_floored) if f]
+                if len(plain_params) > 0:
+                    torch._foreach_add_(plain_updates, plain_params, alpha=weight_decay)
+                if len(floored_params) > 0:
+                    floors = [self.weight_decay_floor_norms[p] for p in floored_params]
+                    norms = [
+                        torch.linalg.vector_norm(p, dim=tuple(range(1, p.dim())), dtype=torch.float32)
+                        for p in floored_params
+                    ]
+                    fractions = torch._foreach_sub(norms, floors)
+                    torch._foreach_clamp_min_(fractions, 0.0)
+                    torch._foreach_clamp_min_(norms, floors)
+                    torch._foreach_div_(fractions, norms)
+                    torch._foreach_mul_(fractions, weight_decay)
+                    torch._foreach_addcmul_(floored_updates, floored_params, [
+                        f.to(p.dtype).view(-1, *([1] * (p.dim() - 1))) for f, p in zip(fractions, floored_params)
+                    ])
+        torch._foreach_add_(params, updates, alpha=-lr)
 
     def _ensure_muon_state(self, p):
         if p.grad is None:
@@ -425,10 +544,34 @@ class _MuonWithAuxAdamBase(torch.optim.Optimizer):
                 normuon_beta2=self.normuon_beta2, normuon_eps=self.normuon_eps,
                 use_polar_express=self.use_polar_express,
             )
-        p.mul_(1 - group["lr"] * group["weight_decay"])
-        p.add_(update.reshape(p.shape), alpha=-group["lr"])
+        self._apply_updates_with_weight_decay([p], [update.reshape(p.shape)], group["lr"], group["weight_decay"])
 
-    def _step_muon_params_batched(self, group, param_indices):
+    def _update_scale(self, matrix_shape):
+        """The match_rms_adamw scale for an orthogonalized update of the given 2D shape."""
+        m, n = matrix_shape
+        return (0.1825 if self.use_polar_express else 0.2) * max(m, n)**0.5
+
+    def _apply_muon_updates(self, group, params, updates, chunk_size=64):
+        """Apply weight decay and the scaled update for `params` given their bf16 orthogonalized
+        `updates` (same shapes as the params), matching the arithmetic of _step_muon_params_batched:
+        scaled = update.to(p.dtype) * scale, then _apply_updates_with_weight_decay.
+
+        Every rank applies this to every Muon parameter, so group["lr"], group["weight_decay"] and
+        the weight decay floors must be identical on all ranks for the parameters to stay
+        identical across ranks.
+
+        The parameters are processed in chunks so that the fp32 scaled updates of only one chunk are
+        alive at a time (the same elementwise ops in the same order, so the result is unchanged).
+        """
+        for start in range(0, len(params), chunk_size):
+            chunk_params = params[start:start + chunk_size]
+            scaled = []
+            for p, update in zip(chunk_params, updates[start:start + chunk_size]):
+                matrix_shape = (len(p), p.numel() // len(p)) if p.ndim == 4 else tuple(p.shape)
+                scaled.append(update.to(p.dtype) * self._update_scale(matrix_shape))
+            self._apply_updates_with_weight_decay(chunk_params, scaled, group["lr"], group["weight_decay"])
+
+    def _step_muon_params_batched(self, group, param_indices, deferred_updates=None):
         """Same equations as the scalar path, but Newton-Schulz iterations for
         same-shape matrices are launched as one batched computation, and the
         elementwise momentum/Nesterov/scale/weight-decay/apply passes use
@@ -436,6 +579,11 @@ class _MuonWithAuxAdamBase(torch.optim.Optimizer):
 
         Per-parameter momentum/Nesterov mutation semantics are preserved.
         Only independent computations are regrouped.
+
+        If `deferred_updates` (a dict) is given, the plain-Muon match_rms_adamw path does not
+        modify the parameters. Instead it stores each parameter's bf16 orthogonalized update (in the
+        parameter's shape) into the dict for a later _apply_muon_updates, so the same update can be
+        shared across ranks before being applied.
         """
         params = group["params"]
         chosen = []
@@ -477,11 +625,19 @@ class _MuonWithAuxAdamBase(torch.optim.Optimizer):
                     orthogonalized = zeropower_via_newtonschulz5_compiled(stacked, steps=self.ns_steps)
 
                 if not self.use_normuon and group["adjust_lr_fn"] == "match_rms_adamw":
+                    if deferred_updates is not None:
+                        for (p, _, was_transposed, state), update in zip(chunk, orthogonalized.unbind(dim=0)):
+                            if was_transposed:
+                                update = update.mT
+                            # Always copy: the update must outlive later invocations of the compiled
+                            # Newton-Schulz, whose output buffer can be reused. Under a compile mode
+                            # that uses CUDA graphs (max-autotune) it lives in a CUDA-graph private pool.
+                            deferred_updates[p] = update.reshape(p.shape).clone(memory_format=torch.contiguous_format)
+                        continue
                     # The adjust-lr scale depends only on the (shared) matrix
                     # shape, so scale the whole stacked chunk in one launch,
                     # in parameter dtype for the foreach apply below.
-                    m, n = orthogonalized.shape[-2], orthogonalized.shape[-1]
-                    scale = (0.1825 if self.use_polar_express else 0.2) * max(m, n)**0.5
+                    scale = self._update_scale((orthogonalized.shape[-2], orthogonalized.shape[-1]))
                     scaled = orthogonalized.to(chunk[0][0].dtype) * scale
                     for (p, _, was_transposed, state), update in zip(chunk, scaled.unbind(dim=0)):
                         if was_transposed:
@@ -512,8 +668,7 @@ class _MuonWithAuxAdamBase(torch.optim.Optimizer):
                     apply_params.append(p)
                     apply_updates.append(update.reshape(p.shape).to(p.dtype))
 
-        torch._foreach_mul_(apply_params, 1 - group["lr"] * group["weight_decay"])
-        torch._foreach_add_(apply_params, apply_updates, alpha=-group["lr"])
+        self._apply_updates_with_weight_decay(apply_params, apply_updates, group["lr"], group["weight_decay"])
 
     def _step_muon_group(self, group, param_indices):
         if self.use_batched_muon_ns:
@@ -542,8 +697,7 @@ class _MuonWithAuxAdamBase(torch.optim.Optimizer):
             state["step"] += 1
             update = adam_update(p.grad, state["exp_avg"], state["exp_avg_sq"],
                                  state["step"], group["betas"], group["eps"])
-            p.mul_(1 - group["lr"] * group["weight_decay"])
-            p.add_(update, alpha=-group["lr"])
+            self._apply_updates_with_weight_decay([p], [update], group["lr"], group["weight_decay"])
 
     def _step_adam_group_foreach(self, group):
         """Update an auxiliary Adam group with one multi-tensor launch per operation.
@@ -571,8 +725,11 @@ class _MuonWithAuxAdamBase(torch.optim.Optimizer):
             torch._foreach_add_(denominators, group["eps"])
             updates = torch._foreach_div(exp_avgs, denominators)
 
-            torch._foreach_mul_(params, 1 - adam_lr * group["weight_decay"])
-            torch._foreach_add_(params, updates, alpha=-adam_lr / bias_correction1)
+            # The bias correction is applied through the step size, so the weight decay is scaled
+            # up by the same factor to keep the decay per step at adam_lr * weight_decay.
+            self._apply_updates_with_weight_decay(
+                params, updates, adam_lr / bias_correction1, group["weight_decay"] * bias_correction1
+            )
 
 class MuonWithAuxAdam(_MuonWithAuxAdamBase):
     """
@@ -584,9 +741,12 @@ class MuonWithAuxAdam(_MuonWithAuxAdamBase):
     The point of this class is to allow the user to have a single optimizer in their code, rather
     than having both a Muon and an Adam which each need to be stepped.
 
-    Muon parameter ownership is sharded round-robin across ranks.
-    After each step the updated parameters are synchronized in reusable flat buckets
-    (one all-gather per ~16 MiB bucket) rather than one collective per parameter.
+    Muon parameter ownership is sharded round-robin across ranks. After each step the ranks are
+    synchronized with reusable flat buckets (one all-gather per ~16 MiB bucket) rather than one
+    collective per parameter, in one of two ways. By default (KATAGO_MUON_GATHER_BF16_UPDATES=1,
+    plain Muon only) each rank gathers the bf16 orthogonalized updates of the other ranks and
+    applies the fp32 update arithmetic to every parameter itself, which requires identical lr and
+    weight decay on every rank. Otherwise the owners' updated fp32 parameters are gathered.
 
     Set use_normuon=True to enable NorMuon (neuron-wise normalized Muon), which adds row-wise
     adaptive learning rates after orthogonalization. See https://arxiv.org/abs/2510.05491
@@ -617,11 +777,12 @@ class MuonWithAuxAdam(_MuonWithAuxAdamBase):
                  use_aurora=False, aurora_pp_iterations=2, aurora_pp_beta=0.5, aurora_eps=1e-7,
                  ns_steps=5, use_polar_express=False,
                  distributed_bucket_cap_bytes=DEFAULT_DISTRIBUTED_BUCKET_CAP_BYTES,
-                 use_batched_muon_ns=False, use_foreach_aux_adam=False, muon_ns_batch_size=32):
+                 use_batched_muon_ns=True, use_foreach_aux_adam=True, gather_bf16_updates_requested=True, muon_ns_batch_size=32):
         self.distributed_bucket_cap_bytes = int(distributed_bucket_cap_bytes)
         if self.distributed_bucket_cap_bytes <= 0:
             raise ValueError(f"distributed_bucket_cap_bytes must be positive, got {distributed_bucket_cap_bytes}")
         self._muon_distributed_layouts = None
+        self._muon_update_layouts = None
         super().__init__(
             param_groups, adjust_lr_fn=adjust_lr_fn, adam_betas=adam_betas, adam_eps=adam_eps,
             use_normuon=use_normuon, normuon_beta2=normuon_beta2, normuon_eps=normuon_eps,
@@ -631,10 +792,29 @@ class MuonWithAuxAdam(_MuonWithAuxAdamBase):
             sort_muon_params=True,
             use_batched_muon_ns=use_batched_muon_ns,
             use_foreach_aux_adam=use_foreach_aux_adam,
+            gather_bf16_updates_requested=gather_bf16_updates_requested,
             muon_ns_batch_size=muon_ns_batch_size
         )
+        # bf16 update gathering requires every Muon group to take the batched plain-Muon path.
+        self.gather_bf16_updates = (
+            self.gather_bf16_updates_requested
+            and self.use_batched_muon_ns
+            and not self.use_normuon
+            and not self.use_aurora
+            and all(group["adjust_lr_fn"] == "match_rms_adamw" for group in self.param_groups if group["use_muon"])
+        )
+        if self.gather_bf16_updates:
+            logging.info("Muon DDP: synchronizing bf16 orthogonalized updates instead of fp32 parameters")
 
     def _initialize_muon_distributed_layouts(self):
+        self._muon_distributed_layouts = self._build_muon_distributed_layouts(buffer_dtype=None)
+
+    def _build_muon_distributed_layouts(self, buffer_dtype):
+        """Build the flat all-gather bucket layouts over all Muon parameters.
+
+        buffer_dtype None means the buffers hold parameter values (parameter dtype). Otherwise the
+        buffers hold per-element update values of that dtype with the same numel structure.
+        """
         world_size = dist.get_world_size()
 
         # Insertion order follows parameter traversal and is therefore identical
@@ -668,7 +848,8 @@ class MuonWithAuxAdam(_MuonWithAuxAdamBase):
             params = tuple(builder["params"])
             if len(params) <= 0:
                 continue
-            element_size = params[0].element_size()
+            dtype = params[0].dtype if buffer_dtype is None else buffer_dtype
+            element_size = torch.empty((), dtype=dtype).element_size()
             bucket_cap_numel = max(1, self.distributed_bucket_cap_bytes // element_size)
             buckets = _build_muon_flat_bucket_plan(
                 builder["owner_param_numels"],
@@ -679,12 +860,12 @@ class MuonWithAuxAdam(_MuonWithAuxAdamBase):
             max_collective_numel = max(bucket.collective_numel for bucket in buckets)
             send_buffer = torch.empty(
                 max_collective_numel,
-                dtype=params[0].dtype,
+                dtype=dtype,
                 device=params[0].device,
             )
             gathered_buffer = torch.empty(
                 world_size * max_collective_numel,
-                dtype=params[0].dtype,
+                dtype=dtype,
                 device=params[0].device,
             )
             layouts.append(_MuonDistributedLayout(
@@ -696,12 +877,13 @@ class MuonWithAuxAdam(_MuonWithAuxAdamBase):
             total_buckets += len(buckets)
             total_workspace_bytes += (world_size + 1) * max_collective_numel * element_size
 
-        self._muon_distributed_layouts = tuple(layouts)
         logging.info(
-            "Muon DDP flat parameter synchronization: %d bucket(s), %.1f MiB reusable workspace per rank",
+            "Muon DDP flat %s synchronization: %d bucket(s), %.1f MiB reusable workspace per rank",
+            "parameter" if buffer_dtype is None else f"{buffer_dtype} update",
             total_buckets,
             total_workspace_bytes / (1024.0 * 1024.0),
         )
+        return tuple(layouts)
 
     def state_dict_for_checkpoint(self):
         """Full optimizer state dict including Muon states owned by other ranks.
@@ -772,17 +954,43 @@ class MuonWithAuxAdam(_MuonWithAuxAdamBase):
     def _synchronize_muon_parameters(self):
         if self._muon_distributed_layouts is None:
             self._initialize_muon_distributed_layouts()
+        self._all_gather_over_layouts(
+            self._muon_distributed_layouts,
+            lambda param: param.detach(),
+        )
+
+    def _synchronize_muon_updates(self, updates, owned_params):
+        """Fill `updates` (param -> bf16 update, with every parameter in `owned_params` present on
+        entry) for every Muon parameter by all-gathering the owned updates."""
+        if self._muon_update_layouts is None:
+            self._muon_update_layouts = self._build_muon_distributed_layouts(buffer_dtype=torch.bfloat16)
+        for layout in self._muon_update_layouts:
+            for param in layout.params:
+                if param in owned_params:
+                    # Sending an absent update would broadcast uninitialized memory to every rank.
+                    assert param in updates, "owned Muon parameter has no deferred update to gather"
+                    assert updates[param].dtype == torch.bfloat16 and updates[param].shape == param.shape
+                elif param not in updates:
+                    updates[param] = torch.empty(param.shape, dtype=torch.bfloat16, device=param.device)
+        self._all_gather_over_layouts(
+            self._muon_update_layouts,
+            lambda param: updates[param],
+        )
+
+    def _all_gather_over_layouts(self, layouts, tensor_of_param):
+        """Bucketed all-gather: each rank sends its owned slices of tensor_of_param(param) and
+        writes the other ranks' slices into its copies of their parameters' tensors."""
 
         rank = dist.get_rank()
         world_size = dist.get_world_size()
-        for layout in self._muon_distributed_layouts:
+        for layout in layouts:
             for bucket in layout.buckets:
                 collective_numel = bucket.collective_numel
                 owner_numel = bucket.owner_numels[rank]
                 send = layout.send_buffer[:collective_numel]
 
                 local_parts = [
-                    layout.params[segment.param_index].detach().view(-1)[
+                    tensor_of_param(layout.params[segment.param_index]).view(-1)[
                         segment.param_offset:segment.param_offset + segment.numel
                     ]
                     for segment in bucket.segments_by_owner[rank]
@@ -807,7 +1015,7 @@ class MuonWithAuxAdam(_MuonWithAuxAdamBase):
                         continue
                     for segment in bucket.segments_by_owner[owner]:
                         destination_parts.append(
-                            layout.params[segment.param_index].view(-1)[
+                            tensor_of_param(layout.params[segment.param_index]).view(-1)[
                                 segment.param_offset:segment.param_offset + segment.numel
                             ]
                         )
@@ -827,17 +1035,32 @@ class MuonWithAuxAdam(_MuonWithAuxAdamBase):
 
         rank = dist.get_rank()
         world_size = dist.get_world_size()
+        deferred_updates = {} if self.gather_bf16_updates else None
+        owned_params = set()
         for group in self.param_groups:
             if group["use_muon"]:
                 # Round-robin ownership matching the historical layout. All
                 # ranks must agree on this assignment; parameters this rank
                 # does not own are filled in by the flat synchronization below.
                 param_indices = range(rank, len(group["params"]), world_size)
-                self._step_muon_group(group, param_indices)
+                if deferred_updates is not None:
+                    owned_params.update(group["params"][i] for i in param_indices)
+                    self._step_muon_params_batched(group, param_indices, deferred_updates=deferred_updates)
+                else:
+                    self._step_muon_group(group, param_indices)
             else:
                 self._step_adam_group(group)
 
-        self._synchronize_muon_parameters()
+        if deferred_updates is not None:
+            # Share the bf16 orthogonalized updates, then every rank applies the identical
+            # fp32 arithmetic to every Muon parameter.
+            self._synchronize_muon_updates(deferred_updates, owned_params)
+            for group in self.param_groups:
+                if group["use_muon"] and len(group["params"]) > 0:
+                    params = list(group["params"])
+                    self._apply_muon_updates(group, params, [deferred_updates[p] for p in params])
+        else:
+            self._synchronize_muon_parameters()
 
         return loss
 
@@ -849,16 +1072,17 @@ class SingleDeviceMuonWithAuxAdam(_MuonWithAuxAdamBase):
                  use_normuon=False, normuon_beta2=0.95, normuon_eps=1e-8,
                  use_aurora=False, aurora_pp_iterations=2, aurora_pp_beta=0.5, aurora_eps=1e-7,
                  ns_steps=5, use_polar_express=False,
-                 use_batched_muon_ns=False, use_foreach_aux_adam=False, muon_ns_batch_size=32):
+                 use_batched_muon_ns=True, use_foreach_aux_adam=True, gather_bf16_updates_requested=True, muon_ns_batch_size=32):
         super().__init__(
             param_groups, adjust_lr_fn=adjust_lr_fn, adam_betas=adam_betas, adam_eps=adam_eps,
             use_normuon=use_normuon, normuon_beta2=normuon_beta2, normuon_eps=normuon_eps,
             use_aurora=use_aurora, aurora_pp_iterations=aurora_pp_iterations,
             aurora_pp_beta=aurora_pp_beta, aurora_eps=aurora_eps,
             ns_steps=ns_steps, use_polar_express=use_polar_express,
-            sort_muon_params=False,
+            sort_muon_params=True,
             use_batched_muon_ns=use_batched_muon_ns,
             use_foreach_aux_adam=use_foreach_aux_adam,
+            gather_bf16_updates_requested=gather_bf16_updates_requested,
             muon_ns_batch_size=muon_ns_batch_size
         )
 
@@ -1156,6 +1380,12 @@ class TrainingPipe():
         # Optimizer's parameters.
         self.weight_decay = cfg.weight_decay
         self.lr_schedule = cfg.lr_schedule
+        self.head_lr_factor = cfg.head_lr_factor
+        self.noreg_lr_factor = cfg.noreg_lr_factor
+        self.muon_adam_lr_factor = cfg.muon_adam_lr_factor
+        self.input_wd_factor = cfg.input_wd_factor
+        self.normal_wd_factor = cfg.normal_wd_factor
+        self.normal_attn_wd_factor = cfg.normal_attn_wd_factor
 
         # The training device.
         self.use_gpu = cfg.use_gpu
@@ -1180,6 +1410,7 @@ class TrainingPipe():
         # Warm up steps.
         self.warmup_steps = self.cfg.warmup_steps
         self.annealing_cycle = self.cfg.annealing_cycle
+        self.annealing_min_coeff = self.cfg.annealing_min_coeff
 
         # The sample rate factor for policy
         self.policy_surprise_factor = self.cfg.policy_surprise_factor
@@ -1304,21 +1535,32 @@ class TrainingPipe():
         else:
             batch_scaling = self.batchsize / 256.0
 
+        if group_name == "input":
+            cmdline_wd_factor = self.input_wd_factor
+        elif group_name == "normal":
+            cmdline_wd_factor = self.normal_wd_factor
+        elif group_name == "normal_attn":
+            cmdline_wd_factor = self.normal_attn_wd_factor
+        else:
+            cmdline_wd_factor = 1.0
+
+        wd_scaling = batch_scaling * cmdline_wd_factor
+
         if self.cfg.mode == "fixup":
             if group_name in ["input", "normal", "normal_gamma", "output"]:
                 if self.opt_name == "Muon":
-                    return 0.005000 * batch_scaling
+                    return 0.005000 * wd_scaling
                 else:
-                    return 0.000001 * batch_scaling
+                    return 0.000001 * wd_scaling
             elif group_name in ["normal_attn", "normal_tab", "tab_module"]:
                 if self.opt_name == "Muon":
-                    return 0.005000 * 0.5 * batch_scaling
+                    return 0.005000 * 0.5 * wd_scaling
                 else:
-                    return 0.000001 * 0.5 * batch_scaling
+                    return 0.000001 * 0.5 * wd_scaling
             elif group_name in ["input_noreg", "noreg"]:
-                return 0.00000001 * batch_scaling
+                return 0.00000001 * wd_scaling
             elif group_name == "output_noreg":
-                return 0.00000001 * batch_scaling
+                return 0.00000001 * wd_scaling
             else:
                 assert False
         else:
@@ -1354,27 +1596,27 @@ class TrainingPipe():
                 else:
                     assert False
                 if (self.opt_name == "Muon" or self.opt_name == "Aurora") and not is_muon_suitable:
-                    return 0.00900 * batch_scaling * wd_with_lr_scale * wd_group_factor
+                    return 0.00900 * wd_scaling * wd_with_lr_scale * wd_group_factor
                 elif self.opt_name == "Muon" or self.opt_name == "Aurora":
-                    return 0.02000 * batch_scaling * wd_with_lr_scale * wd_group_factor
+                    return 0.02000 * wd_scaling * wd_with_lr_scale * wd_group_factor
                 else:
-                    return 0.00125 * batch_scaling * wd_with_lr_scale * wd_group_factor
+                    return 0.00125 * wd_scaling * wd_with_lr_scale * wd_group_factor
             elif group_name == "output":
                 if (self.opt_name == "Muon" or self.opt_name == "Aurora") and not is_muon_suitable:
-                    return 0.00400 * batch_scaling
+                    return 0.00400 * wd_scaling
                 elif self.opt_name == "Muon" or self.opt_name == "Aurora":
                     assert False
                 else:
-                    return 0.000001 * batch_scaling
+                    return 0.000001 * wd_scaling
             elif group_name == "input_noreg" or group_name == "noreg":
-                return 0.000001 * batch_scaling * math.pow(effective_lr_scale * warmup_scale, 0.75)
+                return 0.000001 * wd_scaling * math.pow(effective_lr_scale * warmup_scale, 0.75)
             elif group_name == "output_noreg":
                 if (self.opt_name == "Muon" or self.opt_name == "Aurora") and not is_muon_suitable:
-                    return 0.000001 * batch_scaling
+                    return 0.000001 * wd_scaling
                 elif self.opt_name == "Muon" or self.opt_name == "Aurora":
                     assert False
                 else:
-                    return 0.00000001 * batch_scaling
+                    return 0.00000001 * wd_scaling
             else:
                 assert False
 
@@ -1416,42 +1658,98 @@ class TrainingPipe():
             return curr_lr
 
         if self.annealing_cycle > 0 and (self.opt_name == "Aurora" or self.opt_name == "Muon"):
-            curr_lr = curr_lr * 0.8 + 0.5 * curr_lr * 0.2 * (
+            if (num_steps + 1) % self.annealing_cycle == 0:
+                return curr_lr * self.annealing_min_coeff
+            curr_lr = curr_lr * self.annealing_min_coeff + 0.5 * curr_lr * (1.0 - self.annealing_min_coeff) * (
                 1. + math.cos(math.pi * (((num_steps + 1) % self.annealing_cycle) + 1) / self.annealing_cycle))
         return curr_lr
+
+    def _compute_param_init_rms(self, raw_model):
+        """RMS of every parameter tensor, keyed by parameter name. Meant to be called on a freshly
+        initialized model, before any checkpoint weights are loaded into it. Stored in the train
+        state so that the weight decay floors (-wd-floor-frac) can be recomputed at every startup."""
+        with torch.no_grad():
+            return {
+                name: math.sqrt(torch.mean(param.float() * param.float()).item())
+                for name, param in raw_model.named_parameters()
+            }
+
+    def _set_optimizer_wd_floors(self, optimizer, raw_model, param_init_rms):
+        """Register the per-output-channel weight decay floors with the optimizer when
+        -wd-floor-frac is set. See floored_weight_decay_ in muon/muon.py."""
+        if self.cfg.wd_floor_frac is None:
+            return
+        # assert "param_init_rms" in train_state
+        # param_init_rms = train_state["param_init_rms"]
+        floors = {}
+        num_zero_init = 0
+        for name, param in raw_model.named_parameters():
+            if not (param.dim() in (2, 4) and param.shape[0] >= 2 and param[0].numel() >= 2):
+                continue
+            if name not in param_init_rms:
+                raise Exception(
+                    f"Parameter {name} has no initialization RMS in the train state, so its weight decay floor cannot be computed. "
+                    "The stored values do not match this model. Delete train_state.param_init_rms from the checkpoint "
+                    "(see edit_checkpoint.py) to have it recomputed."
+                )
+            floor_norm = self.cfg.wd_floor_frac * param_init_rms[name] * math.sqrt(param[0].numel())
+            if floor_norm > 0.0:
+                floors[param] = floor_norm
+            else:
+                num_zero_init += 1
+        optimizer.set_weight_decay_floor_norms(floors)
+        logging.info(
+            f"Weight decay floor frac {self.cfg.wd_floor_frac}: floors set for {len(floors)} weight tensors. "
+            f"{num_zero_init} zero-initialized tensors and all non-matrix parameters use plain decay."
+        )
 
     def _load_current_status(self):
         sort_fn = os.path.getmtime
         files = gather_filenames(self.checkpoint_path, 1, sort_key_fn=sort_fn)
         if len(files) == 0:
             self._status_dict.clear()
+            self.param_init_rms = self._compute_param_init_rms(self.net)
+            self._status_dict.fancy_set(StatusDict.PARAM_INIT_RMS_KEY, self.param_init_rms)
         else:
             checkpoint = files.pop()
             self._status_dict.load(checkpoint, device=torch.device("cpu"))
         self._status_dict.load_module(StatusDict.MODEL_KEY, self.module)
         self._status_dict.load_module(StatusDict.SWA_KEY, self.swa_net)
-        self._status_dict.load_module(StatusDict.OPTIM_KEY,self.opt)
+        self._status_dict.load_module(StatusDict.OPTIM_KEY, self.opt)
 
         self.current_samples = self._status_dict.fancy_get(StatusDict.SAMPLES_KEY)
         self.current_steps = self._status_dict.fancy_get(StatusDict.STEPS_KEY)
         self.module.update_parameters(self.current_steps)
 
         self.swa_count = self._status_dict.fancy_get(StatusDict.SWA_COUNT_KEY)
+
+        self.param_init_rms = self._status_dict.fancy_get(StatusDict.PARAM_INIT_RMS_KEY)
+        if self.param_init_rms is None:
+            self.param_init_rms = _compute_param_init_rms(self.net)
+
         curr_lr = self._get_lr_schedule(self.current_steps)
 
         if self.opt_name == "Muon" or self.opt_name == "Aurora":
             for param in self.opt.param_groups:
-                if param["group_name"] in ["normal", "normal_attn", "normal_tab", "tab_module"]:
+                if param["group_name"] in ["input_noreg", "noreg"]:
+                    param["lr"] = curr_lr * self.noreg_lr_factor
+                elif param["group_name"] in ["output_noreg", "output"]:
+                    param["lr"] = curr_lr * self.head_lr_factor
+                    if param["group_name"] == "output_noreg":
+                        param["lr"] *= self.noreg_lr_factor
+                elif param["group_name"] in ["normal", "normal_attn", "normal_tab", "tab_module"]:
                     param["lr"] = curr_lr * 2.0
-                elif param["group_name"] in ["output", "output_noreg"]:
-                    param["lr"] = curr_lr * 0.5
                 else:
                     param["lr"] = curr_lr
+                # When using muon, scale all muon-ineligible (adam) param groups
+                if not self._get_is_muon_suitable(group_name=group["group_name"]):
+                    param["lr"] *= self.muon_adam_lr_factor
                 param["weight_decay"] = self._get_weight_decay(group_name=param["group_name"])
         else:
             for param in self.opt.param_groups:
                 param["lr"] = curr_lr
                 param["weight_decay"] = self.weight_decay
+        self._set_optimizer_wd_floors(self.opt, self.net, self.param_init_rms)
         self.max_steps = self.max_steps_per_running + self.current_steps
         stdout_write("Current steps is {}. Will stop the training at {}.\n".format(self.current_steps, self.max_steps))
 
@@ -1470,6 +1768,7 @@ class TrainingPipe():
         self._status_dict.fancy_set(StatusDict.STEPS_KEY, self.current_steps)
         self._status_dict.fancy_set(StatusDict.SAMPLES_KEY, self.current_samples)
         self._status_dict.fancy_set(StatusDict.SWA_COUNT_KEY, self.swa_count)
+        self._status_dict.fancy_set(StatusDict.PARAM_INIT_RMS_KEY, self.param_init_rms)
         self._status_dict.fancy_set(StatusDict.JSON_KEY, self.cfg.json_str)
         self._status_dict.save(checkpoint)
 
@@ -1861,12 +2160,19 @@ class TrainingPipe():
                             param["lr"] = curr_lr
                     else:
                         for param in self.opt.param_groups:
-                            if param["group_name"] in ["normal", "normal_attn", "normal_tab", "tab_module"]:
+                            if param["group_name"] in ["input_noreg", "noreg"]:
+                                param["lr"] = curr_lr * self.noreg_lr_factor
+                            elif param["group_name"] in ["output_noreg", "output"]:
+                                param["lr"] = curr_lr * self.head_lr_factor
+                                if param["group_name"] == "output_noreg":
+                                    param["lr"] *= self.noreg_lr_factor
+                            elif param["group_name"] in ["normal", "normal_attn", "normal_tab", "tab_module"]:
                                 param["lr"] = curr_lr * 2.0
-                            elif param["group_name"] in ["output", "output_noreg"]:
-                                param["lr"] = curr_lr * 0.5
                             else:
                                 param["lr"] = curr_lr
+                            # When using muon, scale all muon-ineligible (adam) param groups
+                            if not self._get_is_muon_suitable(group_name=group["group_name"]):
+                                param["lr"] *= self.muon_adam_lr_factor
                             param["weight_decay"] = self._get_weight_decay(group_name=param["group_name"])
 
                 # stop the training if achieving max steps

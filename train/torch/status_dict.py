@@ -12,9 +12,11 @@ class StatusDict(dict):
     STEPS_KEY = "steps"
     SAMPLES_KEY = "samples"
     JSON_KEY = "json_str"
+    PARAM_INIT_RMS_KEY = "param_init_rms"
 
     MODULE_KEY_SET = [MODEL_KEY, SWA_KEY, OPTIM_KEY]
     NUMBER_KEY_SET = [SWA_COUNT_KEY, STEPS_KEY, SAMPLES_KEY]
+    DICT_KEY_SET = [PARAM_INIT_RMS_KEY]
 
     def __init__(self):
         super(StatusDict, self).__init__()
@@ -43,6 +45,8 @@ class StatusDict(dict):
             return self.get_(key, None)
         if key in self.NUMBER_KEY_SET:
             return self.get_(key, default=0)
+        if key in self.DICT_KEY_SET:
+            return self.get_(key, None)
         if key == self.JSON_KEY:
             json_str = self.get_(
                 key,
@@ -62,6 +66,8 @@ class StatusDict(dict):
             self.set_(key, value, lambda x: x.state_dict())
         elif key in self.NUMBER_KEY_SET:
             self.set_(key, value, lambda x: x if x else 0)
+        elif key in self.DICT_KEY_SET:
+            self.set_(key, value, lambda x: x if x else None)
         elif key == self.JSON_KEY:
             self.set_(key, value)
         else:
