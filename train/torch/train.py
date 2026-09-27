@@ -242,9 +242,17 @@ def adam_update(grad, buf1, buf2, step, betas, eps):
 # Compiled variants used by the batched Newton-Schulz path.
 # The number of distinct (batch, rows, cols) shapes per model is small, so per-shape compilation settles quickly.
 # These functions accept stacked (B, m, n) input since the underlying implementations already support batched matrices.
+# torch.compile mode for the batched Newton-Schulz / Polar Express iterations. cuBLAS picks a
+# weak kernel for the small stacked bf16 matmuls involved (e.g. a stack of 32 matrices of size
+# 384 x 384), and letting inductor autotune the batched matmul against its Triton templates roughly
+# halves the optimizer step on RTX PRO 6000 Blackwell. The autotuning adds some seconds of compile
+# time per distinct stacked shape. Set KATAGO_MUON_NS_COMPILE_MODE=default to skip the autotuning.
 # logging.getLogger("torch._inductor").setLevel(logging.ERROR)
 zeropower_via_newtonschulz5_compiled = torch.compile(zeropower_via_newtonschulz5)
 zeropower_via_polar_express_compiled = torch.compile(zeropower_via_polar_express)
+# Aurora's row preconditioning reduces over the last dim only and its iteration count is fixed, so it
+# also accepts stacked (B, m, n) input.
+_aurora_polar_compiled = torch.compile(_aurora_polar)
 
 DEFAULT_DISTRIBUTED_BUCKET_CAP_BYTES = 16 * 1024 * 1024
 
@@ -346,8 +354,8 @@ class _MuonWithAuxAdamBase(torch.optim.Optimizer):
     debugging or exact regression comparison against the historical kernels):
       KATAGO_MUON_BATCHED_NS (default 1): stack Muon updates with the same
         matrix shape (up to KATAGO_MUON_NS_BATCH_SIZE, default 32) into a single
-        compiled Newton-Schulz iteration rather than one launch sequence per
-        parameter. Same update equations, but not bitwise identical to the
+        compiled Newton-Schulz iteration (for Aurora, a single compiled
+        preconditioned polar iteration) rather than one launch sequence per
         scalar launches.
       KATAGO_AUX_ADAM_FOREACH (default 1): use torch._foreach multi-tensor
         kernels for the auxiliary Adam parameter groups.
@@ -357,9 +365,9 @@ class _MuonWithAuxAdamBase(torch.optim.Optimizer):
         weight decay / update step identically on every rank, instead of
         all-gathering the updated fp32 parameters. This halves synchronization
         bytes, and parameters stay bitwise identical across ranks and to the
-        fp32-gather path. Plain Muon with adjust_lr_fn "match_rms_adamw" on the
-        batched Newton-Schulz path only. NorMuon, Aurora, and the scalar path
-        keep the parameter all-gather.
+        fp32-gather path. Plain Muon or Aurora with adjust_lr_fn "match_rms_adamw"
+        on the batched path only. NorMuon and the scalar path keep the parameter
+        all-gather.
     """
     def __init__(self, param_groups, adjust_lr_fn="match_rms_adamw", adam_betas=(0.95, 0.995), adam_eps=1e-6,
                  use_normuon=False, normuon_beta2=0.95, normuon_eps=1e-8,
@@ -375,8 +383,7 @@ class _MuonWithAuxAdamBase(torch.optim.Optimizer):
         self.aurora_eps = aurora_eps
         self.ns_steps = ns_steps
         self.use_polar_express = use_polar_express
-        # Aurora's data-dependent preconditioning loop stays on the scalar path.
-        self.use_batched_muon_ns = use_batched_muon_ns and not use_aurora
+        self.use_batched_muon_ns = use_batched_muon_ns
         self.use_foreach_aux_adam = use_foreach_aux_adam
         self.gather_bf16_updates_requested = gather_bf16_updates_requested
         self.muon_ns_batch_size = int(muon_ns_batch_size)
@@ -580,7 +587,7 @@ class _MuonWithAuxAdamBase(torch.optim.Optimizer):
         Per-parameter momentum/Nesterov mutation semantics are preserved.
         Only independent computations are regrouped.
 
-        If `deferred_updates` (a dict) is given, the plain-Muon match_rms_adamw path does not
+        If `deferred_updates` (a dict) is given, the plain-Muon or Aurora match_rms_adamw path does not
         modify the parameters. Instead it stores each parameter's bf16 orthogonalized update (in the
         parameter's shape) into the dict for a later _apply_muon_updates, so the same update can be
         shared across ranks before being applied.
@@ -608,6 +615,7 @@ class _MuonWithAuxAdamBase(torch.optim.Optimizer):
             assert matrix.ndim == 2
             # Normalize orientation to rows <= cols so that transposed shape pairs share a batch.
             # Zeropower of the transpose is the transpose of zeropower, so this is equivalent to the scalar path.
+            # The same holds for Aurora's polar factor, which always preconditions the tall orientation.
             was_transposed = matrix.shape[0] > matrix.shape[1]
             normalized = matrix.mT if was_transposed else matrix
             key = (normalized.device, normalized.dtype, normalized.shape[0], normalized.shape[1])
@@ -619,7 +627,12 @@ class _MuonWithAuxAdamBase(torch.optim.Optimizer):
             for chunk_begin in range(0, len(entries), self.muon_ns_batch_size):
                 chunk = entries[chunk_begin:chunk_begin + self.muon_ns_batch_size]
                 stacked = torch.stack([entry[1] for entry in chunk], dim=0)
-                if self.use_polar_express:
+                if self.use_aurora:
+                    orthogonalized = _aurora_polar_compiled(
+                        stacked, ns_steps=self.ns_steps, pp_iterations=self.aurora_pp_iterations,
+                        pp_beta=self.aurora_pp_beta, eps=self.aurora_eps, use_polar_express=self.use_polar_express,
+                    )
+                elif self.use_polar_express:
                     orthogonalized = zeropower_via_polar_express_compiled(stacked, steps=self.ns_steps)
                 else:
                     orthogonalized = zeropower_via_newtonschulz5_compiled(stacked, steps=self.ns_steps)
@@ -630,7 +643,7 @@ class _MuonWithAuxAdamBase(torch.optim.Optimizer):
                             if was_transposed:
                                 update = update.mT
                             # Always copy: the update must outlive later invocations of the compiled
-                            # Newton-Schulz, whose output buffer can be reused. Under a compile mode
+                            # orthogonalization, whose output buffer can be reused. Under a compile mode
                             # that uses CUDA graphs (max-autotune) it lives in a CUDA-graph private pool.
                             deferred_updates[p] = update.reshape(p.shape).clone(memory_format=torch.contiguous_format)
                         continue
@@ -649,7 +662,8 @@ class _MuonWithAuxAdamBase(torch.optim.Optimizer):
                 for (p, _, was_transposed, state), update in zip(chunk, orthogonalized.unbind(dim=0)):
                     if was_transposed:
                         update = update.mT
-                    normuon_v = state.get("normuon_v")
+                    # Aurora ignores NorMuon, as aurora_update on the scalar path does.
+                    normuon_v = None if self.use_aurora else state.get("normuon_v")
                     if normuon_v is not None:
                         assert group["adjust_lr_fn"] == "match_rms_adamw", \
                             f"NorMuon requires adjust_lr_fn='match_rms_adamw', got '{group['adjust_lr_fn']}'"
@@ -744,7 +758,7 @@ class MuonWithAuxAdam(_MuonWithAuxAdamBase):
     Muon parameter ownership is sharded round-robin across ranks. After each step the ranks are
     synchronized with reusable flat buckets (one all-gather per ~16 MiB bucket) rather than one
     collective per parameter, in one of two ways. By default (KATAGO_MUON_GATHER_BF16_UPDATES=1,
-    plain Muon only) each rank gathers the bf16 orthogonalized updates of the other ranks and
+    plain Muon or Aurora only) each rank gathers the bf16 orthogonalized updates of the other ranks and
     applies the fp32 update arithmetic to every parameter itself, which requires identical lr and
     weight decay on every rank. Otherwise the owners' updated fp32 parameters are gathered.
 
@@ -795,12 +809,11 @@ class MuonWithAuxAdam(_MuonWithAuxAdamBase):
             gather_bf16_updates_requested=gather_bf16_updates_requested,
             muon_ns_batch_size=muon_ns_batch_size
         )
-        # bf16 update gathering requires every Muon group to take the batched plain-Muon path.
+        # bf16 update gathering requires every Muon group to take the batched plain-Muon or Aurora path.
         self.gather_bf16_updates = (
             self.gather_bf16_updates_requested
             and self.use_batched_muon_ns
             and not self.use_normuon
-            and not self.use_aurora
             and all(group["adjust_lr_fn"] == "match_rms_adamw" for group in self.param_groups if group["use_muon"])
         )
         if self.gather_bf16_updates:
@@ -1457,7 +1470,7 @@ class TrainingPipe():
         # Copy the initial weights.
         self.swa_net.accumulate_swa(self.module, 0)
 
-        init_lr = self._get_lr_schedule(0)
+        init_lr, _ = self._get_lr_schedule(0)
 
         # We may fail to load the optimizer. So initializing
         # it before loading it.
@@ -1528,7 +1541,7 @@ class TrainingPipe():
             assert False
 
     def _get_weight_decay(self, group_name):
-        effective_lr_scale = 1.0
+        effective_lr_scale = 8.0
         is_muon_suitable = self._get_is_muon_suitable(group_name=group_name)
         if self.opt_name == "Muon" or self.opt_name == "Aurora":
             batch_scaling = math.sqrt(self.batchsize / 256.0)
@@ -1546,6 +1559,7 @@ class TrainingPipe():
 
         wd_scaling = batch_scaling * cmdline_wd_factor
 
+        """
         if self.cfg.mode == "fixup":
             if group_name in ["input", "normal", "normal_gamma", "output"]:
                 if self.opt_name == "Muon":
@@ -1619,6 +1633,63 @@ class TrainingPipe():
                     return 0.00000001 * wd_scaling
             else:
                 assert False
+        """
+        curr_lr, max_lr = self._get_lr_schedule(self.current_steps)
+        warmup_scale = curr_lr / max_lr
+        adaptive_scale = 1.0
+        if group_name in ["input", "normal", "normal_attn", "normal_gamma", "normal_tab", "tab_module"]:
+            if self.opt_name == "Muon" or self.opt_name == "Aurora":
+                wd_with_lr_scale = math.pow(effective_lr_scale * warmup_scale, 0.70) * adaptive_scale
+            else:
+                wd_with_lr_scale = math.pow(effective_lr_scale * warmup_scale, 0.75) * adaptive_scale
+            if group_name == "input":
+                # Branch here is mostly preserving inconsistent historical behavior, there's not
+                # a great reason these should be different.
+                if self.opt_name == "Muon" or self.opt_name == "Aurora":
+                    wd_group_factor = 2.0 / 3.0
+                else:
+                    wd_group_factor = 1.0
+            elif group_name == "normal":
+                wd_group_factor = 1.0
+            elif group_name == "normal_attn":
+                wd_group_factor = 0.5
+            elif group_name == "normal_tab":
+                wd_group_factor = 0.3
+            elif group_name == "tab_module":
+                wd_group_factor = 0.1
+            elif group_name == "normal_gamma":
+                # Batch norm gammas can be regularized a bit less,
+                # doing them just as much empirically seemed to be a bit more unstable
+                if self.opt_name == "Muon" or self.opt_name == "Aurora":
+                    wd_group_factor = 0.25
+                else:
+                    wd_group_factor = 0.125
+            else:
+                assert False
+            if (self.opt_name == "Muon" or self.opt_name == "Aurora") and not is_muon_suitable:
+                return 0.00900 * wd_scaling * wd_with_lr_scale * wd_group_factor
+            elif self.opt_name == "Muon" or self.opt_name == "Aurora":
+                return 0.02000 * wd_scaling * wd_with_lr_scale * wd_group_factor
+            else:
+                return 0.00125 * wd_scaling * wd_with_lr_scale * wd_group_factor
+        elif group_name == "output":
+            if (self.opt_name == "Muon" or self.opt_name == "Aurora") and not is_muon_suitable:
+                return 0.00400 * wd_scaling
+            elif self.opt_name == "Muon" or self.opt_name == "Aurora":
+                assert False
+            else:
+                return 0.000001 * wd_scaling
+        elif group_name == "input_noreg" or group_name == "noreg":
+            return 0.000001 * wd_scaling * math.pow(effective_lr_scale * warmup_scale, 0.75)
+        elif group_name == "output_noreg":
+            if (self.opt_name == "Muon" or self.opt_name == "Aurora") and not is_muon_suitable:
+                return 0.000001 * wd_scaling
+            elif self.opt_name == "Muon" or self.opt_name == "Aurora":
+                assert False
+            else:
+                return 0.00000001 * wd_scaling
+        else:
+            assert False
 
     def _get_param_groups(self):
         reg_dict : Dict[str,List] = {}
@@ -1646,23 +1717,23 @@ class TrainingPipe():
 
     def _get_lr_schedule(self, num_steps):
         # Get the current learning rate from schedule.
-        curr_lr = 0.2
+        max_lr = 0.2
         for s, lr in self.lr_schedule:
             if s <= num_steps:
-                curr_lr = lr
+                max_lr = lr
             else:
                 break
 
         if self.warmup_steps > 0 and num_steps < self.warmup_steps:
-            curr_lr = curr_lr * ((num_steps+1)/self.warmup_steps)
-            return curr_lr
+            curr_lr = max_lr * ((num_steps+1)/self.warmup_steps)
+            return curr_lr, max_lr
 
         if self.annealing_cycle > 0 and (self.opt_name == "Aurora" or self.opt_name == "Muon"):
             if (num_steps + 1) % self.annealing_cycle == 0:
-                return curr_lr * self.annealing_min_coeff
-            curr_lr = curr_lr * self.annealing_min_coeff + 0.5 * curr_lr * (1.0 - self.annealing_min_coeff) * (
+                return max_lr * self.annealing_min_coeff, max_lr
+            curr_lr = max_lr * self.annealing_min_coeff + 0.5 * max_lr * (1.0 - self.annealing_min_coeff) * (
                 1. + math.cos(math.pi * (((num_steps + 1) % self.annealing_cycle) + 1) / self.annealing_cycle))
-        return curr_lr
+        return curr_lr, max_lr
 
     def _compute_param_init_rms(self, raw_model):
         """RMS of every parameter tensor, keyed by parameter name. Meant to be called on a freshly
@@ -1727,7 +1798,7 @@ class TrainingPipe():
         if self.param_init_rms is None:
             self.param_init_rms = _compute_param_init_rms(self.net)
 
-        curr_lr = self._get_lr_schedule(self.current_steps)
+        curr_lr, _ = self._get_lr_schedule(self.current_steps)
 
         if self.opt_name == "Muon" or self.opt_name == "Aurora":
             for param in self.opt.param_groups:
@@ -2154,7 +2225,7 @@ class TrainingPipe():
                         self.swa_net.accumulate_swa(self.module, self.swa_count)
 
                     # update learning rate
-                    curr_lr = self._get_lr_schedule(self.current_steps)
+                    curr_lr, _ = self._get_lr_schedule(self.current_steps)
                     if self.opt_name == "Adam" or self.opt_name == "SGD":
                         for param in self.opt.param_groups:
                             param["lr"] = curr_lr
