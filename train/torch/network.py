@@ -1404,9 +1404,43 @@ def apply_learnable_rotary_emb(xq, xk, cos_q, sin_q, cos_k, sin_k, learned_rope_
     return _rotate(xq, cos_q, sin_q), _rotate(xk, cos_k, sin_k)
 
 TAB_KQ = "tab_kq"
+FLEX_BLOCK_MASK = "flex_block_mask"
 # When present in block_shared_data (training-time attention logit penalty), each attention layer
 # appends its per-(batch,head) differentiable upper bound on pre-mask attention logit magnitude.
 ATTN_LOGIT_UB = "attn_logit_ub"
+
+_flex_attention_compiled = None
+
+def get_flex_attention_fn():
+    """flex_attention, compiled on first use. When called inside an outer
+    torch.compile region, dynamo traces through to the flex_attention HOP.
+    In eager mode the compiled wrapper avoids flex's slow decomposed fallback."""
+    global _flex_attention_compiled
+    if _flex_attention_compiled is None:
+        from torch.nn.attention.flex_attention import flex_attention
+        _flex_attention_compiled = torch.compile(flex_attention, dynamic=True) # False)
+    return _flex_attention_compiled
+
+def build_flex_attention_block_mask(mask, compile_inner=False):
+    """Build a flex-attention BlockMask for the board key-padding mask.
+
+    mask: N1HW (or N11S) float 0/1 mask. The result is shared by every
+    attention layer in the forward pass. Only key positions are masked.
+    Off-board query rows produce garbage exactly like the additive-mask path.
+
+    compile_inner: when called from eager code (not inside an outer torch.compile region),
+    ask create_block_mask to compile its dense-mask construction rather than run the slow
+    eager fallback.
+    """
+    from torch.nn.attention.flex_attention import create_block_mask
+    batch_size = mask.shape[0]
+    seq_len = mask.numel() // batch_size
+    mask_bs = mask.reshape(batch_size, seq_len) > 0.5
+
+    def mask_mod(b, h, q_idx, kv_idx):
+        return mask_bs[b, kv_idx]
+
+    return create_block_mask(mask_mod, batch_size, None, seq_len, seq_len, device=mask.device, _compile=compile_inner)
 
 @dataclass
 class TABKeyQueryData:
@@ -1890,7 +1924,18 @@ class TransformerAttentionBlock(nn.Module):
         if self.use_tab:
             extra_kq = self._compute_tab_bias(x_norm, mask, mask_sum_hw, block_shared_data)
 
-        if mask is not None:
+        # A shared flex-attention block mask (see build_flex_attention_block_mask)
+        # replaces the additive -inf mask when no extra bias terms are involved.
+        flex_block_mask = None
+        if (
+            block_shared_data is not None
+            and FLEX_BLOCK_MASK in block_shared_data
+            and extra_kq is None
+        ):
+            flex_block_mask = block_shared_data[FLEX_BLOCK_MASK]
+
+        # if mask is not None:
+        if mask is not None and flex_block_mask is None:
             mask_flat = mask.reshape(batch_size, 1, 1, seq_len)
             attn_mask = torch.zeros_like(mask_flat, dtype=q.dtype)
             attn_mask.masked_fill_(mask_flat == 0, float('-inf'))
@@ -1950,12 +1995,19 @@ class TransformerAttentionBlock(nn.Module):
                 scale * torch.sqrt(ub_qnorm2.amax(dim=-1) * ub_knorm2.amax(dim=-1))  # (B', H)
             )
 
-        attn_output = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v,
-            attn_mask=attn_mask,
-            dropout_p=0.0,
-            scale=scale,
-        )
+        if flex_block_mask is not None:
+            attn_output = get_flex_attention_fn()(
+                q, k, v,
+                block_mask=flex_block_mask,
+                scale=scale,
+            )
+        else:
+            attn_output = torch.nn.functional.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=attn_mask,
+                dropout_p=0.0,
+                scale=scale,
+            )
 
         attn_output = attn_output.permute(0, 2, 1, 3).contiguous()
         attn_output = attn_output.view(batch_size, seq_len, self.num_heads * self.v_head_dim)
@@ -2113,6 +2165,7 @@ class Network(nn.Module):
         self.tab_num_freqs = cfg.tab_num_freqs    # default:8
         self.tab_num_blocks = cfg.tab_num_blocks  # default:3
         self.tab_dilation = cfg.tab_dilation      # default:3
+        self.use_flex_attention = cfg.use_flex_attention
         self.opt_name = cfg.optimizer
 
         num_transformer_blocks = self.construct_layers()
@@ -2483,6 +2536,8 @@ class Network(nn.Module):
         if self.tab_module is not None:  # default:None
             tab_keys, tab_queries = self.tab_module(x, mask)
             block_shared_data[TAB_KQ] = TABKeyQueryData(keys=tab_keys, queries=tab_queries)
+        if self.use_flex_attention:
+            block_shared_data[FLEX_BLOCK_MASK] = build_flex_attention_block_mask(mask)
         if self.attn_logit_penalty_cap is not None:
             pen_batch_items = max(1, int(math.ceil(mask.shape[0] * self.attn_logit_penalty_batch_frac)))
             block_shared_data[ATTN_LOGIT_UB] = {"num_batch_items": pen_batch_items, "ubs": []}

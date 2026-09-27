@@ -136,6 +136,7 @@ class Config:
         self.tab_num_freqs = network.get("TABNumFreqs", 8)
         self.tab_num_blocks = network.get("TABNumBlocks", 3)
         self.tab_dilation = network.get("TABDilation", 3)
+        self.use_flex_attention = network.get("UseFlexAttention", False)
         self.attn_logit_penalty_cap = network.get("AttnLogitPenaltyCap", None)
         self.attn_logit_penalty_coeff = network.get("AttnLogitPenaltyCoeff", 1e-3)
         self.attn_logit_penalty_batch_frac = network.get("AttnLogitPenaltyBatchFrac", 1.0)
