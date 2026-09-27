@@ -12,7 +12,8 @@ def torch_symmetry(symm, planes, invert=False):
 def _torch_symmetry_planes(symm, planes):
     rot, use_flip = _get_direction(symm)
 
-    transformed = torch.rot90(planes, rot, dims=(2,3))
+    # To ensure 100% compatibility with ONNX export
+    transformed = planes.transpose(2, 3).flip(dims=[2]) # torch.rot90(planes, rot, dims=(2,3))
     if use_flip:
        transformed = torch.flip(transformed, dims=(2,))
     return transformed
@@ -23,7 +24,8 @@ def _torch_symmetry_planes_invert(symm, planes):
 
     if use_flip:
         planes = torch.flip(planes, dims=(2,))
-    return torch.rot90(planes, -rot,dims=(2,3))
+    # To ensure 100% compatibility with ONNX export
+    return planes.transpose(2, 3).flip(dims=[3]) # torch.rot90(planes, -rot,dims=(2,3))
 
 # input shape must [channel, x, y]
 def numpy_symmetry_planes(symm, plane):
