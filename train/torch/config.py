@@ -42,6 +42,11 @@ class Config:
         if self.mode == "fixup" and not self.is_pre_act:
             print("Warning: The fixup only works with PreActivation. It is forced to operate in PreActivation mode.")
             self.is_pre_act = True
+        if self.use_flex_attention and (self.use_fp16 or self.mode == "fixup"):
+            print("Warning: The flex_attention only works with fp32, BatchNormMode:renorm and ExportONNX:false. It is forced to operate in UseFp16:false, BatchNormMode:renorm and ExportONNX:false.")
+            self.use_fp16 = False
+            self.mode = "renorm"
+            self.export_onnx = False
 
     def parse_training_config(self, json_data):
         train = json_data.get("Train", None)
