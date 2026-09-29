@@ -21,7 +21,10 @@ class Config:
         self.parse_nn_config(jdata)
         if not self.export_onnx:
             if self.is_pre_act:
-                print("Warning: The PreActivation can only be specified for the ONNX conversion engine. The specification will be ignored.")
+                print(
+                    "Warning: The PreActivation can only be specified for the ONNX conversion engine."
+                    " The specification will be ignored."
+                )
                 self.is_pre_act = False
             use_transformer = False
             for block in self.stack:
@@ -37,16 +40,23 @@ class Config:
                 if use_transformer:
                     break
             if use_transformer:
-                print("Warning: The transformer block can only be specified for the ONNX conversion engine. It is being changed ONNX conversion engine.")
+                print(
+                    "Warning: The transformer block can only be specified for the ONNX conversion engine."
+                    " It is being changed ONNX conversion engine."
+                )
                 self.export_onnx = True
         if self.mode == "fixup" and not self.is_pre_act:
             print("Warning: The fixup only works with PreActivation. It is forced to operate in PreActivation mode.")
             self.is_pre_act = True
+        """
         if self.use_flex_attention and (self.use_fp16 or self.mode == "fixup"):
-            print("Warning: The flex_attention only works with fp32, BatchNormMode:renorm and ExportONNX:false. It is forced to operate in UseFp16:false, BatchNormMode:renorm and ExportONNX:false.")
-            self.use_fp16 = False
+            print(
+                "Warning: The flex_attention only works with BatchNormMode:renorm and ExportONNX:false.
+                "" It is forced to operate in BatchNormMode:renorm and ExportONNX:false."           )
             self.mode = "renorm"
+            self.is_pre_act = False
             self.export_onnx = False
+        """
 
     def parse_training_config(self, json_data):
         train = json_data.get("Train", None)
@@ -90,6 +100,7 @@ class Config:
         self.annealing_min_coeff = train.get("AnnealingMinCoeff", 0.1)
         self.policy_surprise_factor = train.get("PolicySurpriseFactor", 0.0)
         self.export_onnx = train.get("ExportONNX", False)
+        self.use_dynamo = train.get("UseDynamo", True)
         self.use_compile = train.get("UseCompile", False)
         self.use_batched_muon_ns = train.get("UseBatchedMuonNs", False)
         self.use_foreach_aux_adam = train.get("UseForeachAuxAdam", False)
@@ -106,7 +117,7 @@ class Config:
         self.nntype = network.get("NNType", None)
         self.activation = network.get("Activation", "relu")
         self.input_channels = network.get("InputChannels", 43)
-        self.reduction_input = network.get("ReductionInput", True)
+        self.reduction_input = network.get("ReductionInput", False)
         self.residual_channels = network.get("ResidualChannels", None)
 
         self.policy_head_type = network.get("PolicyHeadType", { "Type" : "Normal" })
@@ -133,6 +144,18 @@ class Config:
         self.transformer_ffn_channels = network.get("TransformerFFNChannels", 384)
         self.use_swiglu = network.get("UseSwiGLU", True)
         self.transformer_ffn_depthwise_conv = network.get("TransformerFFNDepthwiseConv", True)
+        # Note: If any of "FusedQKVProj", "FusedSwigluKernel" and "FusedRoPEBackward" is set to true,
+        #       the following error occurs in onnx export.
+        #   <class 'torch.onnx._internal.exporter._errors.DispatchError'>:
+        #   No ONNX function found for <OpOverload(op='sayuri.rope_qkv_forward', overload='default')>.
+        #   Failure message: No decompositions registered for the real-valued input
+        #   <class 'torch.onnx._internal.exporter._errors.ConversionError'>:
+        #   Error when translating node %rope_qkv_forward :
+        #   [num_users=3] = call_function[target=torch.ops.sayuri.rope_qkv_forward.default]
+        #   (args = (%linear, %p_model_residual_tower_2_rope_freqs, 9, 3, 64, 64), kwargs = {}).
+        self.fused_qkv_proj = network.get("FusedQKVProj", False)           # See note above
+        self.fused_swiglu_kernel = network.get("FusedSwigluKernel", False) # See note above
+        self.fused_rope_backward = network.get("FusedRoPEBackward", False) # See note above
         self.use_tab = network.get("UseTAB", False)
         self.tab_d1 = network.get("TABD1", 16)
         self.tab_d2 = network.get("TABD2", 16)
@@ -141,7 +164,16 @@ class Config:
         self.tab_num_freqs = network.get("TABNumFreqs", 8)
         self.tab_num_blocks = network.get("TABNumBlocks", 3)
         self.tab_dilation = network.get("TABDilation", 3)
-        self.use_flex_attention = network.get("UseFlexAttention", False)
+        # Note: If "UseFlexAttention" is set to true, can only operate with the following settings.
+        #       However, the current inference engine does not support Transformer blocks without onnx export,
+        #       so this cannot be used.
+        #   "BatchNormMode": "renorm"
+        #   "PreActivation": false
+        #   "ExportONNX": false
+        # When run onnx export, the following error occurs.
+        #   <class 'RuntimeError'>: 8*s25 (123539695569136)is not tracked
+        #   with proxy for <torch.fx.experimental.proxy_tensor._ModuleStackTracer object at 0x705c10c87b60>
+        self.use_flex_attention = network.get("UseFlexAttention", False) # See note above
         self.attn_logit_penalty_cap = network.get("AttnLogitPenaltyCap", None)
         self.attn_logit_penalty_coeff = network.get("AttnLogitPenaltyCoeff", 1e-3)
         self.attn_logit_penalty_batch_frac = network.get("AttnLogitPenaltyBatchFrac", 1.0)

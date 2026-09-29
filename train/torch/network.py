@@ -1308,12 +1308,13 @@ class CustomRMSNorm(nn.Module):
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
 
-    def _norm(self, x):
-        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
-
     def forward(self, x):
-        output = self._norm(x.float()).type_as(x)
-        return output * self.weight
+        input_dtype = x.dtype
+        x_fp32 = x.to(torch.float32)
+        variance = x_fp32.pow(2).mean(-1, keepdim=True)
+        rms_inv = torch.rsqrt(variance + self.eps)
+        output_fp32 = x_fp32 * rms_inv * self.weight.to(torch.float32)
+        return output_fp32.to(input_dtype)
 
 class RMSNormMask(torch.nn.Module):
     """RMSNorm applied per spatial position across channels, with masking for off-board positions.
@@ -1706,12 +1707,28 @@ class TransformerAttentionBlock(nn.Module):
         self.k_proj = torch.nn.Linear(channels, self.num_kv_heads * self.q_head_dim, bias=False)
         self.v_proj = torch.nn.Linear(channels, self.num_kv_heads * self.v_head_dim, bias=False)
         self.out_proj = torch.nn.Linear(self.num_heads * self.v_head_dim, channels, bias=False)
+        # Run the Q, K, V projections as a single GEMM over the concatenated weights.
+        # At these channel widths the projections are memory-bandwidth-bound, so reading the
+        # normalized input once instead of three times (and producing one input-gradient GEMM
+        # instead of three summed ones in backward) is a real saving. Parameters are unchanged:
+        # the concatenation happens on the fly each forward, so checkpoints and export are unaffected.
+        self.fused_qkv_proj = kwargs.get("fused_qkv_proj", True)
 
         # QK-norm: RMSNorm on Q and K per-head before the attention dot product.
         # See ViT-22B, etc.
         if self.use_qk_norm:
             self.q_norm = CustomRMSNorm(self.q_head_dim, eps=1e-6)
             self.k_norm = CustomRMSNorm(self.q_head_dim, eps=1e-6)
+
+        # See FUSED_ROPE_BACKWARD. The remaining conditions are checked per forward.
+        fused_rope_backward = kwargs.get("fused_rope_backward", True)
+        self.fused_rope_backward = (
+            fused_rope_backward
+            and self.fused_qkv_proj
+            and self.num_kv_heads == self.num_heads
+            and self.q_head_dim % 2 == 0 and (self.q_head_dim & (self.q_head_dim - 1)) == 0
+            and (self.v_head_dim & (self.v_head_dim - 1)) == 0
+        )
 
         num_pairs = self.q_head_dim // 2
         # Learnable 2D RoPE frequencies.
@@ -1751,6 +1768,19 @@ class TransformerAttentionBlock(nn.Module):
             self.ffn_dwconv = torch.nn.Conv2d(
                 self.ffn_dim, self.ffn_dim, kernel_size=3, padding=1, groups=self.ffn_dim, bias=False)
         self.ffn_linear2 = torch.nn.Linear(self.ffn_dim, channels, bias=False)
+        # Run the SwiGLU input and gate projections as one GEMM over the concatenated weights.
+        # Same rationale and same parameter layout as TransformerAttentionBlock.fused_qkv_proj.
+        self.fused_gate_proj = self.fused_qkv_proj and self.use_swiglu
+        # See FUSED_SWIGLU_KERNEL. Only shapes the kernel tiles evenly are eligible. Whether it is
+        # actually used is decided per forward, since it also requires autocast to be active.
+        self.fused_swiglu_kernel = False
+        fused_swiglu_kernel = kwargs.get("fused_swiglu_kernel", True)
+        if fused_swiglu_kernel and self.use_swiglu and not self.use_depthwise_conv:
+            from sayuri.fused_swiglu import is_supported_shape
+            # The kernel hardcodes SiLU gating.
+            assert isinstance(self.ffn_act, torch.nn.SiLU)
+            self.fused_swiglu_kernel = is_supported_shape(channels, self.ffn_dim)
+
         self.ffn_norm = CustomRMSNorm(channels, eps=1e-6)
         self.dropout1 = torch.nn.Dropout(self.transformer_drop_rate)
         self.dropout2 = torch.nn.Dropout(self.transformer_drop_rate)
@@ -1872,43 +1902,64 @@ class TransformerAttentionBlock(nn.Module):
 
         x_norm = self.attn_norm(x_in)
 
-        q = self.q_proj(x_norm)
-        k = self.k_proj(x_norm)
-        v = self.v_proj(x_norm)
-
-        q = q.view(batch_size, seq_len, self.num_heads, self.q_head_dim)
-        k = k.view(batch_size, seq_len, self.num_kv_heads, self.q_head_dim)
-        v = v.view(batch_size, seq_len, self.num_kv_heads, self.v_head_dim)
-
-        # compute from arange.
-        s_idx = torch.arange(seq_len, device=q.device)
-        s_y = (s_idx // self.pos_len).float()  # row
-        s_x = (s_idx % self.pos_len).float()   # col
-        cos_k, sin_k = compute_learnable_rope_cos_sin(s_x, s_y, self.rope_freqs)  # ([B,] S, H_kv, P)
-        # For Q: expand kv head freqs to match num_heads if using grouped-query attention.
-        # cos_k/sin_k are ([B,] S, H_kv, P); repeat each kv head n_rep times along a new axis
-        # inserted right after the head axis, so query head h maps to kv head h // n_rep --
-        # matching the k/v expansion below and the C++ backends' kvh = h * num_kv / num_heads.
-        if self.n_rep > 1:
-            cos_q = cos_k.unsqueeze(-2).expand(
-                *cos_k.shape[:-1],
-                self.n_rep,
-                cos_k.shape[-1]
-                ).reshape(*cos_k.shape[:-2], self.num_heads, -1)
-            sin_q = sin_k.unsqueeze(-2).expand(
-                *sin_k.shape[:-1],
-                self.n_rep,
-                sin_k.shape[-1]
-                ).reshape(*sin_k.shape[:-2], self.num_heads, -1)
+        use_fused_rope = (
+            self.fused_rope_backward
+            and self.fused_qkv_proj
+            and x_norm.is_cuda
+        )
+        qkv_is_bhsd = False
+        if self.fused_qkv_proj:
+            qkv_weight = torch.cat([self.q_proj.weight, self.k_proj.weight, self.v_proj.weight], dim=0)
+            qkv = torch.nn.functional.linear(x_norm, qkv_weight)
+            if use_fused_rope:
+                from sayuri.fused_rope import learnable_rope_qkv
+                q, k, v = learnable_rope_qkv(
+                    qkv, self.rope_freqs, self.pos_len, self.num_heads, self.q_head_dim, self.v_head_dim,
+                )  # q, k rotated and v, each (B, H, S, head dim)
+                qkv_is_bhsd = True
+            else:
+                q, k, v = torch.split(
+                    qkv,
+                    [self.q_proj.weight.shape[0], self.k_proj.weight.shape[0], self.v_proj.weight.shape[0]],
+                    dim=-1,
+                )
         else:
-            cos_q = cos_k
-            sin_q = sin_k
-        q, k = apply_learnable_rotary_emb(
-            q, k, cos_q, sin_q, cos_k, sin_k, self.learned_rope_cast_to_input_dtype)
+            q = self.q_proj(x_norm)
+            k = self.k_proj(x_norm)
+            v = self.v_proj(x_norm)
 
-        q = q.permute(0, 2, 1, 3)
-        k = k.permute(0, 2, 1, 3)
-        v = v.permute(0, 2, 1, 3)
+        if not use_fused_rope:
+            q = q.view(batch_size, seq_len, self.num_heads, self.q_head_dim)
+            k = k.view(batch_size, seq_len, self.num_kv_heads, self.q_head_dim)
+            v = v.view(batch_size, seq_len, self.num_kv_heads, self.v_head_dim)
+            # compute from arange.
+            s_idx = torch.arange(seq_len, device=q.device)
+            s_y = (s_idx // self.pos_len).float()  # row
+            s_x = (s_idx % self.pos_len).float()   # col
+            cos_k, sin_k = compute_learnable_rope_cos_sin(s_x, s_y, self.rope_freqs)  # ([B,] S, H_kv, P)
+            # For Q: expand kv head freqs to match num_heads if using grouped-query attention.
+            # cos_k/sin_k are ([B,] S, H_kv, P); repeat each kv head n_rep times along a new axis
+            # inserted right after the head axis, so query head h maps to kv head h // n_rep --
+            # matching the k/v expansion below and the C++ backends' kvh = h * num_kv / num_heads.
+            if self.n_rep > 1:
+                cos_q = cos_k.unsqueeze(-2).expand(
+                    *cos_k.shape[:-1],
+                    self.n_rep,
+                    cos_k.shape[-1]).reshape(*cos_k.shape[:-2], self.num_heads, -1)
+                sin_q = sin_k.unsqueeze(-2).expand(
+                    *sin_k.shape[:-1],
+                    self.n_rep,
+                    sin_k.shape[-1]).reshape(*sin_k.shape[:-2], self.num_heads, -1)
+            else:
+                cos_q = cos_k
+                sin_q = sin_k
+            q, k = apply_learnable_rotary_emb(
+                q, k, cos_q, sin_q, cos_k, sin_k, self.learned_rope_cast_to_input_dtype)
+
+        if not qkv_is_bhsd:
+            q = q.permute(0, 2, 1, 3)
+            k = k.permute(0, 2, 1, 3)
+            v = v.permute(0, 2, 1, 3)
 
         if self.n_rep > 1:
             k = k.unsqueeze(2).expand(batch_size, self.num_kv_heads, self.n_rep, seq_len, self.q_head_dim)
@@ -2017,13 +2068,34 @@ class TransformerAttentionBlock(nn.Module):
         xn = self.ffn_norm(ffn_in)
 
         if self.use_swiglu:
-            x1 = self.ffn_linear1(xn)
-            x1 = self.ffn_act(x1)
-            x_gate = self.ffn_linear_gate(xn)
-            x1 = x1 * x_gate
+            fused_kernel_dtype = None
+            if (
+                self.fused_swiglu_kernel
+                and xn.is_cuda
+                and torch.is_autocast_enabled("cuda")
+                and torch.get_autocast_dtype("cuda") in (torch.float16, torch.bfloat16)
+            ):
+                fused_kernel_dtype = torch.get_autocast_dtype("cuda")
+            if fused_kernel_dtype is not None:
+                from sayuri.fused_swiglu import fused_swiglu
+                x1 = fused_swiglu(
+                    xn.to(fused_kernel_dtype),
+                    self.ffn_linear1.weight.to(fused_kernel_dtype),
+                    self.ffn_linear_gate.weight.to(fused_kernel_dtype),
+                )
+            else:
+                if self.fused_gate_proj:
+                    w13 = torch.cat([self.ffn_linear1.weight, self.ffn_linear_gate.weight], dim=0)
+                    x1, x_gate = torch.split(torch.nn.functional.linear(xn, w13), self.ffn_dim, dim=-1)
+                else:
+                    x1 = self.ffn_linear1(xn)
+                    x_gate = self.ffn_linear_gate(xn)
+                x1 = self.ffn_act(x1)
+                x1 = x1 * x_gate
         else:
             x1 = self.ffn_linear1(xn)
             x1 = self.ffn_act(x1)
+
         x1 = self.dropout1(x1)
         if self.use_depthwise_conv:
             # Reshape to NCHW for depthwise conv, apply mask, reshape back
@@ -2158,6 +2230,9 @@ class Network(nn.Module):
         self.transformer_ffn_channels = cfg.transformer_ffn_channels  # default:256
         self.use_swiglu = cfg.use_swiglu        # default:True
         self.transformer_ffn_depthwise_conv = cfg.transformer_ffn_depthwise_conv  # default:False
+        self.fused_qkv_proj = cfg.fused_qkv_proj  # default:True
+        self.fused_swiglu_kernel = cfg.fused_swiglu_kernel  # default:True
+        self.fused_rope_backward = cfg.fused_rope_backward  # default:True
         self.tab_d1 = cfg.tab_d1    # default:16
         self.tab_d2 = cfg.tab_d2    # default:16
         self.tab_c_z = cfg.tab_c_z  # default:32
@@ -2316,7 +2391,8 @@ class Network(nn.Module):
                 block = MixerBlock
                 blockargs["version"] = 2
             elif component in ["TransformerBlock", "NestedBottleneckTransformerBlock"]:
-                self.is_pre_act = True  # used Transformer
+                if not self.use_flex_attention: # This is an if statement for debugging.
+                    self.is_pre_act = True  # used Transformer
                 blockargs["transformer_drop_rate"] = self.transformer_drop_rate  # default:0.0
                 blockargs["attention_qk_norm"] = self.attention_qk_norm  # default:False
                 blockargs["transformer_heads"] = self.transformer_heads  # default:3
@@ -2335,6 +2411,9 @@ class Network(nn.Module):
                 blockargs["tab_dilation"] = self.tab_dilation  # default:None
                 blockargs["use_swiglu"] = self.use_swiglu  # default:True
                 blockargs["transformer_ffn_depthwise_conv"] = self.transformer_ffn_depthwise_conv  # default:False
+                blockargs["fused_qkv_proj"] = self.fused_qkv_proj  # default:True
+                blockargs["fused_swiglu_kernel"] = self.fused_swiglu_kernel  # default:True
+                blockargs["fused_rope_backward"] = self.fused_rope_backward  # default:True
                 if component == "TransformerBlock":
                     block = TransformerAttentionBlock
                 else:
@@ -2414,7 +2493,8 @@ class Network(nn.Module):
                 components = block["Block"].strip().split('-')
             for component in components:
                 if component in ["TransformerBlock", "NestedBottleneckTransformerBlock"]:
-                    self.is_pre_act = True  # used Transformer
+                    if not self.use_flex_attention: # This is an if statement for debugging.
+                        self.is_pre_act = True  # used Transformer
                     last_is_tran = True
                     if self.reduction_input:
                         self.reductions = 13 + 8
@@ -2673,7 +2753,16 @@ class Network(nn.Module):
         else:
             soft_weight = loss_weight_dict["soft"]
 
-        p_prob, p_aux_prob, p_soft_prob, p_soft_aux_prob, p_optimistic_prob, p_ownership, p_wdl, p_q_vals, p_scores, p_errors = pred
+        (
+            p_prob,
+            p_aux_prob,
+            p_soft_prob,
+            p_soft_aux_prob,
+            p_optimistic_prob,
+            p_ownership, p_wdl,
+            p_q_vals, p_scores,
+            p_errors
+        ) = pred
         t_prob, t_aux_prob, t_ownership, t_wdl, t_q_vals, t_scores, global_weight = target
 
         def make_soft_porb(prob, policy_mask, eps=1e-7, t=4):
@@ -2688,7 +2777,11 @@ class Network(nn.Module):
 
         def huber_loss(x, y, delta, weight=1.):
             absdiff = torch.abs(x - y)
-            loss = torch.where(absdiff > delta, (0.5 * delta*delta) + delta * (absdiff - delta), 0.5 * absdiff * absdiff)
+            loss = torch.where(
+                absdiff > delta,
+                (0.5 * delta*delta) + delta * (absdiff - delta),
+                0.5 * absdiff * absdiff
+            )
             loss_sum = torch.sum(loss, dim=1)
             return torch.mean(weight * loss_sum, dim=0)
 
@@ -2719,14 +2812,24 @@ class Network(nn.Module):
         aux_prob_loss = 0.15 * cross_entropy(p_aux_prob, t_aux_prob, global_weight)
 
         # current player's soft probabilities loss
-        soft_prob_loss = 1. * soft_weight * cross_entropy(p_soft_prob, make_soft_porb(t_prob, policy_mask), global_weight)
+        soft_prob_loss = 1. * soft_weight * cross_entropy(
+            p_soft_prob, make_soft_porb(t_prob, policy_mask),
+            global_weight)
 
         # opponent's soft probabilities loss
-        soft_aux_prob_loss = 0.15 * soft_weight * cross_entropy(p_soft_aux_prob, make_soft_porb(t_aux_prob, policy_mask), global_weight)
+        soft_aux_prob_loss = 0.15 * soft_weight * cross_entropy(
+            p_soft_aux_prob,
+            make_soft_porb(t_aux_prob, policy_mask),
+            global_weight)
 
         # short-term optimistic probabilities loss
-        z_short_term_q = (short_term_q_target - short_term_q_pred.detach()) / torch.sqrt(short_term_q_error.detach() + 0.0001)
-        z_short_term_score = (short_term_score_target - short_term_score_pred.detach()) / torch.sqrt(short_term_score_error.detach() + 0.25)
+        z_short_term_q = (
+            (short_term_q_target - short_term_q_pred.detach()) / torch.sqrt(short_term_q_error.detach() + 0.0001)
+        )
+        z_short_term_score = (
+            (short_term_score_target - short_term_score_pred.detach())
+            / torch.sqrt(short_term_score_error.detach() + 0.25)
+        )
 
         optimistic_weight = torch.clamp(
             torch.sigmoid((z_short_term_q - 1.5) * 3.0) + torch.sigmoid((z_short_term_score - 1.5) * 3.0),

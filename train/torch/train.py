@@ -373,7 +373,8 @@ class _MuonWithAuxAdamBase(torch.optim.Optimizer):
                  use_normuon=False, normuon_beta2=0.95, normuon_eps=1e-8,
                  use_aurora=False, aurora_pp_iterations=2, aurora_pp_beta=0.5, aurora_eps=1e-7,
                  ns_steps=5, use_polar_express=False, sort_muon_params=False,
-                 use_batched_muon_ns=True, use_foreach_aux_adam=True, gather_bf16_updates_requested=True, muon_ns_batch_size=32):
+                 use_batched_muon_ns=True, use_foreach_aux_adam=True,
+                 gather_bf16_updates_requested=True, muon_ns_batch_size=32):
         self.use_normuon = use_normuon
         self.normuon_beta2 = normuon_beta2
         self.normuon_eps = normuon_eps
@@ -430,7 +431,10 @@ class _MuonWithAuxAdamBase(torch.optim.Optimizer):
         if len(saved_groups) != len(self.param_groups) or any(
             len(saved["params"]) != len(group["params"]) for saved, group in zip(saved_groups, self.param_groups)
         ):
-            logging.warning("Optimizer state dict has a different parameter group layout than this optimizer, dropping optimizer state")
+            logging.warning(
+                "Optimizer state dict has a different parameter group layout than this optimizer,"
+                " dropping optimizer state"
+            )
             return
         param_of_id = {}
         for saved, group in zip(saved_groups, self.param_groups):
@@ -779,7 +783,11 @@ class MuonWithAuxAdam(_MuonWithAuxAdamBase):
     head_params = [model.lm_head.weight]
 
     from muon import MuonWithAuxAdam
-    adam_groups = [dict(params=head_params, lr=0.22), dict(params=embed_params, lr=0.6), dict(params=scalar_params, lr=0.04)]
+    adam_groups = [
+        dict(params=head_params, lr=0.22),
+        dict(params=embed_params, lr=0.6),
+        dict(params=scalar_params, lr=0.04)
+    ]
     adam_groups = [dict(**g, betas=(0.8, 0.95), eps=1e-10, use_muon=False) for g in adam_groups]
     muon_group = dict(params=hidden_matrix_params, lr=0.05, momentum=0.95, use_muon=True)
     param_groups = [*adam_groups, muon_group]
@@ -791,7 +799,8 @@ class MuonWithAuxAdam(_MuonWithAuxAdamBase):
                  use_aurora=False, aurora_pp_iterations=2, aurora_pp_beta=0.5, aurora_eps=1e-7,
                  ns_steps=5, use_polar_express=False,
                  distributed_bucket_cap_bytes=DEFAULT_DISTRIBUTED_BUCKET_CAP_BYTES,
-                 use_batched_muon_ns=True, use_foreach_aux_adam=True, gather_bf16_updates_requested=True, muon_ns_batch_size=32):
+                 use_batched_muon_ns=True, use_foreach_aux_adam=True,
+                 gather_bf16_updates_requested=True, muon_ns_batch_size=32):
         self.distributed_bucket_cap_bytes = int(distributed_bucket_cap_bytes)
         if self.distributed_bucket_cap_bytes <= 0:
             raise ValueError(f"distributed_bucket_cap_bytes must be positive, got {distributed_bucket_cap_bytes}")
@@ -1085,7 +1094,8 @@ class SingleDeviceMuonWithAuxAdam(_MuonWithAuxAdamBase):
                  use_normuon=False, normuon_beta2=0.95, normuon_eps=1e-8,
                  use_aurora=False, aurora_pp_iterations=2, aurora_pp_beta=0.5, aurora_eps=1e-7,
                  ns_steps=5, use_polar_express=False,
-                 use_batched_muon_ns=True, use_foreach_aux_adam=True, gather_bf16_updates_requested=True, muon_ns_batch_size=32):
+                 use_batched_muon_ns=True, use_foreach_aux_adam=True,
+                 gather_bf16_updates_requested=True, muon_ns_batch_size=32):
         super().__init__(
             param_groups, adjust_lr_fn=adjust_lr_fn, adam_betas=adam_betas, adam_eps=adam_eps,
             use_normuon=use_normuon, normuon_beta2=normuon_beta2, normuon_eps=normuon_eps,
@@ -1491,10 +1501,9 @@ class TrainingPipe():
                 aurora_pp_beta=0.5,      # Damping parameter for aurora diagonal preconditioner
                 ns_steps=5,              # Number of Newton-Schulz iterations for muon/aurora
                 use_polar_express=True,  # polar factor projection
-                use_batched_muon_ns=self.cfg.use_batched_muon_ns if self.opt_name == "Muon" else False,
+                use_batched_muon_ns=self.cfg.use_batched_muon_ns,
                 use_foreach_aux_adam=self.cfg.use_foreach_aux_adam,
-                muon_ns_batch_size=self.cfg.muon_ns_batch_size
-                    if self.opt_name == "Muon" and self.cfg.use_batched_muon_ns else 32
+                muon_ns_batch_size=self.cfg.muon_ns_batch_size if self.cfg.use_batched_muon_ns else 32
             )
         elif self.opt_name == "SGD" or not self.opt_name in ["Adam", "SGD"]:
             self.opt_name = "SGD"
@@ -1750,8 +1759,6 @@ class TrainingPipe():
         -wd-floor-frac is set. See floored_weight_decay_ in muon/muon.py."""
         if self.cfg.wd_floor_frac is None:
             return
-        # assert "param_init_rms" in train_state
-        # param_init_rms = train_state["param_init_rms"]
         floors = {}
         num_zero_init = 0
         for name, param in raw_model.named_parameters():
@@ -1759,7 +1766,8 @@ class TrainingPipe():
                 continue
             if name not in param_init_rms:
                 raise Exception(
-                    f"Parameter {name} has no initialization RMS in the train state, so its weight decay floor cannot be computed. "
+                    f"Parameter {name} has no initialization RMS in the train state,"
+                    " so its weight decay floor cannot be computed. "
                     "The stored values do not match this model. Delete train_state.param_init_rms from the checkpoint "
                     "(see edit_checkpoint.py) to have it recomputed."
                 )
@@ -1866,26 +1874,38 @@ class TrainingPipe():
             inputs = [input_feature]
             input_names = ['InputFeature']
             output_names = ['output_prob', 'output_prob_pass', 'output_val', 'output_ownership']
-            # For dynamo, we need to provide dynamic_shapes as a dict or tuple
-            # Now that forward has explicit arguments, we can use a dict matching input names
-            dynamic_shapes = {'input_feature': {0: "batch_size"}}
-            dynamic_axes = None # dynamo uses dynamic_shapes
+            if self.cfg.use_dynamo:
+                # For dynamo, we need to provide dynamic_shapes as a dict or tuple
+                # Now that forward has explicit arguments, we can use a dict matching input names
+                dynamic_shapes = {
+                    'input_feature': {0: "batch_size"}
+                }
+                dynamic_axes = None # dynamo uses dynamic_shapes
+            else:
+                dynamic_shapes = None
+                dynamic_axes = {
+                    'input_feature': {0: "batch_size"},
+                    'output_prob': {0: "batch_size"},
+                    'output_prob_pass': {0: "batch_size"},
+                    'output_val': {0: "batch_size"},
+                    'output_ownership': {0: "batch_size"}
+                }
             with torch.no_grad():
                 torch.onnx.export(
-                    wrapper,                   # model to export
-                    tuple(inputs),             # inputs of the model
-                    onnx_model_name,           # filename of the ONNX model
-                    export_params=True,        # When ``f`` is specified: If false, parameters (weights) will not be exported
-                    # opset_version=20,          # The version of the default (ai.onnx) opset to target
-                    # do_constant_folding=True,  # Deprecated option
-                    input_names=input_names,   # Rename inputs for the ONNX model
-                    output_names=output_names, # Rename outputs for the ONNX model
-                    dynamic_axes=dynamic_axes, # Deprecated: Prefer specifying dynamic_shapes when dynamo=True
+                    wrapper,            # model to export
+                    tuple(inputs),      # inputs of the model
+                    onnx_model_name,    # filename of the ONNX model
+                    export_params=True, # When ``f`` is specified: If false, parameters (weights) will not be exported
+                    # opset_version=20,            # The version of the default (ai.onnx) opset to target
+                    # do_constant_folding=True,    # Deprecated option
+                    input_names=input_names,       # Rename inputs for the ONNX model
+                    output_names=output_names,     # Rename outputs for the ONNX model
+                    dynamic_axes=dynamic_axes,     # Deprecated: Prefer specifying dynamic_shapes when dynamo=True
                     dynamic_shapes=dynamic_shapes, # A dictionary or a tuple of dynamic shapes for the model inputs
-                    verbose=False,             # Whether to enable verbose logging
-                    dynamo=True,               # True or False to select the exporter to use
-                    external_data=False,       # Whether to save the model weights as an external data file
-                    report=False               # Whether to generate a markdown report for the export process
+                    verbose=False,                 # Whether to enable verbose logging
+                    dynamo=self.cfg.use_dynamo,    # True or False to select the exporter to use
+                    external_data=False,           # Whether to save the model weights as an external data file
+                    report=False                   # Whether to generate a markdown report for the export process
                 )
             # Add metadata to the ONNX model
             try:
