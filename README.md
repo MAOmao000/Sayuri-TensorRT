@@ -13,7 +13,7 @@ Also added the following features:
 * Muon+AdamW optimizer
 * Aurora+AdamW optimizer
 * torch.compile
-* Transformer model for demonstration purposes
+* TransformerAttention model for demonstration purposes
 * Cyclic cosine annealing
 
 ## Requirements
@@ -23,56 +23,85 @@ Additional features require the following installation:
 * c++ engine: onnx runtime (Used onnxruntime-linux-x64-1.25.1 to check the operation)
 * python: pip install onnxruntime-gpu onnx onnxscript
 
-## Running the training
+## Modification of configuration definitions (selfplay-setting.json)
 
-You can check these features by setting the following in selfplay-setting.json.
+Additional configuration definitions (selfplay-setting.json):
 ```
-    "NeuralNetwork" : {
-        "BatchNormMode" : "renorm", ... "renorm"(default), "norm" to use the conventional function
-        "PositionalEncoding" :"RoPE", ... "unuse"(default), "RoPE", "TAB", "FreqMix", "RoPE+TAB", "RoPE+FreqMix"
-        "AttentionQKNorm" : false(default),
-        "TABD1" : 16(default),
-        "TABD2" : 16(default),
-        "TABCZ" : 32(default),
-        "TABNumTemplates" :32(default),
-        "TABNumFreqs" : 8(default),
-        "TABNumBlocks" : 3(default),
-        "TABDilation" : 3(default),
-        "UseSwiGLU" : true(default),
-        "TransformerFFNDepthwiseConv" : false(default),
-        "TransformerHeads" : 3,
-        "TransformerKVHheads" : 3,
-        "AttentionQueryHeadDim" : 32,
-        "AttentionValueHeadDim" : 32,
-        "LearnedRoPECastToInputDtype" : false(default),
-        "TransformerFFNChannels" : 256
-        "AttnLogitPenaltyCap" : None(default), ... KataGo's unique new features
-        "AttnLogitPenaltyCoeff" : 1e-3(default), ... KataGo's unique new features
-        "AttnLogitPenaltyBatchFrac" : 1.0(default), ... KataGo's unique new features
-        "Stack" : [
-            "TransformerBlock"
-            or
-            { "Block": "TransformerBlock", ... If you want to change the value for each block
-              "Args": {
-                  "TransformerHeads" : 3,
-                  "TransformerKVHheads" : 3,
-                  "AttentionQueryHeadDim" : 32,
-                  "AttentionValueHeadDim" : 32,
-                  "TransformerFFNChannels" : 256,
-              }
-            },
-            ...
-    "Train" : {
-        "Optimizer" : "Aurora", ... "Muon", "Adam", "SGD" (default) to use the conventional function
-        "LearningRateSchedule" : [
-            [0,     3.2e-4 or 3.2e-5] ... For Muon, operation has been confirmed with 3.2e-4 (default:0.2)
-                                          When using the Transformer model, used 3.2e-5.
-        "ExportONNX" : true, ... New key(default:false)
-        "UseCompile" : true, ... New key(default:false)
-        "UseBatchedMuonNs" : true, ... New key(default:false)
-        "UseForeachAuxAdam" : true, ... New key(default:false)
-        "MuonNsBatchSize" : 32, ... New key(default:32)
-        "AnnealingCycle" : 0, ... New key(default:0)
+  "NeuralNetwork" : {
+    "ReductionInput": false(default)  # Should it be trained using minimal local input features? (true|false)
+    "FFNExpansionRatio": 1.5(default) # What should be the multiplier for the number of output channels of the convolution
+                                      # immediately following the DepthwiseConv in MixerBlock,
+                                      # relative to the number of channels in the intermediate layer?
+    "TransformerDropRate": 0.0(default) # Dropout rate used in the TransformerAttentionBlock.
+    "BatchNormMode": "renorm"(default)  # Type of batch normalization to use. ("renorm"|"norm"|"fixup")
+                                        # In the TransformerAttentionBlock, RMSNorm is fixed.
+    "PreActivation": false(default) # Should batch normalization and activation be performed before the convolution? (true|false)
+                                    # In the TransformerAttentionBlock, PreNorm is fixed.
+    "FinalBlockCgroupSize": None(default) # If specified, RMSNorm is performed using this group size at the end of the intermediate layer's iterative processing.
+    "AttentionQKNorm": true(default)  # RMSNorm on Q and K per-head before the attention dot product. (true|false)
+    "TransformerHeads": 3(default)    # The number of parallel heads processed in Multi-Head Attention.
+    "TransformerKVHheads": 3(default) # The number of parallel heads processed in Multi-Head Attention.
+    "AttentionQueryHeadDim": 64(default) # Query size (number of dimensions) per head.
+                                         #  = Hidden layer dimension / Number of attention heads.
+                                         # The recommended value is 64.
+    "AttentionValueHeadDim": 64(default) # Value size (number of dimensions) per head.
+                                         #  = Hidden layer dimension / Number of attention heads
+                                         # The recommended value is 64.
+    "LearnedRoPECastToInputDtype": false(default) # Under AMP, cast the small cos/sin rotation tables to the input dtype
+                                                  # before the batch-sized Q/K rotation,
+                                                  # instead of promoting the batch-sized rotation intermediates to FP32.
+                                                  # The trigonometric functions themselves remain FP32.
+    "TransformerFFNChannels": 384(default) # Expanded channel count of the Feed-Forward Network within the TransformerAttentionBlock
+                                           # Typically four times the hidden layer dimension.
+    "UseSwiGLU": true(default) # Should SiLU be used for the activation within the Feed-Forward Network of the TransformerAttentionBlock? (true|false)
+                               # If set to false, the activation function specified in "Activation" is used.
+    "TransformerFFNDepthwiseConv": true(default) # Should DepthwiseConv be used within the feed-forward network of a TransformerAttentionBlock? (true|false)
+    "UseTAB": false(default) # Should we use Topological Attention Bias? (true|false)
+    "TABD1": 16(default) # Number of output channels for TAB first Layer.
+    "TABD2": 16(default) # Number of output channels for TAB second Layer.
+    "TABCZ": 32(default) # Number of TAB frequencies.
+    "TABNumTemplates": 32(default) # Number of TAB templates.
+    "TABNumFreqs": 8(default)  # Number of TAB frequencies.
+    "TABNumBlocks": 3(default) # Number of TAB blocks.
+    "TABDilation": 3(default)  # Dilation for conv2d in TAB.
+    "UseFlexAttention": false(default)  # Should we use PyTorch's FlexAttention? (true|false)
+                                        # At present, torch.onnx.export does not support this;
+                                        # setting it to true will cause the training process to terminate abnormally.
+    "AttnLogitPenaltyCap": None(default)      # Penalize attention layers whose per-head logit upper bound (scale * max||q|| * max||k||, incl off-board positions) exceeds this. None = disabled.
+    "AttnLogitPenaltyCoeff": 1e-3(default)    # Loss coeff for the attention logit bound penalty (linear hinge, mean over heads, sum over layers, per sample)
+    "AttnLogitPenaltyBatchFrac": 1.0(default) # Compute the attention logit penalty on only this fraction of each batch (cuts its cost proportionally, adds gradient variance)
+  "Train" : {
+    "HeadLrFactor": 0.5(default)     # LR factor for output head weights.
+    "NoregLrFactor": 1.0(default)    # LR factor for noreg params. (biases, norms)
+    "MuonAdamLrFactor": 1.0(default) # LR factor for muon-ineligible (adam) params when using muon.
+    "InputWdFactor": 1.0(default)    # Extra scaling factor for input weight decay.
+    "NormalWdFactor": 1.0(default)   # Extra scaling factor for normal weight decay.
+    "NormalAttnWdFactor": 1.0(default)  # Extra scaling factor for normal_attn weight decay.
+    "AnnealingCycle": 0(default)        # Learning rate annealing cycle (number of steps).
+    "AnnealingMinCoeff": 0.1(default)   # When "AnnealingCycle" > 0, 
+                                        # the value obtained by multiplying the specified learning rate by this value
+                                        # is used as the minimum learning rate.
+    "ExportONNX": false(default)        # Should we export the trained model using torch.onnx.export? (true|false)
+    "UseDynamo": True(default)          # Should we use TorchDynamo when exporting with torch.onnx.export? (true|false)
+    "UseCompile": false(default)        # Should we use torch.compile? (true|false)
+    "UseBatchedMuonNs": false(default)  # Stack Muon updates with the same
+                                        # matrix shape (up to KATAGO_MUON_NS_BATCH_SIZE, default 32) into a single
+                                        # compiled Newton-Schulz iteration rather than one launch sequence per
+                                        # parameter. Same update equations, but not bitwise identical to the scalar launches.
+    "UseForeachAuxAdam": false(default) # Use torch._foreach multi-tensor kernels for the auxiliary Adam parameter groups.
+    "MuonNsBatchSize": 32(default)      # Newton-Schulz batch size.
+    "WdFloorFraction": None(default)    # Exempt from weight decay the part of each output channel of each weight matrix
+                                        # whose RMS is below this fraction of the tensor's RMS at initialization,
+                                        # so that unused channels never decay to exactly zero,
+                                        # a state Muon cannot recover from.
+                                        # Can be changed between runs.
+                                        # Requires muon.
+```
+Deletion configuration definition (selfplay-setting.json):
+```
+  "Train" : {
+    "RenormMaxR": 1(default)
+    "RenormMaxD": 0(default)
 ```
 
 ## About the Transformer model
@@ -219,7 +248,6 @@ The source files prior to removal are `config_full.py` and `network_full.py`.
   "LearnableRoPE"
   "AttentionNumRWRegisters"
   "DiscardRegTokens"
-  "AttentionQKNorm"
   "GABD1" -> "TABD1"
   "GABD2" -> "TABD2"
   "GABNumTemplates"
@@ -227,10 +255,9 @@ The source files prior to removal are `config_full.py` and `network_full.py`.
   "GABMLPHidden"
   "UseTrunkChannelGate"
   "UseTrunkResidualBackout"
-  "UseFlexAttention"
 ```
 
-
+The following is the original README for Sayuri.
 
 ## Let's ROCK!
 
