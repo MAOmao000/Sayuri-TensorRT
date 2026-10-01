@@ -141,7 +141,10 @@ if(BLAS_BACKEND STREQUAL "CUDA"
     endif()
 
     # https://en.wikipedia.org/wiki/CUDA#GPUs_supported
-    if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 12.8)
+    if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 13.0)
+        set(CUDA_ARCHITECTURES 75 80 86 87 88 89 90 100 110 103 120 121)
+        set(CMAKE_CUDA_FLAGS "-Wno-deprecated-gpu-targets ${CMAKE_CUDA_FLAGS}")
+    elseif(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 12.8)
         set(CUDA_ARCHITECTURES 50 52 53 60 61 62 70 72 75 80 86 87 90 120)
         set(CMAKE_CUDA_FLAGS "-Wno-deprecated-gpu-targets ${CMAKE_CUDA_FLAGS}")
     elseif(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 12.0)
@@ -302,6 +305,8 @@ if(BLAS_BACKEND STREQUAL "CUDA"
         endif()
         if(TENSORRT_VERSION VERSION_LESS 8.5)
             message(FATAL_ERROR "TensorRT 8.5 or greater is required but ${TENSORRT_VERSION} was not found.")
+        elseif(TENSORRT_VERSION VERSION_LESS 11.0)
+            target_compile_definitions(sayuri PRIVATE OLDER_TENSORRT)
         endif()
         find_library(TENSORRT_ONNX_LIBRARY nvonnxparser HINTS ${TENSORRT_ROOT_DIR} PATH_SUFFIXES lib)
         target_link_libraries(sayuri ${TENSORRT_ONNX_LIBRARY})

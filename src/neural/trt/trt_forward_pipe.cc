@@ -183,9 +183,11 @@ bool TrtForwardPipe::TrtEngine::Build(bool dump_gpu_info,
         return false;
     }
 
+#ifdef OLDER_TENSORRT
     if (handles_.fp16) {
         config->setFlag(nvinfer1::BuilderFlag::kFP16);
     }
+#endif
 
     auto profile = builder->createOptimizationProfile();
     if (!profile) {
@@ -885,7 +887,9 @@ void TrtForwardPipe::TrtEngine::BuildPolicyHead(
     network->markOutput(*output_prob);
     output_prob->setName("output_prob");
     output_prob->setAllowedFormats(1U << static_cast<int>(nvinfer1::TensorFormat::kLINEAR));
+#ifdef OLDER_TENSORRT
     output_prob->setType(nvinfer1::DataType::kFLOAT);
+#endif
 
     auto pass_layer = BuildConvLayer(network,
                                      policy_inter_act->getOutput(0),
@@ -898,7 +902,9 @@ void TrtForwardPipe::TrtEngine::BuildPolicyHead(
     network->markOutput(*output_prob_pass);
     output_prob_pass->setName("output_prob_pass");
     output_prob_pass->setAllowedFormats(1U << static_cast<int>(nvinfer1::TensorFormat::kLINEAR));
+#ifdef OLDER_TENSORRT
     output_prob_pass->setType(nvinfer1::DataType::kFLOAT);
+#endif
 }
 
 void TrtForwardPipe::TrtEngine::BuildValueHead(trt::InferPtr<nvinfer1::INetworkDefinition>& network,
@@ -924,7 +930,9 @@ void TrtForwardPipe::TrtEngine::BuildValueHead(trt::InferPtr<nvinfer1::INetworkD
     network->markOutput(*output_ownership);
     output_ownership->setName("output_ownership");
     output_ownership->setAllowedFormats(1U << static_cast<int>(nvinfer1::TensorFormat::kLINEAR));
+#ifdef OLDER_TENSORRT
     output_ownership->setType(nvinfer1::DataType::kFLOAT);
+#endif
 
     auto value_pool_layer = BuildGPoolLayer(network, value_act_layer->getOutput(0), true);
     auto value_inter_layer = BuildConvLayer(network,
@@ -947,7 +955,9 @@ void TrtForwardPipe::TrtEngine::BuildValueHead(trt::InferPtr<nvinfer1::INetworkD
     network->markOutput(*output_val);
     output_val->setName("output_val");
     output_val->setAllowedFormats(1U << static_cast<int>(nvinfer1::TensorFormat::kLINEAR));
+#ifdef OLDER_TENSORRT
     output_val->setType(nvinfer1::DataType::kFLOAT);
+#endif
 }
 
 nvinfer1::ILayer*
