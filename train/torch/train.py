@@ -1742,6 +1742,8 @@ class TrainingPipe():
                 return max_lr * self.annealing_min_coeff, max_lr
             curr_lr = max_lr * self.annealing_min_coeff + 0.5 * max_lr * (1.0 - self.annealing_min_coeff) * (
                 1. + math.cos(math.pi * (((num_steps + 1) % self.annealing_cycle) + 1) / self.annealing_cycle))
+        else:
+            curr_lr = max_lr
         return curr_lr, max_lr
 
     def _compute_param_init_rms(self, raw_model):
