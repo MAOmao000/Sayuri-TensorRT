@@ -51,8 +51,8 @@ Additional configuration definitions (selfplay-setting.json):
                                                   # before the batch-sized Q/K rotation,
                                                   # instead of promoting the batch-sized rotation intermediates to FP32.
                                                   # The trigonometric functions themselves remain FP32.
-    "TransformerFFNChannels": 384(default) # Expanded channel count of the Feed-Forward Network within the TransformerAttentionBlock
-                                           # Typically four times the hidden layer dimension.
+    "TransformerFFNRatio": 4(default) # By what factor should the expanded channel count in the feed-forward network within the TransformerAttentionBlock
+                                      # be set relative to the number of channels in the intermediate layer?
     "UseSwiGLU": true(default) # Should SiLU be used for the activation within the Feed-Forward Network of the TransformerAttentionBlock? (true|false)
                                # If set to false, the activation function specified in "Activation" is used.
     "TransformerFFNDepthwiseConv": true(default) # Should DepthwiseConv be used within the feed-forward network of a TransformerAttentionBlock? (true|false)

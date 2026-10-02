@@ -119,6 +119,7 @@ class Config:
         self.input_channels = network.get("InputChannels", 43)
         self.reduction_input = network.get("ReductionInput", False)
         self.residual_channels = network.get("ResidualChannels", None)
+        assert self.residual_channels != None, "ResidualChannels is not specified."
 
         self.policy_head_type = network.get("PolicyHeadType", { "Type" : "Normal" })
         self.policy_head_channels = network.get("PolicyExtract", None) # v1 ~ v4 net
@@ -141,7 +142,7 @@ class Config:
         self.attention_query_head_dim = network.get("AttentionQueryHeadDim", 64)
         self.attention_value_head_dim = network.get("AttentionValueHeadDim", 64)
         self.learned_rope_cast_to_input_dtype = network.get("LearnedRoPECastToInputDtype", False)
-        self.transformer_ffn_channels = network.get("TransformerFFNChannels", 384)
+        self.transformer_ffn_channels = network.get("TransformerFFNRatio", 4) * self.residual_channels
         self.use_swiglu = network.get("UseSwiGLU", True)
         self.transformer_ffn_depthwise_conv = network.get("TransformerFFNDepthwiseConv", True)
         # Note: If any of "FusedQKVProj", "FusedSwigluKernel" and "FusedRoPEBackward" is set to true,
@@ -179,7 +180,6 @@ class Config:
         self.attn_logit_penalty_batch_frac = network.get("AttnLogitPenaltyBatchFrac", 1.0)
 
         assert self.input_channels != None, "InputChannels is not specified."
-        assert self.residual_channels != None, "ResidualChannels is not specified."
         assert self.policy_head_channels != None, "PolicyHeadChannels or PolicyExtract is not specified."
         assert self.value_head_channels != None, "ValueHeadChannels or ValueExtract is not specified."
         assert (
