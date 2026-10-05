@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <Import Project="..\packages\Microsoft.ML.OnnxRuntime.1.25.1\build\native\Microsoft.ML.OnnxRuntime.props" Condition="Exists('..\packages\Microsoft.ML.OnnxRuntime.1.25.1\build\native\Microsoft.ML.OnnxRuntime.props')" />
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
       <Configuration>Debug</Configuration>
@@ -188,9 +187,6 @@
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</ExcludedFromBuild>
     </CudaCompile>
   </ItemGroup>
-  <ItemGroup>
-    <None Include="packages.config" />
-  </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>15.0</VCProjectVersion>
     <ProjectGuid>{8B8E7062-6E01-88A3-3562-49F008CA94FA}</ProjectGuid>
@@ -223,11 +219,13 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v145</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>false</WholeProgramOptimization>
     <CharacterSet>MultiByte</CharacterSet>
     <PreferredToolArchitecture>x64</PreferredToolArchitecture>
     <LLVMToolsVersion>19</LLVMToolsVersion>
+    <VCToolsVersion>
+    </VCToolsVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
@@ -261,7 +259,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
-    <TargetName>sayuri</TargetName>
+    <TargetName>sayuri9x9</TargetName>
     <IntDir>$(Platform)\$(Configuration)\sayuri\</IntDir>
     <IncludePath>..\..\src\Eigen;$(IncludePath)</IncludePath>
     <IgnoreImportLibrary>true</IgnoreImportLibrary>
@@ -352,14 +350,14 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>
       </SDLCheck>
-      <PreprocessorDefinitions>NDEBUG;WIN32;NOMINMAX;USE_CUDA;USE_TENSORRT;USE_ZLIB;ENABLE_FP16;_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\..\src;C:\lib\vcpkg\installed\x64-windows-static\include;C:\Program Files\TensorRT-10.13.0.35\include;..\..\src\Eigen;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\include;C:\Program Files\NVIDIA\CUDNN\v9.10\include\12.9;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>NDEBUG;WIN32;NOMINMAX;MAX_BOARD_SIZE=9;USE_CUDA;USE_TENSORRT;OLDER_TENSORRT;USE_ZLIB;ENABLE_FP16;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>..\..\src;..\..\src\Eigen;C:\Program Files\TensorRT-10.14.1.48\include;C:\lib\vcpkg\installed\x64-windows-static\include;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\include;C:\Program Files\NVIDIA\CUDNN\v9.10\include\12.9;C:\lib\onnxruntime-win-x64-static_lib-MT-Release-1.30.0\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <MultiProcessorCompilation>
       </MultiProcessorCompilation>
-      <DisableSpecificWarnings>4129;4244;4267;4819;4858</DisableSpecificWarnings>
+      <DisableSpecificWarnings>4819</DisableSpecificWarnings>
       <DebugInformationFormat>
       </DebugInformationFormat>
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
@@ -373,7 +371,6 @@
       <OpenMPSupport>
       </OpenMPSupport>
       <FloatingPointModel>Fast</FloatingPointModel>
-      <AdditionalOptions>/arch:AVX2 /D"__FMA__" %(AdditionalOptions)</AdditionalOptions>
       <ExceptionHandling>Sync</ExceptionHandling>
     </ClCompile>
     <Link>
@@ -383,8 +380,8 @@
       <OptimizeReferences>
       </OptimizeReferences>
       <GenerateDebugInformation>false</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>C:\Program Files\NVIDIA\CUDNN\v9.10\lib\12.9\x64;C:\lib\vcpkg\installed\x64-windows-static\lib;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\lib\x64;C:\Program Files\TensorRT-10.13.0.35\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>zlib.lib;cuda.lib;cudart_static.lib;cudnn.lib;cublas.lib;nvinfer_10.lib;nvonnxparser_10.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>C:\Program Files\NVIDIA\CUDNN\v9.10\lib\12.9\x64;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\lib\x64;C:\Program Files\TensorRT-10.14.1.48\lib;C:\lib\onnxruntime-win-x64-static_lib-MT-Release-1.30.0\lib;C:\lib\vcpkg\installed\x64-windows-static\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>zlib.lib;cuda.lib;cudart_static.lib;cudnn.lib;cublas.lib;nvinfer_10.lib;nvonnxparser_10.lib;onnxruntime.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <ForceSymbolReferences>
       </ForceSymbolReferences>
       <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
@@ -398,13 +395,13 @@
       </StackCommitSize>
     </Link>
     <CudaCompile>
-      <AdditionalOptions>%(AdditionalOptions)  -Wno-deprecated-gpu-targets -std=c++17 -Xcompiler=-Ob2 -allow-unsupported-compiler --generate-code=arch=compute_50,code=[compute_50,sm_50] --generate-code=arch=compute_52,code=[compute_52,sm_52] --generate-code=arch=compute_53,code=[compute_53,sm_53] --generate-code=arch=compute_60,code=[compute_60,sm_60] --generate-code=arch=compute_61,code=[compute_61,sm_61] --generate-code=arch=compute_62,code=[compute_62,sm_62] --generate-code=arch=compute_70,code=[compute_70,sm_70] --generate-code=arch=compute_72,code=[compute_72,sm_72] --generate-code=arch=compute_75,code=[compute_75,sm_75] --generate-code=arch=compute_80,code=[compute_80,sm_80] --generate-code=arch=compute_86,code=[compute_86,sm_86] --generate-code=arch=compute_87,code=[compute_87,sm_87] --generate-code=arch=compute_90,code=[compute_90,sm_90] -Xcompiler "/wd 4819"</AdditionalOptions>
+      <AdditionalOptions>%(AdditionalOptions) -std=c++17 -Xcompiler=-Ob2 -allow-unsupported-compiler --generate-code=arch=compute_50,code=[compute_50,sm_50] --generate-code=arch=compute_52,code=[compute_52,sm_52] --generate-code=arch=compute_53,code=[compute_53,sm_53] --generate-code=arch=compute_60,code=[compute_60,sm_60] --generate-code=arch=compute_61,code=[compute_61,sm_61] --generate-code=arch=compute_62,code=[compute_62,sm_62] --generate-code=arch=compute_70,code=[compute_70,sm_70] --generate-code=arch=compute_72,code=[compute_72,sm_72] --generate-code=arch=compute_75,code=[compute_75,sm_75] --generate-code=arch=compute_80,code=[compute_80,sm_80] --generate-code=arch=compute_86,code=[compute_86,sm_86] --generate-code=arch=compute_87,code=[compute_87,sm_87] --generate-code=arch=compute_90,code=[compute_90,sm_90] --generate-code=arch=compute_120,code=[compute_120,sm_120] -Xcompiler "/wd 4819"</AdditionalOptions>
       <CodeGeneration>
       </CodeGeneration>
       <FastMath>true</FastMath>
       <Optimization>InheritFromHost</Optimization>
       <Runtime>MT</Runtime>
-      <Defines>_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH;%(Defines)</Defines>
+      <Defines>%(Defines)</Defines>
       <RuntimeChecks>Default</RuntimeChecks>
       <Include>..\..\src;%(Include)</Include>
     </CudaCompile>
@@ -418,13 +415,5 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
     <Import Project="$(VCTargetsPath)\BuildCustomizations\CUDA 12.9.targets" />
-    <Import Project="..\packages\Microsoft.ML.OnnxRuntime.1.25.1\build\native\Microsoft.ML.OnnxRuntime.targets" Condition="Exists('..\packages\Microsoft.ML.OnnxRuntime.1.25.1\build\native\Microsoft.ML.OnnxRuntime.targets')" />
   </ImportGroup>
-  <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
-    <PropertyGroup>
-      <ErrorText>このプロジェクトは、このコンピューター上にない NuGet パッケージを参照しています。それらのパッケージをダウンロードするには、[NuGet パッケージの復元] を使用します。詳細については、http://go.microsoft.com/fwlink/?LinkID=322105 を参照してください。見つからないファイルは {0} です。</ErrorText>
-    </PropertyGroup>
-    <Error Condition="!Exists('..\packages\Microsoft.ML.OnnxRuntime.1.25.1\build\native\Microsoft.ML.OnnxRuntime.props')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\Microsoft.ML.OnnxRuntime.1.25.1\build\native\Microsoft.ML.OnnxRuntime.props'))" />
-    <Error Condition="!Exists('..\packages\Microsoft.ML.OnnxRuntime.1.25.1\build\native\Microsoft.ML.OnnxRuntime.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\Microsoft.ML.OnnxRuntime.1.25.1\build\native\Microsoft.ML.OnnxRuntime.targets'))" />
-  </Target>
 </Project>

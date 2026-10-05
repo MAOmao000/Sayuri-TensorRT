@@ -1,0 +1,431 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="..\..\src\benchmark\benchmark.cc">
+      <Filter>src\benchmark</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\game\board.cc">
+      <Filter>src\game</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\game\book.cc">
+      <Filter>src\game</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\game\game_state.cc">
+      <Filter>src\game</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\game\gtp.cc">
+      <Filter>src\game</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\game\iterator.cc">
+      <Filter>src\game</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\game\pattern_board.cc">
+      <Filter>src\game</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\game\sgf.cc">
+      <Filter>src\game</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\game\strings.cc">
+      <Filter>src\game</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\game\symmetry.cc">
+      <Filter>src\game</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\game\zobrist.cc">
+      <Filter>src\game</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\mcts\node.cc">
+      <Filter>src\mcts</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\mcts\search.cc">
+      <Filter>src\mcts</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\mcts\time_control.cc">
+      <Filter>src\mcts</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\neural\blas\batchnorm.cc">
+      <Filter>src\neural\blas</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\neural\blas\biases.cc">
+      <Filter>src\neural\blas</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\neural\blas\blas.cc">
+      <Filter>src\neural\blas</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\neural\blas\blas_forward_pipe.cc">
+      <Filter>src\neural\blas</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\neural\blas\convolution.cc">
+      <Filter>src\neural\blas</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\neural\blas\fullyconnect.cc">
+      <Filter>src\neural\blas</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\neural\blas\se_unit.cc">
+      <Filter>src\neural\blas</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\neural\blas\sgemm.cc">
+      <Filter>src\neural\blas</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\neural\blas\winograd_convolution3.cc">
+      <Filter>src\neural\blas</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\neural\cuda\cuda_common.cc">
+      <Filter>src\neural\cuda</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\neural\cuda\cuda_forward_pipe.cc">
+      <Filter>src\neural\cuda</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\neural\cuda\cuda_layers.cc">
+      <Filter>src\neural\cuda</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\neural\trt\trt_forward_pipe.cc">
+      <Filter>src\neural\trt</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\neural\batch_forward_pipe.cc">
+      <Filter>src\neural</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\neural\description.cc">
+      <Filter>src\neural</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\neural\encoder.cc">
+      <Filter>src\neural</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\neural\loader.cc">
+      <Filter>src\neural</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\neural\network.cc">
+      <Filter>src\neural</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\neural\training_data.cc">
+      <Filter>src\neural</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\neural\winograd_helper.cc">
+      <Filter>src\neural</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\pattern\gammas_dict.cc">
+      <Filter>src\pattern</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\pattern\mm.cc">
+      <Filter>src\pattern</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\pattern\mm_trainer.cc">
+      <Filter>src\pattern</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\pattern\pattern.cc">
+      <Filter>src\pattern</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\selfplay\engine.cc">
+      <Filter>src\selfplay</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\selfplay\pipe.cc">
+      <Filter>src\selfplay</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\utils\gogui_helper.cc">
+      <Filter>src\utils</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\utils\gzip_helper.cc">
+      <Filter>src\utils</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\utils\option.cc">
+      <Filter>src\utils</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\utils\parse_float.cc">
+      <Filter>src\utils</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\utils\random.cc">
+      <Filter>src\utils</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\utils\splitter.cc">
+      <Filter>src\utils</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\utils\filesystem.cc">
+      <Filter>src\utils</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\utils\komi.cc">
+      <Filter>src\utils</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\utils\log.cc">
+      <Filter>src\utils</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\utils\time.cc">
+      <Filter>src\utils</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\config.cc">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\main.cc">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\src\version.cc">
+      <Filter>src</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\..\src\benchmark\benchmark.h">
+      <Filter>src\benchmark</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\game\board.h">
+      <Filter>src\game</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\game\book.h">
+      <Filter>src\game</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\game\commands_list.h">
+      <Filter>src\game</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\game\game_state.h">
+      <Filter>src\game</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\game\gtp.h">
+      <Filter>src\game</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\game\iterator.h">
+      <Filter>src\game</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\game\sgf.h">
+      <Filter>src\game</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\game\strings.h">
+      <Filter>src\game</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\game\symmetry.h">
+      <Filter>src\game</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\game\type.h">
+      <Filter>src\game</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\game\zobrist.h">
+      <Filter>src\game</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\mcts\lcb.h">
+      <Filter>src\mcts</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\mcts\node.h">
+      <Filter>src\mcts</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\mcts\node_pointer.h">
+      <Filter>src\mcts</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\mcts\parameters.h">
+      <Filter>src\mcts</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\mcts\rollout.h">
+      <Filter>src\mcts</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\mcts\score_value.h">
+      <Filter>src\mcts</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\mcts\search.h">
+      <Filter>src\mcts</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\mcts\time_control.h">
+      <Filter>src\mcts</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\neural\blas\batchnorm.h">
+      <Filter>src\neural\blas</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\neural\blas\biases.h">
+      <Filter>src\neural\blas</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\neural\blas\blas.h">
+      <Filter>src\neural\blas</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\neural\blas\blas_forward_pipe.h">
+      <Filter>src\neural\blas</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\neural\blas\convolution.h">
+      <Filter>src\neural\blas</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\neural\blas\fullyconnect.h">
+      <Filter>src\neural\blas</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\neural\blas\se_unit.h">
+      <Filter>src\neural\blas</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\neural\blas\segmm.h">
+      <Filter>src\neural\blas</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\neural\blas\winograd_convolution3.h">
+      <Filter>src\neural\blas</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\neural\cuda\cuda_common.h">
+      <Filter>src\neural\cuda</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\neural\cuda\cuda_forward_pipe.h">
+      <Filter>src\neural\cuda</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\neural\cuda\cuda_kernels.h">
+      <Filter>src\neural\cuda</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\neural\cuda\cuda_layers.h">
+      <Filter>src\neural\cuda</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\neural\trt\trt_common.h">
+      <Filter>src\neural\trt</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\neural\trt\trt_forward_pipe.h">
+      <Filter>src\neural\trt</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\neural\activation.h">
+      <Filter>src\neural</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\neural\batch_forward_pipe.h">
+      <Filter>src\neural</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\neural\description.h">
+      <Filter>src\neural</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\neural\encoder.h">
+      <Filter>src\neural</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\neural\loader.h">
+      <Filter>src\neural</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\neural\network.h">
+      <Filter>src\neural</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\neural\training_data.h">
+      <Filter>src\neural</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\neural\winograd_helper.h">
+      <Filter>src\neural</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\pattern\gammas_dict.h">
+      <Filter>src\pattern</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\pattern\mm.h">
+      <Filter>src\pattern</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\pattern\mm_trainer.h">
+      <Filter>src\pattern</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\pattern\pattern.h">
+      <Filter>src\pattern</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\selfplay\engine.h">
+      <Filter>src\selfplay</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\selfplay\pipe.h">
+      <Filter>src\selfplay</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\utils\atomic.h">
+      <Filter>src\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\utils\cache.h">
+      <Filter>src\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\utils\cppattributes.h">
+      <Filter>src\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\utils\filesystem.h">
+      <Filter>src\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\utils\format.h">
+      <Filter>src\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\utils\gogui_helper.h">
+      <Filter>src\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\utils\gzip_helper.h">
+      <Filter>src\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\utils\half.h">
+      <Filter>src\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\utils\mutex.h">
+      <Filter>src\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\utils\operators.h">
+      <Filter>src\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\utils\option.h">
+      <Filter>src\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\utils\parse_float.h">
+      <Filter>src\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\utils\probe_gpu.h">
+      <Filter>src\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\utils\random.h">
+      <Filter>src\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\utils\sha256.h">
+      <Filter>src\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\utils\splitter.h">
+      <Filter>src\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\utils\threadpool.h">
+      <Filter>src\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\utils\kldivergence.h">
+      <Filter>src\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\utils\komi.h">
+      <Filter>src\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\utils\log.h">
+      <Filter>src\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\utils\logits.h">
+      <Filter>src\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\neural\network_basic.h">
+      <Filter>src\neural</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\utils\time.h">
+      <Filter>src\utils</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\config.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\include.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\src\version.h">
+      <Filter>src</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="src">
+      <UniqueIdentifier>{2cd2ffd6-634f-4194-87c7-9f5d5258898a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\benchmark">
+      <UniqueIdentifier>{7d846b4c-3022-4a31-ac3c-8999030f87cf}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\mcts">
+      <UniqueIdentifier>{18c765f9-e489-4c9c-9efe-811b7d2c0043}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\pattern">
+      <UniqueIdentifier>{8cf60ed1-c377-43aa-9a78-11ea5e0cc36c}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\utils">
+      <UniqueIdentifier>{d4379390-7b1e-436e-8434-6f4e248e9244}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\game">
+      <UniqueIdentifier>{005b3c43-b6a5-4e63-a697-c69bb733a8dc}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\selfplay">
+      <UniqueIdentifier>{bb4915a3-2692-4bb8-b32e-ae14c2e4ddf2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\neural">
+      <UniqueIdentifier>{04171906-4cf7-46a7-9885-dc020fba9a6b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\neural\trt">
+      <UniqueIdentifier>{2fa2fc74-7ad1-4afe-90a5-e552459d4061}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\neural\cuda">
+      <UniqueIdentifier>{3ff01928-ac72-44eb-9297-2f4b140055dd}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="src\neural\blas">
+      <UniqueIdentifier>{7e9db082-d3c4-4abd-8b17-ef5f4267eeb2}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <CudaCompile Include="..\..\src\neural\cuda\cuda_kernels.cu">
+      <Filter>src\neural\cuda</Filter>
+    </CudaCompile>
+  </ItemGroup>
+</Project>
