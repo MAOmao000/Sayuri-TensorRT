@@ -72,7 +72,7 @@ void MmTrainer::InitMm() {
 
     for (int i = 0; i < (int)size; ++i) {
         FeatureConuter& counter = feature_counters_[i];
-        features.emplace_back(counter.size());
+        features.emplace_back(static_cast<int>(counter.size()));
     }
 
     auto names = std::vector<std::string>{};
@@ -117,7 +117,7 @@ void MmTrainer::FilterPatterns(int select_min_count) {
 
     for (int i = 0; i < (int)size; ++i) {
         FeatureConuter& counter = feature_counters_[i];
-        num_features_list.emplace_back(counter.size());
+        num_features_list.emplace_back(static_cast<int>(counter.size()));
     }
 
     // compute min count
@@ -157,7 +157,7 @@ void MmTrainer::FilterPatterns(int select_min_count) {
                 auto& filtered_order_dict = filtered_feature_order_dicts[i];
                 auto& filtered_counter = filtered_feature_counters[i];
 
-                const auto new_index = filtered_counter.size();
+                const int new_index = filtered_counter.size();
                 const auto hash = order[index];
                 const auto spat = spat_dict.find(hash)->second;
                 const auto cnt = counter[index];
@@ -239,12 +239,12 @@ bool MmTrainer::FillPatterns(std::string sgfstring) {
 
             if (matched) {
                 const auto hash = mhash;
-                const auto index = order_dict.find(hash)->second;
+                const int index = order_dict.find(hash)->second;
                 counter[index] += 1;
             } else {
                 const auto hash = board.GetPatternHash(vtx, kBlack, pattern_dist);
                 const auto spat = board.GetPatternSpat(vtx, kBlack, pattern_dist);
-                const auto index = order.size();
+                const int index = order.size();
 
                 spat_dict.insert({hash, spat});
                 order.emplace_back(hash);
@@ -270,7 +270,7 @@ bool MmTrainer::FillPatterns(std::string sgfstring) {
                         const auto index = order_dict.find(mhash)->second;
                         counter[index] += 1;
                     } else {
-                        const auto index = order.size();
+                        const int index = order.size();
 
                         spat_dict.insert({mhash, std::to_string(mhash)});
                         order.emplace_back(mhash);

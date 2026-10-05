@@ -26,8 +26,10 @@ std::vector<T> Softmax(std::vector<T>& logits, double temp) {
     const auto alpha = *std::max_element(std::begin(logits), std::end(logits));
     double denom = 0.0;
 
+    const auto T_temp = static_cast<T>(temp);
+
     for (const auto logit : logits) {
-        auto val = std::exp((logit - alpha) / temp);
+        auto val = std::exp((logit - alpha) / T_temp);
         denom += val;
         output.emplace_back(val);
     }

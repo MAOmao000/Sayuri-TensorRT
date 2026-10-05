@@ -511,11 +511,11 @@ void Search::UpdateComputationResult(ComputationResult& result) const {
     result.root_visits_dist.resize(num_intersections + 1, 0);
     result.target_policy_dist.resize(num_intersections + 1, 0);
 
-    std::fill(std::begin(result.root_ownership), std::end(result.root_ownership), 0);
+    std::fill(std::begin(result.root_ownership), std::end(result.root_ownership), 0.0f);
     std::fill(std::begin(result.root_searched_visits), std::end(result.root_searched_visits), 0);
-    std::fill(std::begin(result.root_estimated_q), std::end(result.root_estimated_q), 0);
-    std::fill(std::begin(result.root_visits_dist), std::end(result.root_visits_dist), 0);
-    std::fill(std::begin(result.target_policy_dist), std::end(result.target_policy_dist), 0);
+    std::fill(std::begin(result.root_estimated_q), std::end(result.root_estimated_q), 0.0f);
+    std::fill(std::begin(result.root_visits_dist), std::end(result.root_visits_dist), 0.0f);
+    std::fill(std::begin(result.target_policy_dist), std::end(result.target_policy_dist), 0.0f);
 
     // Fill ownership.
     auto ownership = root_node_->GetOwnership(color);

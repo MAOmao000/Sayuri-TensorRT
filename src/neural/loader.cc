@@ -1054,7 +1054,7 @@ void DNNLoader::GetWeightsFromBuffer(std::vector<float>& weights, std::istream& 
             // On macOS, stringstream struggles to parse extremely
             // small numeric values into a float; however, parsing
             // them as a double works correctly
-            double weight;
+            float weight;
 
 #ifdef USE_FAST_PARSER
             auto start_ptr = line.data();

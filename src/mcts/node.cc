@@ -884,7 +884,7 @@ std::string Node::GetPathVerboseString(GameState& state, int color, std::vector<
             const auto raw_winrate = curr_node->GetNetWL(color);
             const auto raw_score = curr_node->GetNetScore(color);
             out << Format(
-                "%s -> avg-WL: %.2f(\%), avg-S: %.2f, P: %.2f(\%), WL: %.2f(\%), S: %.2f\n",
+                "%s -> avg-WL: %.2f(%%), avg-S: %.2f, P: %.2f(%%), WL: %.2f(%%), S: %.2f\n",
                 state.VertexToText(vertex).c_str(),
                 100 * winrate,
                 score,

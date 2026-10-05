@@ -1836,7 +1836,7 @@ void Board::ComputePassAliveArea(std::vector<bool>& result,
                 } while (pos != vtx);
 
                 // Remove the linking.
-                std::remove(std::begin(strings_head), std::end(strings_head), vtx);
+                strings_head.erase(std::remove(std::begin(strings_head), std::end(strings_head), vtx), std::end(strings_head));
                 group_cnt -= 1;
                 change = true;
                 break;
@@ -2088,7 +2088,7 @@ void Board::ComputeInnerRegions(const int vtx,
                 }
             }
             if (success) {
-                std::remove(std::begin(epmty_head), std::end(epmty_head), v);
+                epmty_head.erase(std::remove(std::begin(epmty_head), std::end(epmty_head), v), std::end(epmty_head));
                 cnt -= 1;
                 break;
             }
@@ -2165,7 +2165,7 @@ std::vector<int> Board::ClassifyGroups(const int target,
 std::vector<int> Board::GatherVertices(std::vector<bool>& buf) const {
     auto result = std::vector<int>{};
 
-    for (auto vtx = size_t{0}; vtx < buf.size(); ++vtx) {
+    for (int vtx = size_t{0}; vtx < buf.size(); ++vtx) {
         if (buf[vtx]) {
             result.emplace_back(vtx);
         }

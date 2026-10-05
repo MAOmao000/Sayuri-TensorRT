@@ -636,7 +636,7 @@ std::vector<float> GameState::GetGammasPolicy(const int color, const float* owne
         }
     }
 
-    return Softmax(policy, 1.f);
+    return Softmax(policy, 1.);
 }
 
 void GameState::RemoveDeadStrings(std::vector<int>& dead_list) {
