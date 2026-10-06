@@ -315,7 +315,11 @@ bool TrtForwardPipe::TrtEngine::CreatePlan(trt::InferPtr<nvinfer1::INetworkDefin
         const std::string model_hash = sha256::GetDigest(model_data);
         const auto dev_prop = cuda::GetDeviceProp();
         const std::string device_ident = GetDeviceIdent(dev_prop.name);
+#ifdef OLDER_TENSORRT
         const std::string precision = handles_.fp16 ? "half" : "single";
+#else
+        const std::string precision = "single";
+#endif
         const auto network_name = GetNetworkCacheName(std::filesystem::path(network->getName()));
         const auto trt_version = getInferLibVersion();
 
@@ -971,16 +975,22 @@ TrtForwardPipe::TrtEngine::BuildConvLayer(trt::InferPtr<nvinfer1::INetworkDefini
                                           bool depth_wise) {
     (void)in_channels;
 
-    const auto data_type = handles_.fp16 ? nvinfer1::DataType::kHALF : nvinfer1::DataType::kFLOAT;
+#ifdef OLDER_TENSORRT
+    const auto is_fp16 = handles_.fp16;
+#else
+    const auto is_fp16 = false;
+#endif
+
+    const auto data_type = is_fp16 ? nvinfer1::DataType::kHALF : nvinfer1::DataType::kFLOAT;
 
     void* cuda_weights = nullptr;
-    cuda::MallocAndCopy(handles_.fp16, &cuda_weights, weights);
+    cuda::MallocAndCopy(is_fp16, &cuda_weights, weights);
     cuda_weights_op_.push_back(cuda_weights);
 
     void* cuda_biases = nullptr;
     nvinfer1::Weights bias_blob{data_type, nullptr, 0};
     if (!biases.empty()) {
-        cuda::MallocAndCopy(handles_.fp16, &cuda_biases, biases);
+        cuda::MallocAndCopy(is_fp16, &cuda_biases, biases);
         cuda_weights_op_.push_back(cuda_biases);
         bias_blob = nvinfer1::Weights{data_type, cuda_biases, static_cast<int64_t>(biases.size())};
     }
@@ -1300,7 +1310,11 @@ void TrtForwardPipe::TrtEngine::FillOutputs(const std::vector<float>& batch_prob
             output_result.offset = PolicyBufferOffset::kNormal;
             output_result.board_size = input.board_size;
             output_result.komi = input.komi;
+#ifdef OLDER_TENSORRT
             output_result.fp16 = handles_.fp16;
+#else
+            output_result.fp16 = false;
+#endif
         }
     } else if (encoder_version == 2) {
         for (int b = 0; b < batch_size; ++b) {
@@ -1328,7 +1342,11 @@ void TrtForwardPipe::TrtEngine::FillOutputs(const std::vector<float>& batch_prob
             output_result.offset = input.offset;
             output_result.board_size = input.board_size;
             output_result.komi = input.komi;
+#ifdef OLDER_TENSORRT
             output_result.fp16 = handles_.fp16;
+#else
+            output_result.fp16 = false;
+#endif
         }
     }
 }
