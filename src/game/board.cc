@@ -2165,7 +2165,7 @@ std::vector<int> Board::ClassifyGroups(const int target,
 std::vector<int> Board::GatherVertices(std::vector<bool>& buf) const {
     auto result = std::vector<int>{};
 
-    for (int vtx = size_t{0}; vtx < buf.size(); ++vtx) {
+    for (int vtx = size_t{0}; vtx < static_cast<int>(buf.size()); ++vtx) {
         if (buf[vtx]) {
             result.emplace_back(vtx);
         }
