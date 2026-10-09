@@ -259,8 +259,8 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
-    <TargetName>sayuri9x9</TargetName>
-    <IntDir>$(Platform)\$(Configuration)\sayuri\</IntDir>
+    <TargetName>sayuri</TargetName>
+    <IntDir>$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
     <IncludePath>..\..\src\Eigen;$(IncludePath)</IncludePath>
     <IgnoreImportLibrary>true</IgnoreImportLibrary>
     <GenerateManifest>false</GenerateManifest>
@@ -350,14 +350,15 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>
       </SDLCheck>
-      <PreprocessorDefinitions>NDEBUG;WIN32;NOMINMAX;MAX_BOARD_SIZE=9;USE_CUDA;USE_TENSORRT;OLDER_TENSORRT;USE_ZLIB;ENABLE_FP16;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>..\..\src;..\..\src\Eigen;C:\Program Files\TensorRT-10.14.1.48\include;C:\lib\vcpkg\installed\x64-windows-static\include;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\include;C:\Program Files\NVIDIA\CUDNN\v9.10\include\12.9;C:\lib\onnxruntime-win-x64-static_lib-MT-Release-1.30.0\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>NDEBUG;WIN32;NOMINMAX;MAX_BOARD_SIZE=19;USE_CUDA;USE_TENSORRT;OLDER_TENSORRT;USE_ZLIB;ENABLE_FP16;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>..\..\src;..\..\src\Eigen;C:\Program Files\TensorRT-10.13.3.9\include;C:\lib\vcpkg\installed\x64-windows-static\include;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\include;C:\Program Files\NVIDIA\CUDNN\v9.10\include\12.9;C:\lib\onnxruntime-win-x64-static_lib-MT-Release-1.30.0\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <MultiProcessorCompilation>
       </MultiProcessorCompilation>
-      <DisableSpecificWarnings>4819</DisableSpecificWarnings>
+      <DisableSpecificWarnings>
+      </DisableSpecificWarnings>
       <DebugInformationFormat>
       </DebugInformationFormat>
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
@@ -372,6 +373,7 @@
       </OpenMPSupport>
       <FloatingPointModel>Fast</FloatingPointModel>
       <ExceptionHandling>Sync</ExceptionHandling>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -380,7 +382,7 @@
       <OptimizeReferences>
       </OptimizeReferences>
       <GenerateDebugInformation>false</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>C:\Program Files\NVIDIA\CUDNN\v9.10\lib\12.9\x64;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\lib\x64;C:\Program Files\TensorRT-10.14.1.48\lib;C:\lib\onnxruntime-win-x64-static_lib-MT-Release-1.30.0\lib;C:\lib\vcpkg\installed\x64-windows-static\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>C:\Program Files\NVIDIA\CUDNN\v9.10\lib\12.9\x64;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\lib\x64;C:\Program Files\TensorRT-10.13.3.9\lib;C:\lib\onnxruntime-win-x64-static_lib-MT-Release-1.30.0\lib;C:\lib\vcpkg\installed\x64-windows-static\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>zlib.lib;cuda.lib;cudart_static.lib;cudnn.lib;cublas.lib;nvinfer_10.lib;nvonnxparser_10.lib;onnxruntime.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <ForceSymbolReferences>
       </ForceSymbolReferences>
@@ -395,7 +397,7 @@
       </StackCommitSize>
     </Link>
     <CudaCompile>
-      <AdditionalOptions>%(AdditionalOptions) -std=c++17 -Xcompiler=-Ob2 -allow-unsupported-compiler --generate-code=arch=compute_50,code=[compute_50,sm_50] --generate-code=arch=compute_52,code=[compute_52,sm_52] --generate-code=arch=compute_53,code=[compute_53,sm_53] --generate-code=arch=compute_60,code=[compute_60,sm_60] --generate-code=arch=compute_61,code=[compute_61,sm_61] --generate-code=arch=compute_62,code=[compute_62,sm_62] --generate-code=arch=compute_70,code=[compute_70,sm_70] --generate-code=arch=compute_72,code=[compute_72,sm_72] --generate-code=arch=compute_75,code=[compute_75,sm_75] --generate-code=arch=compute_80,code=[compute_80,sm_80] --generate-code=arch=compute_86,code=[compute_86,sm_86] --generate-code=arch=compute_87,code=[compute_87,sm_87] --generate-code=arch=compute_90,code=[compute_90,sm_90] --generate-code=arch=compute_120,code=[compute_120,sm_120] -Xcompiler "/wd 4819"</AdditionalOptions>
+      <AdditionalOptions>%(AdditionalOptions) -std=c++17 -Xcompiler=-Ob2 -allow-unsupported-compiler --generate-code=arch=compute_50,code=[compute_50,sm_50] --generate-code=arch=compute_52,code=[compute_52,sm_52] --generate-code=arch=compute_53,code=[compute_53,sm_53] --generate-code=arch=compute_60,code=[compute_60,sm_60] --generate-code=arch=compute_61,code=[compute_61,sm_61] --generate-code=arch=compute_62,code=[compute_62,sm_62] --generate-code=arch=compute_70,code=[compute_70,sm_70] --generate-code=arch=compute_72,code=[compute_72,sm_72] --generate-code=arch=compute_75,code=[compute_75,sm_75] --generate-code=arch=compute_80,code=[compute_80,sm_80] --generate-code=arch=compute_86,code=[compute_86,sm_86] --generate-code=arch=compute_87,code=[compute_87,sm_87] --generate-code=arch=compute_90,code=[compute_90,sm_90] --generate-code=arch=compute_120,code=[compute_120,sm_120] -Xcompiler "/wd 4819" -Wno-deprecated-gpu-targets</AdditionalOptions>
       <CodeGeneration>
       </CodeGeneration>
       <FastMath>true</FastMath>
@@ -404,6 +406,7 @@
       <Defines>%(Defines)</Defines>
       <RuntimeChecks>Default</RuntimeChecks>
       <Include>..\..\src;%(Include)</Include>
+      <CudaRuntime />
     </CudaCompile>
     <CudaLink>
       <GPUDebugInfo>false</GPUDebugInfo>
