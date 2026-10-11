@@ -106,6 +106,7 @@ class Config:
         self.use_foreach_aux_adam = train.get("UseForeachAuxAdam", False)
         self.muon_ns_batch_size = train.get("MuonNsBatchSize", 32)
         self.wd_floor_frac = train.get("WdFloorFraction", None)
+        self.wdl_loss_scale = train.get("WdlLossScale", 1.0)
 
         assert self.train_dir != None, "TrainDirectory is not specified."
         assert self.store_path != None, "StorePath is not specified."
@@ -178,6 +179,7 @@ class Config:
         self.attn_logit_penalty_cap = network.get("AttnLogitPenaltyCap", None)
         self.attn_logit_penalty_coeff = network.get("AttnLogitPenaltyCoeff", 1e-3)
         self.attn_logit_penalty_batch_frac = network.get("AttnLogitPenaltyBatchFrac", 1.0)
+        self.use_optimistic_policy = network.get("UseOptimisticPolicy", True) 
 
         assert self.input_channels != None, "InputChannels is not specified."
         assert self.policy_head_channels != None, "PolicyHeadChannels or PolicyExtract is not specified."

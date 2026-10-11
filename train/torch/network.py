@@ -2822,29 +2822,32 @@ class Network(nn.Module):
             make_soft_porb(t_aux_prob, policy_mask),
             global_weight)
 
-        # short-term optimistic probabilities loss
-        z_short_term_q = (
-            (short_term_q_target - short_term_q_pred.detach()) / torch.sqrt(short_term_q_error.detach() + 0.0001)
-        )
-        z_short_term_score = (
-            (short_term_score_target - short_term_score_pred.detach())
-            / torch.sqrt(short_term_score_error.detach() + 0.25)
-        )
+        if self.cfg.use_optimistic_policy:
+            # short-term optimistic probabilities loss
+            z_short_term_q = (
+                (short_term_q_target - short_term_q_pred.detach()) / torch.sqrt(short_term_q_error.detach() + 0.0001)
+            )
+            z_short_term_score = (
+                (short_term_score_target - short_term_score_pred.detach())
+                / torch.sqrt(short_term_score_error.detach() + 0.25)
+            )
 
-        optimistic_weight = torch.clamp(
-            torch.sigmoid((z_short_term_q - 1.5) * 3.0) + torch.sigmoid((z_short_term_score - 1.5) * 3.0),
-            min=0.0,
-            max=1.0,
-        )
-        b, _ = optimistic_weight.shape
-        optimistic_weight = torch.reshape(optimistic_weight, (b, ))
-        optimistic_loss = 1 * cross_entropy(p_optimistic_prob, t_prob, optimistic_weight)
+            optimistic_weight = torch.clamp(
+                torch.sigmoid((z_short_term_q - 1.5) * 3.0) + torch.sigmoid((z_short_term_score - 1.5) * 3.0),
+                min=0.0,
+                max=1.0,
+            )
+            b, _ = optimistic_weight.shape
+            optimistic_weight = torch.reshape(optimistic_weight, (b, ))
+            optimistic_loss = 1 * cross_entropy(p_optimistic_prob, t_prob, optimistic_weight)
+        else:
+            optimistic_loss = torch.zeros(1, device=p_prob.device)
 
         # ownership loss
         ownership_loss = 1.5 * mse_loss_spat(p_ownership, t_ownership, global_weight)
 
         # win-draw-lose loss
-        wdl_loss = cross_entropy(p_wdl, t_wdl)
+        wdl_loss = self.cfg.wdl_loss_scale * cross_entropy(p_wdl, t_wdl)
 
         # all Q values loss
         q_vals_loss = mse_loss(p_q_vals, t_q_vals, global_weight)
