@@ -934,7 +934,10 @@ std::string Node::ToVerboseString(GameState& state, const int color) {
         const auto vertex = lcb_pair.second;
 
         auto child = GetChild(vertex);
-        const auto visits = child->GetVisits();
+        int visits = 0;
+        if (child) {
+            visits = child->GetVisits();
+        }
         const auto pobability = child->GetPolicy();
         assert(visits != 0);
 
