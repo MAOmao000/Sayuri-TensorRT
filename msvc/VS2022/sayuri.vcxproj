@@ -259,7 +259,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
-    <TargetName>sayuri</TargetName>
+    <TargetName>sayuri9x9</TargetName>
     <IntDir>$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
     <IncludePath>..\..\src\Eigen;$(IncludePath)</IncludePath>
     <IgnoreImportLibrary>true</IgnoreImportLibrary>
@@ -350,7 +350,7 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>
       </SDLCheck>
-      <PreprocessorDefinitions>NDEBUG;WIN32;NOMINMAX;MAX_BOARD_SIZE=19;USE_CUDA;USE_TENSORRT;OLDER_TENSORRT;USE_ZLIB;ENABLE_FP16;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>NDEBUG;WIN32;NOMINMAX;MAX_BOARD_SIZE=9;USE_CUDA;USE_TENSORRT;OLDER_TENSORRT;USE_ZLIB;ENABLE_FP16;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>..\..\src;..\..\src\Eigen;C:\Program Files\TensorRT-10.13.3.9\include;C:\lib\vcpkg\installed\x64-windows-static\include;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\include;C:\Program Files\NVIDIA\CUDNN\v9.10\include\12.9;C:\lib\onnxruntime-win-x64-static_lib-MT-Release-1.30.0\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
