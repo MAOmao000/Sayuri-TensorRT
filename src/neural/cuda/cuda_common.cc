@@ -11,6 +11,7 @@
 
 #ifdef USE_TENSORRT
 #include <NvInferVersion.h>
+#include <NvInfer.h>
 #endif
 
 #include "utils/half.h"
@@ -169,23 +170,33 @@ std::string GetBackendInfo() {
 
     int cuda_version;
     cudaDriverGetVersion(&cuda_version);
+    int cuda_rt_version;
+    cudaRuntimeGetVersion(&cuda_rt_version);
     {
         const auto major = cuda_version / 1000;
         const auto minor = (cuda_version - major * 1000) / 10;
+        const auto major_rt = cuda_rt_version / 1000;
+        const auto minor_rt = (cuda_rt_version - major_rt * 1000) / 10;
         out << "CUDA version:"
-            << " Major " << major << ", Minor " << minor << '\n';
+            << " Major " << major << "(" << major_rt << "), Minor "
+            << minor << "(" << minor_rt << ")" << '\n';
     }
 
     {
         out << "Blas backend: ";
 #ifdef USE_TENSORRT
+        int32_t version = getInferLibVersion();
         out << "TensorRT\n";
         out << "TensorRT version: " << NV_TENSORRT_MAJOR << '.' << NV_TENSORRT_MINOR << '.'
-            << NV_TENSORRT_PATCH << '\n';
+            << NV_TENSORRT_PATCH
+            << "(" << version / 10000 << '.' << (version % 10000) / 100 << '.'
+            << version % 100 << ")" << '\n';
 #elif defined(USE_CUDNN)
+        int32_t version = cudnnGetVersion();
         out << "cuDNN\n";
         out << "cuDNN version: " << CUDNN_MAJOR << '.' << CUDNN_MINOR << '.' << CUDNN_PATCHLEVEL
-            << '\n';
+            << "(" << version / 10000 << '.' << (version % 10000) / 100 << '.'
+            <<  version % 100 << ")" << '\n';
 #else
         out << "CUDA\n";
 #endif
