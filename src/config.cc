@@ -108,7 +108,6 @@ void ArgsParser::InitOptionsMap() const {
     kOptionsMap["dirichlet_noise"] << Option::SetOption(false);
     kOptionsMap["dirichlet_epsilon"] << Option::SetOption(0.25f);
     kOptionsMap["dirichlet_init"] << Option::SetOption(0.03f);
-    kOptionsMap["dirichlet_factor"] << Option::SetOption(361.f);
 
     kOptionsMap["kldgain_per_node"] << Option::SetOption(0.0, 100.0, 0.0);
     kOptionsMap["kldgain_interval"] << Option::SetOption(0);
@@ -611,13 +610,6 @@ void ArgsParser::Parse(Splitter& spt) {
     if (const auto res = spt.FindNext("--dirichlet-init")) {
         if (IsParameter(res->Get<>())) {
             SetOption("dirichlet_init", res->Get<float>());
-            spt.RemoveSlice(res->Index() - 1, res->Index() + 1);
-        }
-    }
-
-    if (const auto res = spt.FindNext("--dirichlet-factor")) {
-        if (IsParameter(res->Get<>())) {
-            SetOption("dirichlet_factor", res->Get<float>());
             spt.RemoveSlice(res->Index() - 1, res->Index() + 1);
         }
     }

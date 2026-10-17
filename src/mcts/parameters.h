@@ -49,7 +49,6 @@ public:
 
         dirichlet_noise = GetOption<bool>("dirichlet_noise");
         dirichlet_epsilon = GetOption<float>("dirichlet_epsilon");
-        dirichlet_factor = GetOption<float>("dirichlet_factor");
         dirichlet_init = GetOption<float>("dirichlet_init");
 
         kldgain_per_node = GetOption<double>("kldgain_per_node");
@@ -119,7 +118,6 @@ public:
 
     bool dirichlet_noise;
     float dirichlet_epsilon;
-    float dirichlet_factor;
     float dirichlet_init;
 
     double kldgain_per_node;

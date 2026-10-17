@@ -46,7 +46,7 @@ bool Node::PrepareRootNode(Network& network,
     if (param_->dirichlet_noise) {
         // Generate the dirichlet noise and gather it.
         const auto legal_move = children_.size();
-        const auto factor = param_->dirichlet_factor;
+        const auto factor = state.GetBoardSize() * state.GetBoardSize();
         const auto init = param_->dirichlet_init;
         const auto alpha = init * factor / static_cast<float>(legal_move);
 
