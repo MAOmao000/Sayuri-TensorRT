@@ -14,7 +14,7 @@ Also added the following features:
 * Aurora+AdamW optimizer
 * torch.compile
 * TransformerAttention model for demonstration purposes
-* Cyclic cosine annealing
+* Automatic learning rate scheduling
 
 ## Requirements
 
@@ -47,15 +47,18 @@ Additional configuration definitions (selfplay-setting.json):
     "AttentionValueHeadDim": 64(default) # Value size (number of dimensions) per head.
                                          #  = Hidden layer dimension / Number of attention heads
                                          # The recommended value is 64.
-    "LearnedRoPECastToInputDtype": false(default) # Under AMP, cast the small cos/sin rotation tables to the input dtype
-                                                  # before the batch-sized Q/K rotation,
-                                                  # instead of promoting the batch-sized rotation intermediates to FP32.
-                                                  # The trigonometric functions themselves remain FP32.
+    "LearnedRoPECastToInputDtype": true(default) # Under AMP, cast the small cos/sin rotation tables to the input dtype
+                                                 # before the batch-sized Q/K rotation,
+                                                 # instead of promoting the batch-sized rotation intermediates to FP32.
+                                                 # The trigonometric functions themselves remain FP32.
     "TransformerFFNRatio": 4(default) # By what factor should the expanded channel count in the feed-forward network within the TransformerAttentionBlock
                                       # be set relative to the number of channels in the intermediate layer?
     "UseSwiGLU": true(default) # Should SiLU be used for the activation within the Feed-Forward Network of the TransformerAttentionBlock? (true|false)
                                # If set to false, the activation function specified in "Activation" is used.
     "TransformerFFNDepthwiseConv": true(default) # Should DepthwiseConv be used within the feed-forward network of a TransformerAttentionBlock? (true|false)
+    "FusedQKVProj": false(default) # Currently unavailable because ONNX export is not supported. (true|false)
+    "FusedSwigluKernel": false(default) # Currently unavailable because ONNX export is not supported. (true|false)
+    "FusedRoPEBackward": false(default) # Currently unavailable because ONNX export is not supported. (true|false)
     "UseTAB": false(default) # Should we use Topological Attention Bias? (true|false)
     "TABD1": 16(default) # Number of output channels for TAB first Layer.
     "TABD2": 16(default) # Number of output channels for TAB second Layer.
@@ -71,24 +74,22 @@ Additional configuration definitions (selfplay-setting.json):
     "AttnLogitPenaltyCoeff": 1e-3(default)    # Loss coeff for the attention logit bound penalty (linear hinge, mean over heads, sum over layers, per sample)
     "AttnLogitPenaltyBatchFrac": 1.0(default) # Compute the attention logit penalty on only this fraction of each batch (cuts its cost proportionally, adds gradient variance)
   "Train" : {
+    "Optimizer": "SGD"(default)               # ("SGD"|"Adam"|"Muon"|"Aurora")
+    "LearningRateAnnealingBase": 0(default)   # curr_lr = max_lr * math.sqrt("LearningRateAnnealingBase" / ("LearningRateAnnealingBase" + curr_steps - "WarmUpSteps"))
     "HeadLrFactor": 0.5(default)     # LR factor for output head weights.
     "NoregLrFactor": 1.0(default)    # LR factor for noreg params. (biases, norms)
     "MuonAdamLrFactor": 1.0(default) # LR factor for muon-ineligible (adam) params when using muon.
     "InputWdFactor": 1.0(default)    # Extra scaling factor for input weight decay.
     "NormalWdFactor": 1.0(default)   # Extra scaling factor for normal weight decay.
     "NormalAttnWdFactor": 1.0(default)  # Extra scaling factor for normal_attn weight decay.
-    "AnnealingCycle": 0(default)        # Learning rate annealing cycle (number of steps).
-    "AnnealingMinCoeff": 0.1(default)   # When "AnnealingCycle" > 0, 
-                                        # the value obtained by multiplying the specified learning rate by this value
-                                        # is used as the minimum learning rate.
     "ExportONNX": false(default)        # Should we export the trained model using torch.onnx.export? (true|false)
-    "UseDynamo": True(default)          # Should we use TorchDynamo when exporting with torch.onnx.export? (true|false)
+    "UseDynamo": true(default)          # Should we use TorchDynamo when exporting with torch.onnx.export? (true|false)
     "UseCompile": false(default)        # Should we use torch.compile? (true|false)
-    "UseBatchedMuonNs": false(default)  # Stack Muon updates with the same
+    "UseBatchedMuonNs": true(default)   # Stack Muon updates with the same
                                         # matrix shape (up to KATAGO_MUON_NS_BATCH_SIZE, default 32) into a single
                                         # compiled Newton-Schulz iteration rather than one launch sequence per
                                         # parameter. Same update equations, but not bitwise identical to the scalar launches.
-    "UseForeachAuxAdam": false(default) # Use torch._foreach multi-tensor kernels for the auxiliary Adam parameter groups.
+    "UseForeachAuxAdam": true(default)  # Use torch._foreach multi-tensor kernels for the auxiliary Adam parameter groups.
     "MuonNsBatchSize": 32(default)      # Newton-Schulz batch size.
     "WdFloorFraction": None(default)    # Exempt from weight decay the part of each output channel of each weight matrix
                                         # whose RMS is below this fraction of the tensor's RMS at initialization,
@@ -109,152 +110,63 @@ Deletion configuration definition (selfplay-setting.json):
 The Transformer model currently implemented is merely a prototype for demonstration purposes.
 Various improvements are needed to make it more powerful.
 
-## Additional test (2026/05/16)
+## Test results using a Transformer model on a 9x9 Go board
 
-These are the test results for a hybrid configuration model (ResidualBlock -> ResidualBlock -> TransformerBlock).
-The configuration definition used is located in the bash/configs/sample folder.
-The log files are located in the train/log folder.
-
-![all loss](./img/muon_onnx_hybrid_loss.png)
-
-## Additional test (2026/05/19)
-
-These are the test results for a hybrid configuration model (ResidualBlock -> ResidualBlock -> TransformerBlock).
-"UseRoPE" : true
-"LearnableRoPE" : true
-"AttentionQKNorm" : true
-"InlineRegisters" : true
-The configuration definition used is located in the bash/configs/sample folder.
-The log files are located in the train/log folder.
-
-![all loss](./img/muon_onnx_hybrid_learnable_RoPE_loss.png)
-
-## Note (2026/06/03)
-
-Inline registers (Register tokens) were removed from the program for the time being because they could not be successfully ported.
-
-## Note (2026/06/04)
-
-The method for configuring the selfplay-setting.json file has been changed.
-The current evaluation at 300,000 steps is as follows:
+Build
 ```
-Rank Name                                          Elo    +    - games score oppo. draws
----- -------------------------------------------   ---   --   -- ----- ----- ----- ----- 
-   1 9x9 b6xc96 KataGo                             240   36   36   429   81%   -34    9% 
-   2 9x9 b6xc96 Nested Bottleneck                    4   31   31   428   50%     7    8% 
-   3 9x9 b6xc96 RoPE                                -1   31   31   428   48%    12   11% 
-   4 9x9 b6xc96 RoPE & TAB                          -4   31   31   430   49%     5    9% 
-   5 9x9 b6xc96 RRTRRT                             -31   31   31   428   47%    -1    9% 
-   6 9x9 b6xc96 RoPE & GAB                         -80   31   31   428   41%     0    9% 
-   7 9x9 b6xc96 Learnable RoPE & Register Tokens  -128   32   32   429   34%    10    9% 
----- -------------------------------------------   ---   --   -- ----- ----- ----- ----- 
-KataGo weight: kata1-b6c96-s175395328-d26788732.txt.gz
+ $ cmake .. -DBLAS_BACKEND=TENSORRT -DUSE_ZLIB=1 -DSPECIFIC_BOARD_SIZE=9 -DBOARD_SIZE=9 -DONNX_ROOT_DIR=~/Downloads/onnxruntime-linux-x64-1.25.1
+ $ cmake --build .
+ $ ./sayuri -t 10 -b 5 -w ~/Sayuri-test-b9xc192/weights/sayuri-b9xc192-s300000-c315000-w61965-swa.onnx --use-optimistic-policy --scoring-rule area -p 1200 --reuse-tree
+       Sayuri 10.0.0 ()  Copyright (C) 2021-2025  Hung Tse Lin
+       Copyright (C) 2025-2026  MAOmao000
+       This program comes with ABSOLUTELY NO WARRANTY.
+       This is free software, and you are welcome to redistribute it
+       under certain conditions; see the COPYING file for details.
+   Network Version: 5
+   Input Channels: 43
+   Residual Blocks: 9
+   Residual Channels: 192
+     block 1: ResidualBlock
+     block 2: ResidualBlock
+     block 3: TransformerBlock
+     block 4: ResidualBlock
+     block 5: ResidualBlock
+     block 6: TransformerBlock
+     block 7: ResidualBlock
+     block 8: ResidualBlock
+     block 9: TransformerBlock
+   Policy Head Type: RepLK
+   Policy Head Channels: 48
+   Value Head Channels: 48
+   Load the ONNX model file from: ~/Sayuri-test-b9xc192/weights/sayuri-b9xc192-s300000-c315000-w61965-swa.onnx.
+   CUDA version: Major 13(12), Minor 2(8)
+   Blas backend: TensorRT
+   TensorRT version: 10.13.2(10.13.2)
+   Number of CUDA devices: 1
+   === Device: 0 ===
+     Name: NVIDIA GeForce RTX 5060
+     Compute capability: 12.0
+     Disable the FP16
+     Enable the tensor cores
+   Allocated 400.00 MiB memory for NN cache (579324 entries).
 ```
+* b3xc192h64 RRTx1
 
-## Note (2026/06/07)
+![loss_b3xc192](./img/loss_b3xc192.png)
 
-have re-imported a trainable RoPE.
-The current evaluation at 300,000 steps is as follows:
+* b6xc192h64 RRTx2
+
+![loss_b6xc192](./img/loss_b6xc192.png)
+
+* b9xc192h64 RRTx3
+
+![loss_b9xc192](./img/loss_b9xc192.png)
+
 ```
-Rank Name                           Elo    +    - games score oppo. draws 
----- -----------------------------  ----  --   -- ----- ----- ----- ----- 
-   1 9x9 b6xc96 KataGo              202   31   31   500   78%   -28   12% 
-   2 9x9 b6xc96 RRTRRT                8   28   28   501   51%    -3   11% 
-   3 9x9 b6xc96 RoPE                 -5   28   28   500   48%     7   10% 
-   4 9x9 b6xc96 Nested Bottleneck   -15   28   28   500   49%    -3    9% 
-   5 9x9 b6xc96 Learnable RoPE      -17   28   28   501   47%     6   13% 
-   6 9x9 b6xc96 RoPE & TAB          -40   29   29   499   45%     4    9% 
-   7 9x9 b6xc96 backout RoPE        -54   28   28   500   43%     7   13% 
-   8 9x9 b6xc96 RoPE & GAB          -80   29   29   499   39%    10   10% 
----- -----------------------------  ----  --   -- ----- ----- ----- ----- 
-KataGo weight: kata1-b6c96-s175395328-d26788732.txt.gz
-```
-
-## Note (2026/06/11)
-
-Added support for NestedBottleneckTransformerBlock and TAB+FreqMix.
-The current evaluation at 300,000 steps is as follows:
-```
-Rank Name                               Elo     +    - games score oppo. draws Training hours
----- ---------------------------------  ----   --   -- ----- ----- ----- ----- --------------
-   1 9x9 b6xc96 KataGo                   288   35   35   480   84%   -12   10% 
-   2 9x9 b6xc96 Learnable RoPE            52   30   30   480   55%    11    9%          14.87
-   3 9x9 b6xc96 RRTRRT                    48   30   30   480   54%    16    8%          12.18
-   4 9x9 b6xc96 Nested Bottleneck         33   30   30   481   53%     5    8%          13.28
-   5 9x9 b6xc96 RoPE+TAB                  10   30   30   480   50%    11    9%          26.33
-   6 9x9 b6xc96 RoPE                       1   30   30   480   51%    -3    9%          14.53
-   7 9x9 b6xc96 Backout RoPE             -31   30   30   480   46%     2    8%          15.28
-   8 9x9 b6xc96 RoPE+GAB                 -54   30   30   479   45%    -4    6%          17.47
-   9 9x9 b6xc96 Nested Bottleneck RoPE  -173   31   31   480   31%    -9    8%          21.00
-  10 9x9 b6xc96 TAB+FreqMix             -175   31   31   480   32%   -17    6%          26.08
----- ---------------------------------  ----   --   -- ----- ----- ----- ----- --------------
-KataGo weight: kata1-b6c96-s175395328-d26788732.txt.gz
-```
-
-## Note (2026/06/12)
-
-Added support for NNTNNT (Nested Bottleneck & Transformer) model.
-The current evaluation at 300,000 steps is as follows:
-```
-Rank Name                               Elo     +    - games score oppo. draws Training hours
----- ---------------------------------  ----   --   -- ----- ----- ----- ----- --------------
-   1 9x9 b6xc96 KataGo                   282   36   36   454   83%   -13   11%            -
-   2 9x9 b6xc96 RoPE+TAB                  57   30   30   455   56%     4   10%          26.33
-   3 9x9 b6xc96 Learnable RoPE            57   31   31   457   55%    16    9%          14.87
-   4 9x9 b6xc96 RRTRRT                    44   31   31   455   54%    11    7%          12.18
-   5 9x9 b6xc96 Nested Bottleneck         41   31   31   457   53%    12    8%          13.28
-   6 9x9 b6xc96 RoPE                      33   30   30   454   51%    20    9%          14.53
-   7 9x9 b6xc96 Backout RoPE              12   31   31   454   50%     6    6%          15.28
-   8 9x9 b6xc96 RoPE+GAB                 -44   31   31   454   44%     8    7%          17.47
-   9 9x9 b6xc96 NNTNNT                  -125   31   31   454   39%   -29    8%          13.92
-  10 9x9 b6xc96 Nested Bottleneck RoPE  -170   32   32   453   33%   -19    6%          21.00
-  11 9x9 b6xc96 TAB+FreqMix             -186   33   33   453   31%   -15    6%          26.08
----- ---------------------------------  ----   --   -- ----- ----- ----- ----- --------------
-KataGo weight: kata1-b6c96-s175395328-d26788732.txt.gz
-```
-
-## Note (2026/06/16)
-
-Added support for Learnable RRTAB (Residual & Learnable RoPE+TAB) model and Aurora+AdamW optimizer.
-The current evaluation at 400,000 steps is as follows:
-```
-Rank Name                               Elo     +    - games score oppo. draws Training hours
----- ---------------------------------  ----   --   -- ----- ----- ----- ----- --------------
-   1 9x9 b6xc96 KataGo                   147   33   33   400   71%   -28   10%            -
-   2 9x9 b6xc96 Learnable RRTRRT           9   31   31   400   51%     0   10%          16.03
-   3 9x9 b6xc96 Learnable RRTAB            4   32   32   400   50%     4   10%          29.12
-   4 9x9 b6xc96 Nested Bottleneck        -47   32   32   399   44%     8    8%          17.52
-   5 9x9 b6xc96 Learnable RoPE           -52   32   32   400   43%     7   10%          19.62
-   6 9x9 b6xc96 RoPE                     -60   32   32   401   41%    10    8%          19.22
----- ---------------------------------  ----   --   -- ----- ----- ----- ----- --------------
-KataGo weight: kata1-b6c96-s175395328-d26788732.txt.gz
-```
-
-## Note (2026/07/30)
-
-Have incorporated KataGo's latest features.
-FlexAttention is currently frozen because exporting it to an ONNX file results in an error.
-
-## Note (2026/08/05)
-
-The following features have been removed from the Python source code.
-The source files prior to removal are `config_full.py` and `network_full.py`.
-```
-  "PositionalEncoding"
-    "GAB", "RoPE+GAB"
-    "TAB+FreqMix" -> "FreqMix"
-    "RoPE+TAB+FreqMix" -> "RoPE+FreqMix"
-  "RoPETheta"
-  "LearnableRoPE"
-  "AttentionNumRWRegisters"
-  "DiscardRegTokens"
-  "GABD1" -> "TABD1"
-  "GABD2" -> "TABD2"
-  "GABNumTemplates"
-  "GABNumFourierFeatures"
-  "GABMLPHidden"
-  "UseTrunkChannelGate"
-  "UseTrunkResidualBackout"
+Rank Name                                                       Elo    +    - games score oppo. draws
+   1 19x19 b12xc384nbt-s3592000-c4310000-w426561 original       166   49   49   197   81%   -80   19% 
+   2 9x9 b8xc160 sai                                            -12   43   43   206   48%     6   23% 
+   3 9x9 b9xc192h64 RRT3 Muon   silu fixup  RMSNormx  3.99e-5  -153   48   48   197   22%    73   19% 437.5K games
 ```
 
 The following is the original README for Sayuri.
