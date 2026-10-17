@@ -1403,6 +1403,7 @@ class TrainingPipe():
         # Optimizer's parameters.
         self.weight_decay = cfg.weight_decay
         self.lr_schedule = cfg.lr_schedule
+        self.lr_annealing_base = self.cfg.lr_annealing_base
         self.head_lr_factor = cfg.head_lr_factor
         self.noreg_lr_factor = cfg.noreg_lr_factor
         self.muon_adam_lr_factor = cfg.muon_adam_lr_factor
@@ -1432,8 +1433,6 @@ class TrainingPipe():
 
         # Warm up steps.
         self.warmup_steps = self.cfg.warmup_steps
-        self.annealing_cycle = self.cfg.annealing_cycle
-        self.annealing_min_coeff = self.cfg.annealing_min_coeff
 
         # The sample rate factor for policy
         self.policy_surprise_factor = self.cfg.policy_surprise_factor
@@ -1737,11 +1736,8 @@ class TrainingPipe():
             curr_lr = max_lr * ((num_steps+1)/self.warmup_steps)
             return curr_lr, max_lr
 
-        if self.annealing_cycle > 0 and (self.opt_name == "Aurora" or self.opt_name == "Muon"):
-            if (num_steps + 1) % self.annealing_cycle == 0:
-                return max_lr * self.annealing_min_coeff, max_lr
-            curr_lr = max_lr * self.annealing_min_coeff + 0.5 * max_lr * (1.0 - self.annealing_min_coeff) * (
-                1. + math.cos(math.pi * (((num_steps + 1) % self.annealing_cycle) + 1) / self.annealing_cycle))
+        if self.lr_annealing_base > 0 and (self.opt_name == "Aurora" or self.opt_name == "Muon"):
+            curr_lr = max_lr * math.sqrt(self.lr_annealing_base / (self.lr_annealing_base + num_steps - self.warmup_steps))
         else:
             curr_lr = max_lr
         return curr_lr, max_lr

@@ -66,6 +66,7 @@ class Config:
         self.use_fp16 = train.get("UseFp16", False) if self.use_gpu else False
         self.weight_decay = train.get("WeightDecay", 1e-4)
         self.lr_schedule = train.get("LearningRateSchedule", [[0, 0.2]])
+        self.lr_annealing_base = train.get("LearningRateAnnealingBase", 0)
         self.head_lr_factor = train.get("HeadLrFactor", 0.5)
         self.noreg_lr_factor = train.get("NoregLrFactor", 1.0)
         self.muon_adam_lr_factor = train.get("MuonAdamLrFactor", 1.0)
@@ -96,17 +97,14 @@ class Config:
         self.swa_max_count = train.get("SwaMaxCount", 16)
         self.swa_steps = train.get("SwaSteps", 100)
         self.warmup_steps = train.get("WarmUpSteps", 0)
-        self.annealing_cycle = train.get("AnnealingCycle", 0)
-        self.annealing_min_coeff = train.get("AnnealingMinCoeff", 0.1)
         self.policy_surprise_factor = train.get("PolicySurpriseFactor", 0.0)
         self.export_onnx = train.get("ExportONNX", False)
         self.use_dynamo = train.get("UseDynamo", True)
         self.use_compile = train.get("UseCompile", False)
-        self.use_batched_muon_ns = train.get("UseBatchedMuonNs", False)
-        self.use_foreach_aux_adam = train.get("UseForeachAuxAdam", False)
+        self.use_batched_muon_ns = train.get("UseBatchedMuonNs", True)
+        self.use_foreach_aux_adam = train.get("UseForeachAuxAdam", True)
         self.muon_ns_batch_size = train.get("MuonNsBatchSize", 32)
         self.wd_floor_frac = train.get("WdFloorFraction", None)
-        self.wdl_loss_scale = train.get("WdlLossScale", 1.0)
 
         assert self.train_dir != None, "TrainDirectory is not specified."
         assert self.store_path != None, "StorePath is not specified."
@@ -142,7 +140,7 @@ class Config:
         self.transformer_kv_heads = network.get("TransformerKVHheads", 3)
         self.attention_query_head_dim = network.get("AttentionQueryHeadDim", 64)
         self.attention_value_head_dim = network.get("AttentionValueHeadDim", 64)
-        self.learned_rope_cast_to_input_dtype = network.get("LearnedRoPECastToInputDtype", False)
+        self.learned_rope_cast_to_input_dtype = network.get("LearnedRoPECastToInputDtype", True)
         self.transformer_ffn_channels = network.get("TransformerFFNRatio", 4) * self.residual_channels
         self.use_swiglu = network.get("UseSwiGLU", True)
         self.transformer_ffn_depthwise_conv = network.get("TransformerFFNDepthwiseConv", True)
@@ -179,7 +177,6 @@ class Config:
         self.attn_logit_penalty_cap = network.get("AttnLogitPenaltyCap", None)
         self.attn_logit_penalty_coeff = network.get("AttnLogitPenaltyCoeff", 1e-3)
         self.attn_logit_penalty_batch_frac = network.get("AttnLogitPenaltyBatchFrac", 1.0)
-        self.use_optimistic_policy = network.get("UseOptimisticPolicy", True) 
 
         assert self.input_channels != None, "InputChannels is not specified."
         assert self.policy_head_channels != None, "PolicyHeadChannels or PolicyExtract is not specified."
