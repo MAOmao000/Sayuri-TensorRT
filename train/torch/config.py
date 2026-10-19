@@ -138,8 +138,10 @@ class Config:
         self.attention_qk_norm = network.get("AttentionQKNorm", True)
         self.transformer_heads = network.get("TransformerHeads", 3)
         self.transformer_kv_heads = network.get("TransformerKVHheads", 3)
-        self.attention_query_head_dim = network.get("AttentionQueryHeadDim", 64)
-        self.attention_value_head_dim = network.get("AttentionValueHeadDim", 64)
+        self.attention_query_head_dim = network.get("AttentionQueryHeadDim",
+                                                    self.residual_channels // self.transformer_heads)
+        self.attention_value_head_dim = network.get("AttentionValueHeadDim",
+                                                    self.residual_channels // self.transformer_heads)
         self.learned_rope_cast_to_input_dtype = network.get("LearnedRoPECastToInputDtype", True)
         self.transformer_ffn_channels = network.get("TransformerFFNRatio", 4) * self.residual_channels
         self.use_swiglu = network.get("UseSwiGLU", True)
