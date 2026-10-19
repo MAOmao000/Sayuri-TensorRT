@@ -41,10 +41,10 @@ Additional configuration definitions (selfplay-setting.json):
     "AttentionQKNorm": true(default)  # RMSNorm on Q and K per-head before the attention dot product. (true|false)
     "TransformerHeads": 3(default)    # The number of parallel heads processed in Multi-Head Attention.
     "TransformerKVHheads": 3(default) # The number of parallel heads processed in Multi-Head Attention.
-    "AttentionQueryHeadDim": 64(default) # Query size (number of dimensions) per head.
+    "AttentionQueryHeadDim": "ResidualChannels" / "TransformerHeads"(default) # Query size (number of dimensions) per head.
                                          #  = Hidden layer dimension / Number of attention heads.
                                          # The recommended value is 64.
-    "AttentionValueHeadDim": 64(default) # Value size (number of dimensions) per head.
+    "AttentionValueHeadDim": "ResidualChannels" / "TransformerHeads"(default) # Value size (number of dimensions) per head.
                                          #  = Hidden layer dimension / Number of attention heads
                                          # The recommended value is 64.
     "LearnedRoPECastToInputDtype": true(default) # Under AMP, cast the small cos/sin rotation tables to the input dtype
