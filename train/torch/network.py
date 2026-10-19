@@ -2497,7 +2497,7 @@ class Network(nn.Module):
                         self.is_pre_act = True  # used Transformer
                     last_is_tran = True
                     if self.reduction_input:
-                        self.reductions = 13 + 8
+                        self.reductions = 12 + 8
                     if component ==  "TransformerBlock":
                         num_transformer_blocks += 1
 
@@ -2582,15 +2582,16 @@ class Network(nn.Module):
         if self.reductions > 0:
             reduction_planes = torch.cat(
                 (
-                    planes[:, 0:2, :, :].contiguous(),
-                    planes[:, 3:5, :, :].contiguous(),
-                    planes[:, 6:8, :, :].contiguous(),
-                    planes[:, 9:11, :, :].contiguous(),
-                    planes[:, 12:14, :, :].contiguous(),
-                    planes[:, 15:17, :, :].contiguous(),
-                    planes[:, 18:20, :, :].contiguous(),
-                    planes[:, 21:23, :, :].contiguous(),
-                    planes[:, 37:, :, :].contiguous()
+                    planes[:, 0:2, :, :].contiguous(),   # current and opponent player history 1
+                    planes[:, 3:5, :, :].contiguous(),   # current and opponent player history 2
+                    planes[:, 6:8, :, :].contiguous(),   # current and opponent player history 3
+                    planes[:, 9:11, :, :].contiguous(),  # current and opponent player history 4
+                    planes[:, 12:14, :, :].contiguous(), # current and opponent player history 5
+                    planes[:, 15:17, :, :].contiguous(), # current and opponent player history 6
+                    planes[:, 18:20, :, :].contiguous(), # current and opponent player history 7
+                    planes[:, 21:23, :, :].contiguous(), # current and opponent player history 8
+                    planes[:, 25:26, :, :].contiguous(), # pass-alive and pass-dead area
+                    planes[:, 37:, :, :].contiguous()    # global features
                 ),
                 dim=1)
         else:

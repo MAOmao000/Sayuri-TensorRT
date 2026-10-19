@@ -1726,9 +1726,11 @@ class TrainingPipe():
     def _get_lr_schedule(self, num_steps):
         # Get the current learning rate from schedule.
         max_lr = 0.2
+        max_s = 0
         for s, lr in self.lr_schedule:
             if s <= num_steps:
                 max_lr = lr
+                max_s = s
             else:
                 break
 
@@ -1737,7 +1739,14 @@ class TrainingPipe():
             return curr_lr, max_lr
 
         if self.lr_annealing_base > 0 and (self.opt_name == "Aurora" or self.opt_name == "Muon"):
-            curr_lr = max_lr * math.sqrt(self.lr_annealing_base / (self.lr_annealing_base + num_steps - self.warmup_steps))
+            if max_s < self.warmup_steps:
+                curr_lr = max_lr * math.sqrt(
+                    self.lr_annealing_base / (self.lr_annealing_base + num_steps - max_s - self.warmup_steps)
+                )
+            else:
+                curr_lr = max_lr * math.sqrt(
+                    self.lr_annealing_base / (self.lr_annealing_base + num_steps - max_s)
+                )
         else:
             curr_lr = max_lr
         return curr_lr, max_lr
