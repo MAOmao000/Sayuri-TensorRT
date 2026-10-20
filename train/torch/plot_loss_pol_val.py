@@ -123,6 +123,7 @@ def plot_process(args):
     handler1, label1 = ax1.get_legend_handles_labels()
     handler2, label2 = ax2.get_legend_handles_labels()
     ax1.legend(handler1 + handler2, label1 + label2)
+    plt.tight_layout()
     plt.show()
 
 def readfile(filename):
