@@ -12,7 +12,6 @@ import torch.distributed as dist
 import numpy as np
 import random, time, math, os, glob, io, gzip, sys
 import argparse
-import math
 
 from config import Config
 from network import Network
@@ -1403,7 +1402,6 @@ class TrainingPipe():
         # Optimizer's parameters.
         self.weight_decay = cfg.weight_decay
         self.lr_schedule = cfg.lr_schedule
-        self.lr_annealing_base = self.cfg.lr_annealing_base
         self.head_lr_factor = cfg.head_lr_factor
         self.noreg_lr_factor = cfg.noreg_lr_factor
         self.muon_adam_lr_factor = cfg.muon_adam_lr_factor
@@ -1724,13 +1722,30 @@ class TrainingPipe():
         return param_groups
 
     def _get_lr_schedule(self, num_steps):
+        """
+        [0, 3.99e-5, 5000]
+          steps:100000  lr:8.88e-06
+          steps:200000  lr:6.29e-06
+          steps:300000  lr:5.14e-06
+          steps:400000  lr:4.46e-06
+          steps:500000  lr:3.99e-06
+          steps:600000  lr:3.64e-06
+          steps:700000  lr:3.37e-06
+          steps:800000  lr:3.15e-06
+          steps:900000  lr:2.97e-06
+          steps:1000000 lr:2.82e-06
+        """
         # Get the current learning rate from schedule.
         max_lr = 0.2
         max_s = 0
-        for s, lr in self.lr_schedule:
+        lr_base = 0
+        for item in self.lr_schedule:
+            s, lr, *base_list = item
+            base = base_list[0] if base_list else 0
             if s <= num_steps:
                 max_lr = lr
                 max_s = s
+                lr_base = base
             else:
                 break
 
@@ -1738,14 +1753,14 @@ class TrainingPipe():
             curr_lr = max_lr * ((num_steps+1)/self.warmup_steps)
             return curr_lr, max_lr
 
-        if self.lr_annealing_base > 0 and (self.opt_name == "Aurora" or self.opt_name == "Muon"):
+        if lr_base > 0 and (self.opt_name == "Aurora" or self.opt_name == "Muon"):
             if max_s < self.warmup_steps:
                 curr_lr = max_lr * math.sqrt(
-                    self.lr_annealing_base / (self.lr_annealing_base + num_steps - max_s - self.warmup_steps)
+                    lr_base / (lr_base + num_steps - max_s - self.warmup_steps)
                 )
             else:
                 curr_lr = max_lr * math.sqrt(
-                    self.lr_annealing_base / (self.lr_annealing_base + num_steps - max_s)
+                    lr_base / (lr_base + num_steps - max_s)
                 )
         else:
             curr_lr = max_lr

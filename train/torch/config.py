@@ -66,7 +66,6 @@ class Config:
         self.use_fp16 = train.get("UseFp16", False) if self.use_gpu else False
         self.weight_decay = train.get("WeightDecay", 1e-4)
         self.lr_schedule = train.get("LearningRateSchedule", [[0, 0.2]])
-        self.lr_annealing_base = train.get("LearningRateAnnealingBase", 0)
         self.head_lr_factor = train.get("HeadLrFactor", 0.5)
         self.noreg_lr_factor = train.get("NoregLrFactor", 1.0)
         self.muon_adam_lr_factor = train.get("MuonAdamLrFactor", 1.0)
@@ -105,6 +104,7 @@ class Config:
         self.use_foreach_aux_adam = train.get("UseForeachAuxAdam", True)
         self.muon_ns_batch_size = train.get("MuonNsBatchSize", 32)
         self.wd_floor_frac = train.get("WdFloorFraction", None)
+        self.wdl_loss_scale = train.get("WdlLossScale", 1.0)
 
         assert self.train_dir != None, "TrainDirectory is not specified."
         assert self.store_path != None, "StorePath is not specified."
