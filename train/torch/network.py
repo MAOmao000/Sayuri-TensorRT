@@ -2497,7 +2497,7 @@ class Network(nn.Module):
                         self.is_pre_act = True  # used Transformer
                     last_is_tran = True
                     if self.reduction_input:
-                        self.reductions = 12 + 8
+                        self.reductions = 12 + 6
                     if component ==  "TransformerBlock":
                         num_transformer_blocks += 1
 
@@ -2590,7 +2590,7 @@ class Network(nn.Module):
                     planes[:, 15:17, :, :].contiguous(), # current and opponent player history 6
                     planes[:, 18:20, :, :].contiguous(), # current and opponent player history 7
                     planes[:, 21:23, :, :].contiguous(), # current and opponent player history 8
-                    planes[:, 25:26, :, :].contiguous(), # pass-alive and pass-dead area
+                    planes[:, 25:28, :, :].contiguous(), # pass-alive and pass-dead area
                     planes[:, 37:, :, :].contiguous()    # global features
                 ),
                 dim=1)
@@ -2845,7 +2845,7 @@ class Network(nn.Module):
         ownership_loss = 1.5 * mse_loss_spat(p_ownership, t_ownership, global_weight)
 
         # win-draw-lose loss
-        wdl_loss = cross_entropy(p_wdl, t_wdl)
+        wdl_loss = self.cfg.wdl_loss_scale * cross_entropy(p_wdl, t_wdl)
 
         # all Q values loss
         q_vals_loss = mse_loss(p_q_vals, t_q_vals, global_weight)
