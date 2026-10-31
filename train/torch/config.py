@@ -66,9 +66,10 @@ class Config:
         self.use_fp16 = train.get("UseFp16", False) if self.use_gpu else False
         self.weight_decay = train.get("WeightDecay", 1e-4)
         self.lr_schedule = train.get("LearningRateSchedule", [[0, 0.2]])
+        self.lr_annealing_cycle = train.get("LearningRateAnnealingCycle", 500000)
         self.head_lr_factor = train.get("HeadLrFactor", 0.5)
         self.noreg_lr_factor = train.get("NoregLrFactor", 1.0)
-        self.muon_adam_lr_factor = train.get("MuonAdamLrFactor", 1.0)
+        self.muon_adam_lr_factor = train.get("MuonAdamLrFactor", 0.05)
         self.input_wd_factor = train.get("InputWdFactor", 1.0)
         self.normal_wd_factor = train.get("NormalWdFactor", 1.0)
         self.normal_attn_wd_factor = train.get("NormalAttnWdFactor", 1.0)

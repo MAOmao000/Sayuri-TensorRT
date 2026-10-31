@@ -5,7 +5,7 @@ FLOAT_REGEX = "([+-]?(\\d+([.]\\d*)?([eE][+-]?\\d+)?|[.]\\d+([eE][+-]?\\d+)?))" 
 INT_REGEX = "([+-]?\\d+)" # "([+-]?\d+)"
 
 X_AXIS_TYPE_LIST = ["steps", "samples"]
-Y_AXIS_TYPE_LIST = ["all", "policy", "optimistic", "ownership", "wdl", "q", "score"]
+Y_AXIS_TYPE_LIST = ["all", "policy", "optimistic", "ownership", "wdl", "q", "score", "lr"]
 CUT_FIRST_DEFAULT = 1000
 
 class LineDataParser:
@@ -38,6 +38,7 @@ class LineDataParser:
         self.loss_dict["wdl"]        = self._single_match(", wdl loss: {}".format(FLOAT_REGEX), float)
         self.loss_dict["q"]          = self._single_match(", Q values loss: {}".format(FLOAT_REGEX), float)
         self.loss_dict["score"]      = self._single_match(", scores loss: {}".format(FLOAT_REGEX), float)
+        self.loss_dict["lr"]         = self._single_match(", learning rate: {}".format(FLOAT_REGEX), float)
 
 class GraphInfo:
     def __init__(self):
@@ -82,10 +83,25 @@ def plot_process(args):
             (get_graph_info(lines), os.path.split(filename)[-1])
         )
 
+    if args.y_axis == "lr":
+        y1_axis = "all"
+        ax1_y_label = "all loss"
+        ax1_plot_label = "all"
+        y2_axis = "lr"
+        ax2_y_label = "learning rate"
+        ax2_plot_label = "learning rate"
+    else:
+        y1_axis = "policy"
+        ax1_y_label = "policy loss"
+        ax1_plot_label = "policy"
+        y2_axis = "wdl"
+        ax2_y_label = "wdl rate"
+        ax2_plot_label = "wdl rate"
+
     for graph_info, file_tail in graph_info_list:
         xx, yy = graph_info.get_xy_plot(
             x_axis = args.x_axis,
-            y_axis = "policy",
+            y_axis = y1_axis,
             cut_first = args.cut_first
         )
         if len(xx) <= 1:
@@ -101,21 +117,19 @@ def plot_process(args):
 
         _, ax1 = plt.subplots()
         ax1.set_xlabel(args.x_axis)
-        ax1.set_ylabel("policy loss", color="blue")
+        ax1.set_ylabel(ax1_y_label, color="blue")
         ax1.tick_params(axis="y", labelcolor="blue")
-        ax1.plot(xx, yy, color="blue", linestyle="-", linewidth=1, label="policy")
-        #ax1.legend()
+        ax1.plot(xx, yy, color="blue", linestyle="-", linewidth=1, label=ax1_plot_label)
 
         xx, yy = graph_info.get_xy_plot(
             x_axis = args.x_axis,
-            y_axis = "wdl",
+            y_axis = y2_axis,
             cut_first = args.cut_first
         )
         ax2 = ax1.twinx()
-        ax2.set_ylabel("wdl loss", color="red")
+        ax2.set_ylabel(ax2_y_label, color="red")
         ax2.tick_params(axis="y", labelcolor="red")
-        ax2.plot(xx, yy, color="red", linestyle="-", linewidth=1, label="wdl")
-        #ax2.legend()
+        ax2.plot(xx, yy, color="red", linestyle="-", linewidth=1, label=ax2_plot_label)
 
     if args.log_scale:
         plt.xscale("log")
@@ -143,6 +157,9 @@ def check(args):
     if not args.x_axis in X_AXIS_TYPE_LIST:
         success = False
         print("X axis should be one of {}.".format("/".join([x for x in X_AXIS_TYPE_LIST])))
+    if not args.y_axis in Y_AXIS_TYPE_LIST:
+        success = False
+        print("Loss type should be one of {}.".format("/".join([y for y in Y_AXIS_TYPE_LIST])))
     return success
 
 if __name__ == "__main__":
@@ -155,6 +172,8 @@ if __name__ == "__main__":
                         help="The x-axis will be log scale.", action="store_true")
     parser.add_argument("--x-axis", metavar="<str>", default="steps",
                         help="X axis type in {}.".format("/".join([x for x in X_AXIS_TYPE_LIST])))
+    parser.add_argument("--y-axis", "--loss-type", metavar="<str>", default="all",
+                        help="Loss type in {}.".format("/".join([y for y in Y_AXIS_TYPE_LIST])))
     args = parser.parse_args()
     if check(args):
         plot_process(args)

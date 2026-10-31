@@ -1402,6 +1402,7 @@ class TrainingPipe():
         # Optimizer's parameters.
         self.weight_decay = cfg.weight_decay
         self.lr_schedule = cfg.lr_schedule
+        self.lr_annealing_cycle = self.cfg.lr_annealing_cycle
         self.head_lr_factor = cfg.head_lr_factor
         self.noreg_lr_factor = cfg.noreg_lr_factor
         self.muon_adam_lr_factor = cfg.muon_adam_lr_factor
@@ -1413,6 +1414,8 @@ class TrainingPipe():
         self.use_gpu = cfg.use_gpu
         self.device = torch.device("cuda") if self.use_gpu else torch.device("cpu")
         self.use_fp16 = cfg.use_fp16
+        if (self.opt_name == "Muon" or self.opt_name == "Aurora") and not torch.cuda.is_bf16_supported():
+            self.use_fp16 = False
         self.scaler = torch.amp.GradScaler("cuda") if self.use_fp16 else None
         self.net = Network(cfg)
         self.net.train()
@@ -1546,8 +1549,7 @@ class TrainingPipe():
         else:
             assert False
 
-    def _get_weight_decay(self, group_name):
-        effective_lr_scale = 8.0
+    def _get_weight_decay(self, group_name, curr_lr):
         is_muon_suitable = self._get_is_muon_suitable(group_name=group_name)
         if self.opt_name == "Muon" or self.opt_name == "Aurora":
             batch_scaling = math.sqrt(self.batchsize / 256.0)
@@ -1565,89 +1567,11 @@ class TrainingPipe():
 
         wd_scaling = batch_scaling * cmdline_wd_factor
 
-        """
-        if self.cfg.mode == "fixup":
-            if group_name in ["input", "normal", "normal_gamma", "output"]:
-                if self.opt_name == "Muon":
-                    return 0.005000 * wd_scaling
-                else:
-                    return 0.000001 * wd_scaling
-            elif group_name in ["normal_attn", "normal_tab", "tab_module"]:
-                if self.opt_name == "Muon":
-                    return 0.005000 * 0.5 * wd_scaling
-                else:
-                    return 0.000001 * 0.5 * wd_scaling
-            elif group_name in ["input_noreg", "noreg"]:
-                return 0.00000001 * wd_scaling
-            elif group_name == "output_noreg":
-                return 0.00000001 * wd_scaling
-            else:
-                assert False
-        else:
-            warmup_scale = self._get_lr_schedule(self.current_steps) / self.lr_schedule[-1][1]
-            adaptive_scale = 1.0
-            if group_name in ["input", "normal", "normal_attn", "normal_gamma", "normal_tab", "tab_module"]:
-                if self.opt_name == "Muon" or self.opt_name == "Aurora":
-                    wd_with_lr_scale = math.pow(effective_lr_scale * warmup_scale, 0.70) * adaptive_scale
-                else:
-                    wd_with_lr_scale = math.pow(effective_lr_scale * warmup_scale, 0.75) * adaptive_scale
-                if group_name == "input":
-                    # Branch here is mostly preserving inconsistent historical behavior, there's not
-                    # a great reason these should be different.
-                    if self.opt_name == "Muon" or self.opt_name == "Aurora":
-                        wd_group_factor = 2.0 / 3.0
-                    else:
-                        wd_group_factor = 1.0
-                elif group_name == "normal":
-                    wd_group_factor = 1.0
-                elif group_name == "normal_attn":
-                    wd_group_factor = 0.5
-                elif group_name == "normal_tab":
-                    wd_group_factor = 0.3
-                elif group_name == "tab_module":
-                    wd_group_factor = 0.1
-                elif group_name == "normal_gamma":
-                    # Batch norm gammas can be regularized a bit less,
-                    # doing them just as much empirically seemed to be a bit more unstable
-                    if self.opt_name == "Muon" or self.opt_name == "Aurora":
-                        wd_group_factor = 0.25
-                    else:
-                        wd_group_factor = 0.125
-                else:
-                    assert False
-                if (self.opt_name == "Muon" or self.opt_name == "Aurora") and not is_muon_suitable:
-                    return 0.00900 * wd_scaling * wd_with_lr_scale * wd_group_factor
-                elif self.opt_name == "Muon" or self.opt_name == "Aurora":
-                    return 0.02000 * wd_scaling * wd_with_lr_scale * wd_group_factor
-                else:
-                    return 0.00125 * wd_scaling * wd_with_lr_scale * wd_group_factor
-            elif group_name == "output":
-                if (self.opt_name == "Muon" or self.opt_name == "Aurora") and not is_muon_suitable:
-                    return 0.00400 * wd_scaling
-                elif self.opt_name == "Muon" or self.opt_name == "Aurora":
-                    assert False
-                else:
-                    return 0.000001 * wd_scaling
-            elif group_name == "input_noreg" or group_name == "noreg":
-                return 0.000001 * wd_scaling * math.pow(effective_lr_scale * warmup_scale, 0.75)
-            elif group_name == "output_noreg":
-                if (self.opt_name == "Muon" or self.opt_name == "Aurora") and not is_muon_suitable:
-                    return 0.000001 * wd_scaling
-                elif self.opt_name == "Muon" or self.opt_name == "Aurora":
-                    assert False
-                else:
-                    return 0.00000001 * wd_scaling
-            else:
-                assert False
-        """
-        curr_lr, max_lr = self._get_lr_schedule(self.current_steps)
-        warmup_scale = curr_lr / max_lr
-        adaptive_scale = 1.0
         if group_name in ["input", "normal", "normal_attn", "normal_gamma", "normal_tab", "tab_module"]:
             if self.opt_name == "Muon" or self.opt_name == "Aurora":
-                wd_with_lr_scale = math.pow(effective_lr_scale * warmup_scale, 0.70) * adaptive_scale
+                wd_with_lr_scale = math.pow(curr_lr, 0.70)
             else:
-                wd_with_lr_scale = math.pow(effective_lr_scale * warmup_scale, 0.75) * adaptive_scale
+                wd_with_lr_scale = math.pow(curr_lr, 0.75)
             if group_name == "input":
                 # Branch here is mostly preserving inconsistent historical behavior, there's not
                 # a great reason these should be different.
@@ -1686,7 +1610,7 @@ class TrainingPipe():
             else:
                 return 0.000001 * wd_scaling
         elif group_name == "input_noreg" or group_name == "noreg":
-            return 0.000001 * wd_scaling * math.pow(effective_lr_scale * warmup_scale, 0.75)
+            return 0.000001 * wd_scaling * math.pow(curr_lr, 0.75)
         elif group_name == "output_noreg":
             if (self.opt_name == "Muon" or self.opt_name == "Aurora") and not is_muon_suitable:
                 return 0.000001 * wd_scaling
@@ -1710,9 +1634,15 @@ class TrainingPipe():
                 })
                 num_reg_dict_params += len(reg_dict[group_name])
 
+        curr_lr, _ = self._get_lr_schedule(self.current_steps)
         for group in param_groups:
-            group["weight_decay"] = self._get_weight_decay(group_name=group["group_name"])
             group["use_muon"] = self._get_is_muon_suitable(group_name=group["group_name"])
+            if not group["use_muon"]:
+                group["weight_decay"] = self._get_weight_decay(
+                    group_name=group["group_name"], curr_lr=curr_lr * self.muon_adam_lr_factor)
+            else:
+                group["weight_decay"] = self._get_weight_decay(
+                    group_name=group["group_name"], curr_lr=curr_lr)
 
         num_params = 0
         for param in self.net.parameters():
@@ -1722,19 +1652,6 @@ class TrainingPipe():
         return param_groups
 
     def _get_lr_schedule(self, num_steps):
-        """
-        [0, 3.99e-5, 5000]
-          steps:100000  lr:8.88e-06
-          steps:200000  lr:6.29e-06
-          steps:300000  lr:5.14e-06
-          steps:400000  lr:4.46e-06
-          steps:500000  lr:3.99e-06
-          steps:600000  lr:3.64e-06
-          steps:700000  lr:3.37e-06
-          steps:800000  lr:3.15e-06
-          steps:900000  lr:2.97e-06
-          steps:1000000 lr:2.82e-06
-        """
         # Get the current learning rate from schedule.
         max_lr = 0.2
         max_s = 0
@@ -1755,13 +1672,15 @@ class TrainingPipe():
 
         if lr_base > 0 and (self.opt_name == "Aurora" or self.opt_name == "Muon"):
             if max_s < self.warmup_steps:
-                curr_lr = max_lr * math.sqrt(
-                    lr_base / (lr_base + num_steps - max_s - self.warmup_steps)
-                )
+                t_cur = (num_steps - max_s - self.warmup_steps) % self.lr_annealing_cycle
+                t = min(t_cur+1, self.lr_annealing_cycle)
+                cos_theta = math.cos(math.pi * t / self.lr_annealing_cycle)
+                curr_lr = lr_base + 0.5 * (max_lr - lr_base) * (1 + cos_theta)
             else:
-                curr_lr = max_lr * math.sqrt(
-                    lr_base / (lr_base + num_steps - max_s)
-                )
+                t_cur = (num_steps - max_s) % self.lr_annealing_cycle
+                t = min(t_cur+1, self.lr_annealing_cycle)
+                cos_theta = math.cos(math.pi * t / self.lr_annealing_cycle)
+                curr_lr = lr_base + 0.5 * (max_lr - lr_base) * (1 + cos_theta)
         else:
             curr_lr = max_lr
         return curr_lr, max_lr
@@ -1842,10 +1761,8 @@ class TrainingPipe():
                     param["lr"] = curr_lr * 2.0
                 else:
                     param["lr"] = curr_lr
-                # When using muon, scale all muon-ineligible (adam) param groups
-                if not self._get_is_muon_suitable(group_name=param["group_name"]):
-                    param["lr"] *= self.muon_adam_lr_factor
-                param["weight_decay"] = self._get_weight_decay(group_name=param["group_name"])
+                param["weight_decay"] = self._get_weight_decay(
+                    group_name=param["group_name"], curr_lr=param["lr"])
         else:
             for param in self.opt.param_groups:
                 param["lr"] = curr_lr
@@ -2062,12 +1979,13 @@ class TrainingPipe():
         return loss, all_loss_dict
 
     def _get_current_info(self, speed, running_loss_dict):
+        curr_lr, _ = self._get_lr_schedule(self.current_steps)
         info = str()
         info += "[steps: {}, samples: {}, speed: {:.2f}, learning rate: {}, batch size: {}] ->".format(
                     self.current_steps,
                     self.current_samples,
                     speed,
-                    self.opt.param_groups[0]["lr"],
+                    curr_lr,
                     self.batchsize)
         steps = running_loss_dict["steps"]
         info += " all loss: {:.4f},".format(running_loss_dict["loss"]/steps)
@@ -2175,12 +2093,17 @@ class TrainingPipe():
         macro_steps = 0 # actually network forwarding times
         clock_time = time.time() # current time stamp
 
+        if self.use_fp16 and torch.cuda.is_bf16_supported():
+            amp_type = torch.bfloat16
+        else:
+            amp_type = torch.float16
+
         while keep_running:
             for _ in range(self.steps_per_epoch):
                 planes, target = self._gather_data_from_loader(True)
 
                 # forward and backward for loss
-                with torch.amp.autocast("cuda", enabled=self.use_fp16):
+                with torch.amp.autocast("cuda", enabled=self.use_fp16, dtype=amp_type):
                     if self.cfg.use_compile:
                         planes = planes.to(self.device)
                         target_to = ()
@@ -2224,6 +2147,48 @@ class TrainingPipe():
  
                 if math.isnan(running_loss_dict["loss"]):
                     stdout_write("The gradient is explosion. Stop the training...\n")
+                    steps = running_loss_dict["steps"]
+                    print(f"steps: {steps}")
+                    if math.isnan(running_loss_dict["prob_loss"]):
+                        print(f" prob loss: {NaN}")
+                    else:
+                        print(f" prob loss: {running_loss_dict["prob_loss"]/steps:.4f}")
+                    if math.isnan(running_loss_dict["aux_prob_loss"]):
+                        print(f" aux prob loss: {NaN}")
+                    else:
+                        print(f" aux prob loss: {running_loss_dict["aux_prob_loss"]/steps:.4f}")
+                    if math.isnan(running_loss_dict["soft_prob_loss"]):
+                        print(f" soft prob loss: {NaN}")
+                    else:
+                        print(f" soft prob loss: {running_loss_dict["soft_prob_loss"]/steps:.4f}")
+                    if math.isnan(running_loss_dict["soft_aux_prob_loss"]):
+                        print(f" soft aux prob loss: {NaN}")
+                    else:
+                        print(f" soft aux prob loss: {running_loss_dict["soft_aux_prob_loss"]/steps:.4f}")
+                    if math.isnan(running_loss_dict["optimistic_loss"]):
+                        print(f" optimistic loss: {NaN}")
+                    else:
+                        print(f" optimistic loss: {running_loss_dict["optimistic_loss"]/steps:.4f}")
+                    if math.isnan(running_loss_dict["ownership_loss"]):
+                        print(f" ownership loss: {NaN}")
+                    else:
+                        print(f" ownership loss: {running_loss_dict["ownership_loss"]/steps:.4f}")
+                    if math.isnan(running_loss_dict["wdl_loss"]):
+                        print(f" wdl loss: {NaN}")
+                    else:
+                        print(f" wdl loss: {running_loss_dict["wdl_loss"]/steps:.4f}")
+                    if math.isnan(running_loss_dict["q_values_loss"]):
+                        print(f" Q values loss: {NaN}")
+                    else:
+                        print(f" Q values loss: {running_loss_dict["q_values_loss"]/steps:.4f}")
+                    if math.isnan(running_loss_dict["scores_loss"]):
+                        print(f" scores loss: {NaN}")
+                    else:
+                        print(f" scores loss: {running_loss_dict["scores_loss"]/steps:.4f}")
+                    if math.isnan(running_loss_dict["errors_loss"]):
+                        print(f" errors loss: {NaN}")
+                    else:
+                        print(f" errors loss: {running_loss_dict["errors_loss"]/steps:.4f}")
                     keep_running = False
                     break
 
@@ -2283,10 +2248,8 @@ class TrainingPipe():
                                 param["lr"] = curr_lr * 2.0
                             else:
                                 param["lr"] = curr_lr
-                            # When using muon, scale all muon-ineligible (adam) param groups
-                            if not self._get_is_muon_suitable(group_name=param["group_name"]):
-                                param["lr"] *= self.muon_adam_lr_factor
-                            param["weight_decay"] = self._get_weight_decay(group_name=param["group_name"])
+                            param["weight_decay"] = self._get_weight_decay(
+                                group_name=param["group_name"], curr_lr=param["lr"])
 
                 # stop the training if achieving max steps
                 if self.current_steps >= self.max_steps:
@@ -2320,3 +2283,4 @@ if __name__ == "__main__":
         stdout_write("Please give the setting json file.\n")
     else:
         train_process(args)
+    os._exit(0)

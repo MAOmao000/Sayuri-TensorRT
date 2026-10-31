@@ -14,7 +14,8 @@ Also added the following features:
 * Aurora+AdamW optimizer
 * torch.compile
 * TransformerAttention model for demonstration purposes
-* Automatic learning rate scheduling
+* Automatic learning rate scheduling (cosine annealing)
+* Support for bfloat16 in AMP (PyTorch Automatic Mixed Precision)
 
 ## Requirements
 
@@ -74,13 +75,16 @@ Additional configuration definitions (selfplay-setting.json):
     "AttnLogitPenaltyCoeff": 1e-3(default)    # Loss coeff for the attention logit bound penalty (linear hinge, mean over heads, sum over layers, per sample)
     "AttnLogitPenaltyBatchFrac": 1.0(default) # Compute the attention logit penalty on only this fraction of each batch (cuts its cost proportionally, adds gradient variance)
   "Train" : {
-    "Optimizer": "SGD"(default)               # ("SGD"|"Adam"|"Muon"|"Aurora")
-    "LearningRateAnnealingBase": 0(default)   # curr_lr = max_lr * math.sqrt("LearningRateAnnealingBase" / ("LearningRateAnnealingBase" + curr_steps - "WarmUpSteps"))
-    "HeadLrFactor": 0.5(default)     # LR factor for output head weights.
-    "NoregLrFactor": 1.0(default)    # LR factor for noreg params. (biases, norms)
-    "MuonAdamLrFactor": 1.0(default) # LR factor for muon-ineligible (adam) params when using muon.
-    "InputWdFactor": 1.0(default)    # Extra scaling factor for input weight decay.
-    "NormalWdFactor": 1.0(default)   # Extra scaling factor for normal weight decay.
+    "Optimizer": "SGD"(default)                    # ("SGD"|"Adam"|"Muon"|"Aurora")
+    "LearningRateSchedule": [[0, 0.2]](default)    # first:  Number of steps at schedule start.
+                                                   # second: Initial value of the learning rate.
+                                                   # third:  Final value of the learning rate. (optional)
+    "LearningRateAnnealingCycle": 500000(default)  # Learning rate annealing cycle. (number of steps)
+    "HeadLrFactor": 0.5(default)        # LR factor for output head weights.
+    "NoregLrFactor": 1.0(default)       # LR factor for noreg params. (biases, norms)
+    "MuonAdamLrFactor": 0.05(default)   # LR factor for muon-ineligible (adam) params when using muon.
+    "InputWdFactor": 1.0(default)       # Extra scaling factor for input weight decay.
+    "NormalWdFactor": 1.0(default)      # Extra scaling factor for normal weight decay.
     "NormalAttnWdFactor": 1.0(default)  # Extra scaling factor for normal_attn weight decay.
     "ExportONNX": false(default)        # Should we export the trained model using torch.onnx.export? (true|false)
     "UseDynamo": true(default)          # Should we use TorchDynamo when exporting with torch.onnx.export? (true|false)
@@ -150,23 +154,102 @@ Build
      Enable the tensor cores
    Allocated 400.00 MiB memory for NN cache (579324 entries).
 ```
-* b3xc192h64 RRTx1
-
-![loss_b3xc192](./img/loss_b3xc192.png)
-
-* b6xc192h64 RRTx2
-
-![loss_b6xc192](./img/loss_b6xc192.png)
-
-* b9xc192h64 RRTx3
-
-![loss_b9xc192](./img/loss_b9xc192.png)
-
+* Test configuration definition: The learning rate for the Muon optimizer has been changed to 0.01 for testing purposes; therefore, previous data has been removed from the public assets.
 ```
-Rank Name                                                       Elo    +    - games score oppo. draws
-   1 19x19 b12xc384nbt-s3592000-c4310000-w426561 original       166   49   49   197   81%   -80   19% 
-   2 9x9 b8xc160 sai                                            -12   43   43   206   48%     6   23% 
-   3 9x9 b9xc192h64 RRT3 Muon   silu fixup  RMSNormx  3.99e-5  -153   48   48   197   22%    73   19% 437.5K games
+b6xc96h32 RRTx2
+  selfplay-confif.txt                         original  config-1  config-2  config-3
+    ----------------------------------------- --------- --------- --------- ---------
+    --random-moves-factor                     0.1       0.1       0.1       0.1
+    --random-opening-prob                     0.75      0.75      0.75      -
+    --random-opening-temp                     -         0.9       0.9       -
+    --random-fastsearch-prob                  0.75      0.75      0.75      -
+    --komi-stddev                             2.5       1.0       1.0       1.0
+    --komi-big-stddev-prob                    0.06      0.05      0.05      0.05
+    --komi-big-stddev                         12        2.0       2.0       2.0
+    --handicap-fair-komi-prob                 0.5       0.5       0.5       0.5
+    --cpuct-init                              0.5       0.5       0.5       0.5
+    --cpuct-base                              19652     19652     19652     19652
+    --cpuct-base-factor                       1         1         1         1
+    --fpu-reduction                           0.25      0.25      0.25      0.25
+    --root-fpu-reduction                      0.25      0.25      0.25      0.25
+    --lcb-reduction                           0.0       0.0       0.0       0.0
+    --score-utility-factor                    0.4       0.4       0.4       0.4
+    --score-utility-div                       1.0       1.0       1.0       1.0
+    --forced-playouts-k                       -         2         2         -
+    --selfplay-query bkp                      9:7:1     9:7:0.98  9:7:0.99  9:7:0.99
+    --selfplay-query bhp                      -         9:2:0.1   9:2:0.1   9:2:0.1
+    --selfplay-query bkp                      -         8:10:0.01 8:10:0.01 8:10:0.01
+    --selfplay-query bkp                      -         7:8:0.01  7:8:0.01  7:8:0.01
+    --selfplay-query srs                      -         area      area      area
+    --selfplay-query srs                      -         territory territory territory
+    --playouts                                150       150       150       16
+    --gumbel                                  true      true      true      true
+    --gumbel-playouts-threshold               32        32        32        50
+    --gumbel-prom-visits                      1         1         1         x
+    --always-completed-q-policy               x         x         x         true
+    --fastsearch-playouts                     50        50        50        -
+    --fastsearch-playouts-prob                0.75      0.75      0.75      -
+    --resign-playouts                         32        32        32        100
+    --resign-threshold                        0.05      0.05      0.05      0.05
+    --resign-discard-prob                     0.9       0.9       0.9       0.9
+    --parallel-games                          64        64        64        64
+    --cache-memory-mib                        400       400       400       400
+    --early-symm-cache
+    --first-pass-bonus
+    --dirichlet-noise                                                       x
+    --dirichlet-epsilon                       0.25      0.15      0.15      x
+    --dirichlet-init                          0.03      0.20      0.20      x
+    --dirichlet-factor                        361       x         x         x
+    --root-policy-temp                        1.0       0.9       0.9       x
+
+  selfplay-setting.json                       original  config-1  config-2  config-3
+    ----------------------------------------- --------- --------- --------- ---------
+    "MaxBoardSize" :                          19        9         9         9
+    "ResidualChannels" :                      -         96        96        96
+    "PolicyHeadChannels" :                    24        32        32        32
+    "ValueHeadChannels" :                     24        32        32        32
+    "Activation" :                            "mish"    "silu"    "silu"    "silu"
+    "BatchNormMode" :                         -         "fixup"   "fixup"   "fixup"
+    "PreActivation" :                         -         true      true      true
+    "FinalBlockCgroupSize" :                  -         0         0         0
+    "TransformerFFNRatio":                    -         4         4         4
+    "ReductionInput":                         -         false     false     false
+    "Stack" : [
+        "ResidualBlock",
+        "ResidualBlock",
+        "TransformerBlock",
+        "ResidualBlock",
+        "ResidualBlock",
+        "TransformerBlock"
+    ]
+    "UseFp16" :                               true      true      true      true 
+    "Optimizer" :                             "SGD"     "Muon"    "Muon"    "Muon"
+    "StepsPerEpoch" :                         4000      4000      2000      4000
+    "ValidationSteps" :                       100       100       50        100
+    "VerboseSteps" :                          1000      1000      500       1000
+    "MaxStepsPerRunning" :                    4000      4000      2000      4000
+    "BufferSize" :                            524288    524288    524288    524288
+    "NumberChunks" :                          500000    500000    200000    500000
+    "ChunksIncreasingC" :                     5000      5000      2000      5000
+    "SwaSteps" :                              500       500       250       500
+    "WarmUpSteps" :                           20000     8000      8000      8000
+    "PolicySurpriseFactor" :                  0.5       0.5       0.5       0.5
+    "RenormMaxR" :                            3.        x         x         x
+    "RenormMaxD" :                            4.        x         x         x
+    "LearningRateSchedule" : [
+                                              0,        0,        0,        0,
+                                              5e-3      1e-2,     1e-2,     1e-2,
+                                                        1e-3      1e-3      1e-3
+    ],
+    "LearningRateAnnealingCycle" :            -         500000     500000   500000
+    "HeadLrFactor" :                          -         0.5        0.5      0.5
+    "NoregLrFactor" :                         -         1.0        1.0      1.0
+    "MuonAdamLrFactor" :                      -         0.2        0.2      0.2
+    "InputWdFactor" :                         -         1.0        1.0      1.0
+    "NormalWdFactor" :                        -         1.0        1.0      1.0
+    "NormalAttnWdFactor" :                    -         1.0        1.0      1.0
+    "ExportONNX" :                            -         true       true     true
+    "UseCompile" :                            -         true       true     true
 ```
 
 The following is the original README for Sayuri.
