@@ -586,6 +586,10 @@ class Convolve(nn.Module):
             reg_dict["input"].append(self.conv.weight)
             if self.bias:
                 reg_dict["input_noreg"].append(self.conv.bias)
+        elif placement == "value_block":
+            reg_dict["value"].append(self.conv.weight)
+            if self.bias:
+                reg_dict["value_noreg"].append(self.conv.bias)
         else:
             reg_dict["output"].append(self.conv.weight)
             if self.bias:
@@ -675,6 +679,8 @@ class ConvBlock(nn.Module):
             reg_dict["normal"].append(self.conv.weight)
         elif placement == "before_block":
             reg_dict["input"].append(self.conv.weight)
+        elif placement == "value_block":
+            reg_dict["value"].append(self.conv.weight)
         else:
             reg_dict["output"].append(self.conv.weight)
         if not isinstance(self.pre_bn, CustomIdentity):
@@ -2200,7 +2206,7 @@ class Network(nn.Module):
 
         self.activation = cfg.activation.lower()  # default:"relu"
         self.input_channels = cfg.input_channels  # default:43
-        self.reduction_input = cfg.reduction_input  # default:True
+        self.reduction_input = cfg.reduction_input  # default:False
         self.reductions = 0
         self.residual_channels = cfg.residual_channels  # default:None
         self.xsize = cfg.boardsize  # default:19
@@ -2497,13 +2503,13 @@ class Network(nn.Module):
                         self.is_pre_act = True  # used Transformer
                     last_is_tran = True
                     if self.reduction_input:
-                        self.reductions = 12 + 6
+                        self.reductions = 7 + 9 # ko move + liberties + ladder
                     if component ==  "TransformerBlock":
                         num_transformer_blocks += 1
 
         if self.is_pre_act:
             self.input_conv = Convolve(
-                in_channels=self.input_channels - self.reductions,  # default:43
+                in_channels=self.input_channels - self.reductions,  # default:43 (-16)
                 out_channels=self.residual_channels,  # default:None
                 kernel_size=3,
                 activation="identity",
@@ -2512,7 +2518,7 @@ class Network(nn.Module):
             )
         else:
             self.input_conv = ConvBlock(
-                in_channels=self.input_channels - self.reductions,  # default:43
+                in_channels=self.input_channels - self.reductions,  # default:43 (-16)
                 out_channels=self.residual_channels,   # default:None
                 kernel_size=3,
                 use_gamma=True,
@@ -2582,15 +2588,16 @@ class Network(nn.Module):
         if self.reductions > 0:
             reduction_planes = torch.cat(
                 (
-                    planes[:, 0:2, :, :].contiguous(),   # current and opponent player history 1
-                    planes[:, 3:5, :, :].contiguous(),   # current and opponent player history 2
+                    planes[:, 0:5, :, :].contiguous(),   # current and opponent player history 1
+                                                         # last move history 1
+                                                         # current and opponent player history 2
                     planes[:, 6:8, :, :].contiguous(),   # current and opponent player history 3
                     planes[:, 9:11, :, :].contiguous(),  # current and opponent player history 4
                     planes[:, 12:14, :, :].contiguous(), # current and opponent player history 5
                     planes[:, 15:17, :, :].contiguous(), # current and opponent player history 6
                     planes[:, 18:20, :, :].contiguous(), # current and opponent player history 7
                     planes[:, 21:23, :, :].contiguous(), # current and opponent player history 8
-                    planes[:, 25:28, :, :].contiguous(), # pass-alive and pass-dead area
+                    planes[:, 25:29, :, :].contiguous(), # pass-alive and pass-dead area
                     planes[:, 37:, :, :].contiguous()    # global features
                 ),
                 dim=1)
@@ -2773,7 +2780,9 @@ class Network(nn.Module):
             return soft_prob
 
         def cross_entropy(pred, target, weight=1.):
-            loss_sum = -torch.sum(torch.mul(F.log_softmax(pred, dim=-1), target), dim=1)
+            if torch.isnan(target).any():
+                target = torch.nan_to_num(target, nan=0.0)
+            loss_sum = F.cross_entropy(pred.float(), target.float(), reduction="none")
             return torch.mean(weight * loss_sum, dim=0)
 
         def huber_loss(x, y, delta, weight=1.):
@@ -3067,6 +3076,8 @@ class Network(nn.Module):
         reg_dict["output_noreg"] = []
         reg_dict["normal_tab"] = []
         reg_dict["tab_module"] = []
+        reg_dict["value"] = []
+        reg_dict["value_noreg"] = []
 
         self.input_conv.add_reg_dict(reg_dict, placement="before_block")
         for block in self.residual_tower:
@@ -3082,7 +3093,7 @@ class Network(nn.Module):
         self.policy_intermediate_fc.add_reg_dict(reg_dict, placement="after_block")
         self.pol_misc.add_reg_dict(reg_dict, placement="after_block")
         self.pol_misc_pass_fc.add_reg_dict(reg_dict, placement="after_block")
-        self.value_conv.add_reg_dict(reg_dict, placement="after_block")
-        self.value_intermediate_fc.add_reg_dict(reg_dict, placement="after_block")
-        self.ownership_conv.add_reg_dict(reg_dict, placement="after_block")
-        self.value_misc_fc.add_reg_dict(reg_dict, placement="after_block")
+        self.value_conv.add_reg_dict(reg_dict, placement="value_block")
+        self.value_intermediate_fc.add_reg_dict(reg_dict, placement="value_block")
+        self.ownership_conv.add_reg_dict(reg_dict, placement="value_block")
+        self.value_misc_fc.add_reg_dict(reg_dict, placement="value_block")
