@@ -80,9 +80,11 @@ Additional configuration definitions (selfplay-setting.json):
                                                    # second: Initial value of the learning rate.
                                                    # third:  Final value of the learning rate. (optional)
     "LearningRateAnnealingCycle": 500000(default)  # Learning rate annealing cycle. (number of steps)
-    "HeadLrFactor": 0.5(default)        # LR factor for output head weights.
+    "HeadLrFactor": 0.5(default)        # LR factor for output policy head weights.
+    "ValueLrFactor": 1.0(default)       # LR factor for output value head weights.
     "NoregLrFactor": 1.0(default)       # LR factor for noreg params. (biases, norms)
-    "MuonAdamLrFactor": 0.05(default)   # LR factor for muon-ineligible (adam) params when using muon.
+    "ValueNoregLrFactor": 1.0(default)  # LR factor for value head noreg params. (biases, norms)
+    "MuonAdamLrFactor": 0.2(default)    # LR factor for muon-ineligible (adam) params when using muon.
     "InputWdFactor": 1.0(default)       # Extra scaling factor for input weight decay.
     "NormalWdFactor": 1.0(default)      # Extra scaling factor for normal weight decay.
     "NormalAttnWdFactor": 1.0(default)  # Extra scaling factor for normal_attn weight decay.
@@ -95,12 +97,15 @@ Additional configuration definitions (selfplay-setting.json):
                                         # parameter. Same update equations, but not bitwise identical to the scalar launches.
     "UseForeachAuxAdam": true(default)  # Use torch._foreach multi-tensor kernels for the auxiliary Adam parameter groups.
     "MuonNsBatchSize": 32(default)      # Newton-Schulz batch size.
-    "WdFloorFraction": None(default)    # Exempt from weight decay the part of each output channel of each weight matrix
+    "WdFloorFraction": 0.5(default)     # Exempt from weight decay the part of each output channel of each weight matrix
                                         # whose RMS is below this fraction of the tensor's RMS at initialization,
                                         # so that unused channels never decay to exactly zero,
                                         # a state Muon cannot recover from.
                                         # Can be changed between runs.
                                         # Requires muon.
+                                        # Minimum floor fraction for the weight decay schedule. (0.2 - 0.5)
+    "WdlLossScale": 1.0(default)        # Scaling factor for WDL loss during loss calculation.
+    "GnormClipScale": 1.0(default)      # Scale relative to the default gradient clipping value.
 ```
 Deletion configuration definition (selfplay-setting.json):
 ```
@@ -176,7 +181,7 @@ b6xc96h32 RRTx2
     --score-utility-factor                    0.4       0.4       0.4       0.4
     --score-utility-div                       1.0       1.0       1.0       1.0
     --forced-playouts-k                       -         2         2         -
-    --selfplay-query bkp                      9:7:1     9:7:0.98  9:7:0.99  9:7:0.99
+    --selfplay-query bkp                      9:7:1     9:7:0.98  9:7:0.98  9:7:0.98
     --selfplay-query bhp                      -         9:2:0.1   9:2:0.1   9:2:0.1
     --selfplay-query bkp                      -         8:10:0.01 8:10:0.01 8:10:0.01
     --selfplay-query bkp                      -         7:8:0.01  7:8:0.01  7:8:0.01
@@ -205,22 +210,22 @@ b6xc96h32 RRTx2
   selfplay-setting.json                       original  config-1  config-2  config-3
     ----------------------------------------- --------- --------- --------- ---------
     "MaxBoardSize" :                          19        9         9         9
-    "ResidualChannels" :                      -         96        96        96
+    "ResidualChannels" :                      96        96        96        96
     "PolicyHeadChannels" :                    24        32        32        32
     "ValueHeadChannels" :                     24        32        32        32
     "Activation" :                            "mish"    "silu"    "silu"    "silu"
-    "BatchNormMode" :                         -         "fixup"   "fixup"   "fixup"
-    "PreActivation" :                         -         true      true      true
+    "BatchNormMode" :                         "renorm"  "fixup"   "fixup"   "fixup"
+    "PreActivation" :                         false     true      true      true
     "FinalBlockCgroupSize" :                  -         0         0         0
     "TransformerFFNRatio":                    -         4         4         4
-    "ReductionInput":                         -         false     false     false
+    "ReductionInput":                         -         true      false     false
     "Stack" : [
-        "ResidualBlock",
-        "ResidualBlock",
-        "TransformerBlock",
-        "ResidualBlock",
-        "ResidualBlock",
-        "TransformerBlock"
+        "ResidualBlock",                      "Nest"    "Res"    "Res"     "Res"
+        "ResidualBlock",                      "Nest"    "Res"    "Res"     "Res"
+        "TransformerBlock",                   "Nest-SE" "Tran"   "Tran"    "Tran"
+        "ResidualBlock",                      "Nest"    "Res"    "Res"     "Res"
+        "ResidualBlock",                      "Nest"    "Res"    "Res"     "Res"
+        "TransformerBlock"                    "Nest-SE" "Tran"   "Tran"    "Tran"
     ]
     "UseFp16" :                               true      true      true      true 
     "Optimizer" :                             "SGD"     "Muon"    "Muon"    "Muon"
@@ -232,24 +237,28 @@ b6xc96h32 RRTx2
     "NumberChunks" :                          500000    500000    200000    500000
     "ChunksIncreasingC" :                     5000      5000      2000      5000
     "SwaSteps" :                              500       500       250       500
-    "WarmUpSteps" :                           20000     8000      8000      8000
+    "WarmUpSteps" :                           20000     20000     8000      8000
     "PolicySurpriseFactor" :                  0.5       0.5       0.5       0.5
+    "WdFloorFraction" :                       -         0.5       0.5       0.5
+    "GnormClipScale" :                        -         1.0       1.0       -
     "RenormMaxR" :                            3.        x         x         x
     "RenormMaxD" :                            4.        x         x         x
     "LearningRateSchedule" : [
                                               0,        0,        0,        0,
-                                              5e-3      1e-2,     1e-2,     1e-2,
+                                              5e-3      2e-2,     1e-2,     1e-2,
                                                         1e-3      1e-3      1e-3
     ],
-    "LearningRateAnnealingCycle" :            -         500000     500000   500000
-    "HeadLrFactor" :                          -         0.5        0.5      0.5
-    "NoregLrFactor" :                         -         1.0        1.0      1.0
-    "MuonAdamLrFactor" :                      -         0.2        0.2      0.2
-    "InputWdFactor" :                         -         1.0        1.0      1.0
-    "NormalWdFactor" :                        -         1.0        1.0      1.0
-    "NormalAttnWdFactor" :                    -         1.0        1.0      1.0
-    "ExportONNX" :                            -         true       true     true
-    "UseCompile" :                            -         true       true     true
+    "LearningRateAnnealingCycle" :            -         500000    500000   500000
+    "HeadLrFactor" :                          -         0.5       0.5      0.5
+    "ValueLrFactor" :                         -         1.0       1.0      1.0
+    "NoregLrFactor" :                         -         1.0       1.0      1.0
+    "ValueNoregLrFactor" :                    -         1.0       1.0      1.0
+    "MuonAdamLrFactor" :                      -         0.2       0.2      0.2
+    "InputWdFactor" :                         -         1.0       1.0      1.0
+    "NormalWdFactor" :                        -         1.0       1.0      1.0
+    "NormalAttnWdFactor" :                    -         1.0       1.0      1.0
+    "ExportONNX" :                            false     true      true     true
+    "UseCompile" :                            false     true      true     true
 ```
 
 The following is the original README for Sayuri.
