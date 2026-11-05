@@ -63,13 +63,15 @@ class Config:
 
         self.optimizer = train.get("Optimizer", "SGD")
         self.use_gpu = torch.cuda.is_available() if train.get("UseGPU", None) is None else train.get("UseGPU")
-        self.use_fp16 = train.get("UseFp16", False) if self.use_gpu else False
+        self.use_fp16 = train.get("UseFp16", True) if self.use_gpu else False
         self.weight_decay = train.get("WeightDecay", 1e-4)
         self.lr_schedule = train.get("LearningRateSchedule", [[0, 0.2]])
         self.lr_annealing_cycle = train.get("LearningRateAnnealingCycle", 500000)
         self.head_lr_factor = train.get("HeadLrFactor", 0.5)
+        self.value_lr_factor = train.get("ValueLrFactor", 1.0)
         self.noreg_lr_factor = train.get("NoregLrFactor", 1.0)
-        self.muon_adam_lr_factor = train.get("MuonAdamLrFactor", 0.05)
+        self.value_noreg_lr_factor = train.get("ValueNoregLrFactor", 1.0)
+        self.muon_adam_lr_factor = train.get("MuonAdamLrFactor", 0.2)
         self.input_wd_factor = train.get("InputWdFactor", 1.0)
         self.normal_wd_factor = train.get("NormalWdFactor", 1.0)
         self.normal_attn_wd_factor = train.get("NormalAttnWdFactor", 1.0)
@@ -104,8 +106,9 @@ class Config:
         self.use_batched_muon_ns = train.get("UseBatchedMuonNs", True)
         self.use_foreach_aux_adam = train.get("UseForeachAuxAdam", True)
         self.muon_ns_batch_size = train.get("MuonNsBatchSize", 32)
-        self.wd_floor_frac = train.get("WdFloorFraction", None)
+        self.wd_floor_frac = train.get("WdFloorFraction", 0.5)
         self.wdl_loss_scale = train.get("WdlLossScale", 1.0)
+        self.gnorm_clip_scale = train.get("GnormClipScale", 1.0)
 
         assert self.train_dir != None, "TrainDirectory is not specified."
         assert self.store_path != None, "StorePath is not specified."
