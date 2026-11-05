@@ -1404,7 +1404,9 @@ class TrainingPipe():
         self.lr_schedule = cfg.lr_schedule
         self.lr_annealing_cycle = self.cfg.lr_annealing_cycle
         self.head_lr_factor = cfg.head_lr_factor
+        self.value_lr_factor = cfg.value_lr_factor
         self.noreg_lr_factor = cfg.noreg_lr_factor
+        self.value_noreg_lr_factor = cfg.value_noreg_lr_factor
         self.muon_adam_lr_factor = cfg.muon_adam_lr_factor
         self.input_wd_factor = cfg.input_wd_factor
         self.normal_wd_factor = cfg.normal_wd_factor
@@ -1480,7 +1482,7 @@ class TrainingPipe():
         # Copy the initial weights.
         self.swa_net.accumulate_swa(self.module, 0)
 
-        init_lr, _ = self._get_lr_schedule(0)
+        init_lr = self._get_lr_schedule(0)
 
         # We may fail to load the optimizer. So initializing
         # it before loading it.
@@ -1544,12 +1546,12 @@ class TrainingPipe():
     def _get_is_muon_suitable(self, group_name):
         if group_name in ["normal", "normal_attn", "normal_tab", "tab_module"]:
             return True
-        elif group_name in ["normal_gamma", "noreg", "output", "output_noreg", "input", "input_noreg"]:
+        elif group_name in ["normal_gamma", "noreg", "output", "output_noreg", "value", "value_noreg", "input", "input_noreg"]:
             return False
         else:
             assert False
 
-    def _get_weight_decay(self, group_name, curr_lr):
+    def _get_weight_decay(self, group_name):
         is_muon_suitable = self._get_is_muon_suitable(group_name=group_name)
         if self.opt_name == "Muon" or self.opt_name == "Aurora":
             batch_scaling = math.sqrt(self.batchsize / 256.0)
@@ -1567,57 +1569,21 @@ class TrainingPipe():
 
         wd_scaling = batch_scaling * cmdline_wd_factor
 
-        if group_name in ["input", "normal", "normal_attn", "normal_gamma", "normal_tab", "tab_module"]:
+        if group_name in ["input", "normal", "normal_gamma", "output", "value"]:
             if self.opt_name == "Muon" or self.opt_name == "Aurora":
-                wd_with_lr_scale = math.pow(curr_lr, 0.70)
-            else:
-                wd_with_lr_scale = math.pow(curr_lr, 0.75)
-            if group_name == "input":
-                # Branch here is mostly preserving inconsistent historical behavior, there's not
-                # a great reason these should be different.
-                if self.opt_name == "Muon" or self.opt_name == "Aurora":
-                    wd_group_factor = 2.0 / 3.0
-                else:
-                    wd_group_factor = 1.0
-            elif group_name == "normal":
-                wd_group_factor = 1.0
-            elif group_name == "normal_attn":
-                wd_group_factor = 0.5
-            elif group_name == "normal_tab":
-                wd_group_factor = 0.3
-            elif group_name == "tab_module":
-                wd_group_factor = 0.1
-            elif group_name == "normal_gamma":
-                # Batch norm gammas can be regularized a bit less,
-                # doing them just as much empirically seemed to be a bit more unstable
-                if self.opt_name == "Muon" or self.opt_name == "Aurora":
-                    wd_group_factor = 0.25
-                else:
-                    wd_group_factor = 0.125
-            else:
-                assert False
-            if (self.opt_name == "Muon" or self.opt_name == "Aurora") and not is_muon_suitable:
-                return 0.00900 * wd_scaling * wd_with_lr_scale * wd_group_factor
-            elif self.opt_name == "Muon" or self.opt_name == "Aurora":
-                return 0.02000 * wd_scaling * wd_with_lr_scale * wd_group_factor
-            else:
-                return 0.00125 * wd_scaling * wd_with_lr_scale * wd_group_factor
-        elif group_name == "output":
-            if (self.opt_name == "Muon" or self.opt_name == "Aurora") and not is_muon_suitable:
-                return 0.00400 * wd_scaling
-            elif self.opt_name == "Muon" or self.opt_name == "Aurora":
-                assert False
+                # Total guess, this configuration was never tested
+                return 0.005000 * wd_scaling
             else:
                 return 0.000001 * wd_scaling
+        elif group_name in ["normal_attn", "normal_tab", "tab_module"]:
+            if self.opt_name == "Muon" or self.opt_name == "Aurora":
+                return 0.005000 * 0.5 * wd_scaling
+            else:
+                return 0.000001 * 0.5 * wd_scaling
         elif group_name == "input_noreg" or group_name == "noreg":
-            return 0.000001 * wd_scaling * math.pow(curr_lr, 0.75)
-        elif group_name == "output_noreg":
-            if (self.opt_name == "Muon" or self.opt_name == "Aurora") and not is_muon_suitable:
-                return 0.000001 * wd_scaling
-            elif self.opt_name == "Muon" or self.opt_name == "Aurora":
-                assert False
-            else:
-                return 0.00000001 * wd_scaling
+            return 0.00000001 * wd_scaling
+        elif group_name == "output_noreg" or "value_noreg":
+            return 0.00000001 * wd_scaling
         else:
             assert False
 
@@ -1634,15 +1600,9 @@ class TrainingPipe():
                 })
                 num_reg_dict_params += len(reg_dict[group_name])
 
-        curr_lr, _ = self._get_lr_schedule(self.current_steps)
         for group in param_groups:
             group["use_muon"] = self._get_is_muon_suitable(group_name=group["group_name"])
-            if not group["use_muon"]:
-                group["weight_decay"] = self._get_weight_decay(
-                    group_name=group["group_name"], curr_lr=curr_lr * self.muon_adam_lr_factor)
-            else:
-                group["weight_decay"] = self._get_weight_decay(
-                    group_name=group["group_name"], curr_lr=curr_lr)
+            group["weight_decay"] = self._get_weight_decay(group_name=group["group_name"])
 
         num_params = 0
         for param in self.net.parameters():
@@ -1668,7 +1628,7 @@ class TrainingPipe():
 
         if self.warmup_steps > 0 and num_steps < self.warmup_steps:
             curr_lr = max_lr * ((num_steps+1)/self.warmup_steps)
-            return curr_lr, max_lr
+            return curr_lr
 
         if lr_base > 0 and (self.opt_name == "Aurora" or self.opt_name == "Muon"):
             if max_s < self.warmup_steps:
@@ -1683,7 +1643,7 @@ class TrainingPipe():
                 curr_lr = lr_base + 0.5 * (max_lr - lr_base) * (1 + cos_theta)
         else:
             curr_lr = max_lr
-        return curr_lr, max_lr
+        return curr_lr
 
     def _compute_param_init_rms(self, raw_model):
         """RMS of every parameter tensor, keyed by parameter name. Meant to be called on a freshly
@@ -1747,7 +1707,7 @@ class TrainingPipe():
         if self.param_init_rms is None:
             self.param_init_rms = _compute_param_init_rms(self.net)
 
-        curr_lr, _ = self._get_lr_schedule(self.current_steps)
+        curr_lr = self._get_lr_schedule(self.current_steps)
 
         if self.opt_name == "Muon" or self.opt_name == "Aurora":
             for param in self.opt.param_groups:
@@ -1757,12 +1717,17 @@ class TrainingPipe():
                     param["lr"] = curr_lr * self.head_lr_factor
                     if param["group_name"] == "output_noreg":
                         param["lr"] *= self.noreg_lr_factor
+                elif param["group_name"] in ["value_noreg", "value"]:
+                    param["lr"] = curr_lr * self.value_lr_factor
+                    if param["group_name"] == "value_noreg":
+                        param["lr"] *= self.value_noreg_lr_factor
                 elif param["group_name"] in ["normal", "normal_attn", "normal_tab", "tab_module"]:
                     param["lr"] = curr_lr * 2.0
                 else:
                     param["lr"] = curr_lr
-                param["weight_decay"] = self._get_weight_decay(
-                    group_name=param["group_name"], curr_lr=param["lr"])
+                if not self._get_is_muon_suitable(group_name=param["group_name"]):
+                    param["lr"] *= self.muon_adam_lr_factor
+                param["weight_decay"] = self._get_weight_decay(group_name=param["group_name"])
         else:
             for param in self.opt.param_groups:
                 param["lr"] = curr_lr
@@ -1979,7 +1944,7 @@ class TrainingPipe():
         return loss, all_loss_dict
 
     def _get_current_info(self, speed, running_loss_dict):
-        curr_lr, _ = self._get_lr_schedule(self.current_steps)
+        curr_lr = self._get_lr_schedule(self.current_steps)
         info = str()
         info += "[steps: {}, samples: {}, speed: {:.2f}, learning rate: {}, batch size: {}] ->".format(
                     self.current_steps,
@@ -2150,43 +2115,43 @@ class TrainingPipe():
                     steps = running_loss_dict["steps"]
                     print(f"steps: {steps}")
                     if math.isnan(running_loss_dict["prob_loss"]):
-                        print(f" prob loss: {NaN}")
+                        print(f" prob loss: NaN")
                     else:
                         print(f" prob loss: {running_loss_dict["prob_loss"]/steps:.4f}")
                     if math.isnan(running_loss_dict["aux_prob_loss"]):
-                        print(f" aux prob loss: {NaN}")
+                        print(f" aux prob loss: NaN")
                     else:
                         print(f" aux prob loss: {running_loss_dict["aux_prob_loss"]/steps:.4f}")
                     if math.isnan(running_loss_dict["soft_prob_loss"]):
-                        print(f" soft prob loss: {NaN}")
+                        print(f" soft prob loss: NaN")
                     else:
                         print(f" soft prob loss: {running_loss_dict["soft_prob_loss"]/steps:.4f}")
                     if math.isnan(running_loss_dict["soft_aux_prob_loss"]):
-                        print(f" soft aux prob loss: {NaN}")
+                        print(f" soft aux prob loss: NaN")
                     else:
                         print(f" soft aux prob loss: {running_loss_dict["soft_aux_prob_loss"]/steps:.4f}")
                     if math.isnan(running_loss_dict["optimistic_loss"]):
-                        print(f" optimistic loss: {NaN}")
+                        print(f" optimistic loss: NaN")
                     else:
                         print(f" optimistic loss: {running_loss_dict["optimistic_loss"]/steps:.4f}")
                     if math.isnan(running_loss_dict["ownership_loss"]):
-                        print(f" ownership loss: {NaN}")
+                        print(f" ownership loss: NaN")
                     else:
                         print(f" ownership loss: {running_loss_dict["ownership_loss"]/steps:.4f}")
                     if math.isnan(running_loss_dict["wdl_loss"]):
-                        print(f" wdl loss: {NaN}")
+                        print(f" wdl loss: NaN")
                     else:
                         print(f" wdl loss: {running_loss_dict["wdl_loss"]/steps:.4f}")
-                    if math.isnan(running_loss_dict["q_values_loss"]):
-                        print(f" Q values loss: {NaN}")
+                    if math.isnan(running_loss_dict["q_vals_loss"]):
+                        print(f" Q values loss: NaN")
                     else:
-                        print(f" Q values loss: {running_loss_dict["q_values_loss"]/steps:.4f}")
+                        print(f" Q values loss: {running_loss_dict["q_vals_loss"]/steps:.4f}")
                     if math.isnan(running_loss_dict["scores_loss"]):
-                        print(f" scores loss: {NaN}")
+                        print(f" scores loss: NaN")
                     else:
                         print(f" scores loss: {running_loss_dict["scores_loss"]/steps:.4f}")
                     if math.isnan(running_loss_dict["errors_loss"]):
-                        print(f" errors loss: {NaN}")
+                        print(f" errors loss: NaN")
                     else:
                         print(f" errors loss: {running_loss_dict["errors_loss"]/steps:.4f}")
                     keep_running = False
@@ -2201,6 +2166,7 @@ class TrainingPipe():
                     else:
                         gnorm_cap = 5500.0
                     gnorm_cap *= math.sqrt(self.batchsize / 256.0)
+                    gnorm_cap *= self.cfg.gnorm_clip_scale
                     torch.nn.utils.clip_grad_norm_(
                         self.net.parameters(), max_norm=gnorm_cap).detach().cpu().item()
 
@@ -2232,7 +2198,7 @@ class TrainingPipe():
                         self.swa_net.accumulate_swa(self.module, self.swa_count)
 
                     # update learning rate
-                    curr_lr, _ = self._get_lr_schedule(self.current_steps)
+                    curr_lr = self._get_lr_schedule(self.current_steps)
                     if self.opt_name == "Adam" or self.opt_name == "SGD":
                         for param in self.opt.param_groups:
                             param["lr"] = curr_lr
@@ -2244,12 +2210,17 @@ class TrainingPipe():
                                 param["lr"] = curr_lr * self.head_lr_factor
                                 if param["group_name"] == "output_noreg":
                                     param["lr"] *= self.noreg_lr_factor
+                            elif param["group_name"] in ["value_noreg", "value"]:
+                                param["lr"] = curr_lr * self.value_lr_factor
+                                if param["group_name"] == "value_noreg":
+                                    param["lr"] *= self.value_noreg_lr_factor
                             elif param["group_name"] in ["normal", "normal_attn", "normal_tab", "tab_module"]:
                                 param["lr"] = curr_lr * 2.0
                             else:
                                 param["lr"] = curr_lr
-                            param["weight_decay"] = self._get_weight_decay(
-                                group_name=param["group_name"], curr_lr=param["lr"])
+                            if not self._get_is_muon_suitable(group_name=param["group_name"]):
+                                param["lr"] *= self.muon_adam_lr_factor
+                            param["weight_decay"] = self._get_weight_decay(group_name=param["group_name"])
 
                 # stop the training if achieving max steps
                 if self.current_steps >= self.max_steps:
