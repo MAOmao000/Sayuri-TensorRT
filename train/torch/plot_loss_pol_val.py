@@ -95,8 +95,8 @@ def plot_process(args):
         ax1_y_label = "policy loss"
         ax1_plot_label = "policy"
         y2_axis = "wdl"
-        ax2_y_label = "wdl rate"
-        ax2_plot_label = "wdl rate"
+        ax2_y_label = "wdl loss"
+        ax2_plot_label = "wdl"
 
     for graph_info, file_tail in graph_info_list:
         xx, yy = graph_info.get_xy_plot(
