@@ -10,10 +10,10 @@
 This is a prototype of the TensorRT backend for ONNX (onnx-tensorrt) designed for Sayuri.
 AQ already adopted this method (using UFF instead of ONNX) in 2018, but there were still many restrictions at that time, so it was not adopted in the Go engine for a while.
 Also added the following features:
-* Muon+AdamW optimizer
-* Aurora+AdamW optimizer
-* torch.compile
-* TransformerAttention model for demonstration purposes
+* Muon+AdamW optimizer (Ported KataGo v1.18)
+* Aurora+AdamW optimizer (Ported KataGo v1.18)
+* torch.compile (Ported KataGo v1.18)
+* TransformerAttention model for demonstration purposes (Ported KataGo v1.18)
 * Automatic learning rate scheduling (cosine annealing)
 * Support for bfloat16 in AMP (PyTorch Automatic Mixed Precision)
 
@@ -159,7 +159,7 @@ Build
      Enable the tensor cores
    Allocated 400.00 MiB memory for NN cache (579324 entries).
 ```
-* Test configuration definition: The learning rate for the Muon optimizer has been changed to 0.01 for testing purposes; therefore, previous data has been removed from the public assets.
+* Test configuration definition: The learning rate for the Muon optimizer has been changed to 0.02 for testing purposes; therefore, previous data has been removed from the public assets.
 ```
 b6xc96h32 RRTx2
   selfplay-confif.txt                         original  config-1  config-2  config-3
@@ -199,9 +199,9 @@ b6xc96h32 RRTx2
     --resign-discard-prob                     0.9       0.9       0.9       0.9
     --parallel-games                          64        64        64        64
     --cache-memory-mib                        400       400       400       400
-    --early-symm-cache
-    --first-pass-bonus
-    --dirichlet-noise                                                       x
+    --early-symm-cache                        true      true      true      true
+    --first-pass-bonus                        true      true      true      true
+    --dirichlet-noise                         true      true      true      x
     --dirichlet-epsilon                       0.25      0.15      0.15      x
     --dirichlet-init                          0.03      0.20      0.20      x
     --dirichlet-factor                        361       x         x         x
@@ -218,7 +218,7 @@ b6xc96h32 RRTx2
     "PreActivation" :                         false     true      true      true
     "FinalBlockCgroupSize" :                  -         0         0         0
     "TransformerFFNRatio":                    -         4         4         4
-    "ReductionInput":                         -         true      false     false
+    "ReductionInput":                         -         true      true      true
     "Stack" : [
         "ResidualBlock",                      "Nest"    "Res"    "Res"     "Res"
         "ResidualBlock",                      "Nest"    "Res"    "Res"     "Res"
@@ -237,7 +237,7 @@ b6xc96h32 RRTx2
     "NumberChunks" :                          500000    500000    200000    500000
     "ChunksIncreasingC" :                     5000      5000      2000      5000
     "SwaSteps" :                              500       500       250       500
-    "WarmUpSteps" :                           20000     20000     8000      8000
+    "WarmUpSteps" :                           20000     20000     20000     20000
     "PolicySurpriseFactor" :                  0.5       0.5       0.5       0.5
     "WdFloorFraction" :                       -         0.5       0.5       0.5
     "GnormClipScale" :                        -         1.0       1.0       -
@@ -245,7 +245,7 @@ b6xc96h32 RRTx2
     "RenormMaxD" :                            4.        x         x         x
     "LearningRateSchedule" : [
                                               0,        0,        0,        0,
-                                              5e-3      2e-2,     1e-2,     1e-2,
+                                              5e-3      2e-2,     2e-2,     2e-2,
                                                         1e-3      1e-3      1e-3
     ],
     "LearningRateAnnealingCycle" :            -         500000    500000   500000
@@ -259,6 +259,24 @@ b6xc96h32 RRTx2
     "NormalAttnWdFactor" :                    -         1.0       1.0      1.0
     "ExportONNX" :                            false     true      true     true
     "UseCompile" :                            false     true      true     true
+```
+
+## Experimental results for the 9x9-b6c96 model (No. 1)
+The configuration definition used is as follows:
+* bash/configs/sample/selfplay-setting-9x9-b6c96-1.json
+* bash/configs/sample/selfplay-config-9x9-1.txt
+
+Loss graph for training over 500K steps:
+
+![loss1_1](./img/loss_b6xc96_1_all.png)
+![loss1_2](./img/loss_b6xc96_1_pol_val.png)
+![loss1_3](./img/loss_b6xc96_1_pol_val_detail.png)
+
+Results of a game against Sai (b8xc160) using Chinese rules and a 7-point komi, at 500K steps:
+```
+Rank Name                                                       Elo    +    - games score oppo. draws 
+   1 9x9 b8xc160 sai                                            110   47   47   200   79%  -110   19% 
+   2 9x9 b6xc96h32  RRT2 Muon   silu fixup  RMSNorm0     1e-2  -110   47   47   200   21%   110   19% 
 ```
 
 The following is the original README for Sayuri.
