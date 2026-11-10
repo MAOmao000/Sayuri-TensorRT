@@ -161,22 +161,26 @@ The ultimate unlock for Sayuri's field of vision was the activation of the Kullb
 
 ## Key Achievements & Milestones
 
-• Autonomous Awakening from True Zero:
-Without a single human game or a single line of pre-trained legacy weights, Sayuri independently cultivated professional-grade life-and-death reading and global positional judgment entirely through a lightweight Gumbel 250 self-play loop.
-• Crushing the 1200-Playout Benchmark:
-At 820K steps, Sayuri established absolute dominance over sai's deep 1200-playout tree search, recording 20 Wins / 18 Draws as Black (先番) and 12 Wins / 10 Draws as White (後番), while limiting her losses to an all-time low. This represents a complete dethroning of the benchmark environment.
-• The Paradox of High Loss and Elite Strength:
-This run mathematically demonstrated that a plateaued or slightly elevated wdl loss (Value Loss) at the tail end of training is not a sign of stagnation or failure; rather, it proves that the buffer is highly enriched with high-signal, ultra-difficult problems (Gumbel 250 meta), indicating that the network is successfully wrestling with true generalization.
+- Autonomous Awakening from True Zero:
+Without a single human game or a single line of pre-trained legacy weights, Sayuri independently cultivated professional-grade life-and-death reading and global positional judgment entirely through a lightweight Gumbel 250 self-play loop. 
+
+- Crushing the 1200-Playout Benchmark:
+At 820K steps, Sayuri established absolute dominance over sai's deep 1200-playout tree search, recording 20 Wins / 18 Draws as Black (先番) and 12 Wins / 10 Draws as White (後番), while limiting her losses to an all-time low. This represents a complete dethroning of the benchmark environment. 
+
+- The Paradox of High Loss and Elite Strength:
+This run mathematically demonstrated that a plateaued or slightly elevated wdl loss (Value Loss) at the tail end of training is not a sign of stagnation or failure; rather, it proves that the buffer is highly enriched with high-signal, ultra-difficult problems (Gumbel 250 meta), indicating that the network is successfully wrestling with true generalization. 
 
 ## Technical Highlights
-- **Active Data Selection:** Leveraged `policy_surprise_factor=0.5` via KLD sampling to filter out mundane positions and focus entirely on high-surprise, critical life-and-death situations.
-- **Asymmetric Optimizer Scaling:** Deployed high-LR AdamW (2.5x Muon LR) to unfreeze policy headers and drive lightning-fast adaptations to external meta-strategies.
-- **Architectural Boost:** Integrated PyTorch's `flex-attention` to maximize parameter efficiency, enabling a lightweight 9-block, 192-channel model to possess professional-grade finishing ability.
+- **Active Data Selection:** Leveraged `policy_surprise_factor=0.5` via KLD sampling to filter out mundane positions and focus entirely on high-surprise, critical life-and-death situations. 
+- **Asymmetric Optimizer Scaling:** Deployed high-LR AdamW (2.5x Muon LR) to unfreeze policy headers and drive lightning-fast adaptations to external meta-strategies. 
+- **Architectural Boost:** Integrated PyTorch's `flex-attention` to maximize parameter efficiency, enabling a lightweight 9-block, 192-channel model to possess professional-grade finishing ability. 
 
 ## Loss graph
 
 ![loss1_1](./experimental_results/loss_all.png)
+
 ![loss1_2](./img/loss_pol_val.png)
+
 ![loss1_3](./img/loss_pol_val_detail.png)
 
 The following is the original README for Sayuri.
