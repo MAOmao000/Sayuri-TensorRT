@@ -1807,27 +1807,42 @@ class TransformerAttentionBlock(nn.Module):
                 reg_dict["noreg"].append(param)
 
     def initialize(self, fixup_scale, se_fixup_scale, xavier_init):
-        nn.init.xavier_normal_(
-            self.q_proj.weight, gain=compute_gain(self.activation))
-        nn.init.xavier_normal_(
-            self.k_proj.weight, gain=compute_gain(self.activation))
-        nn.init.xavier_normal_(
-            self.v_proj.weight, gain=compute_gain(self.activation))
-        nn.init.xavier_normal_(
-            self.out_proj.weight, gain=compute_gain(self.activation))
-        if self.use_swiglu:
-            nn.init.xavier_normal_(
-                self.ffn_linear1.weight, gain=compute_gain("silu"))
-            nn.init.xavier_normal_(
-                self.ffn_linear_gate.weight, gain=compute_gain("silu"))
+        if xavier_init:
+            # Traditional Xavier initialization when renorm etc.
+            nn.init.xavier_normal_(self.q_proj.weight, gain=compute_gain(self.activation))
+            nn.init.xavier_normal_(self.k_proj.weight, gain=compute_gain(self.activation))
+            nn.init.xavier_normal_(self.v_proj.weight, gain=compute_gain(self.activation))
+            nn.init.xavier_normal_(self.out_proj.weight, gain=compute_gain(self.activation))
+            if self.use_swiglu:
+                nn.init.xavier_normal_(self.ffn_linear1.weight, gain=compute_gain("silu"))
+                nn.init.xavier_normal_(self.ffn_linear_gate.weight, gain=compute_gain("silu"))
+            else:
+                nn.init.xavier_normal_(self.ffn_linear1.weight, gain=compute_gain(self.activation))
+            if self.use_depthwise_conv:
+                nn.init.xavier_normal_(self.ffn_dwconv.weight, gain=compute_gain(self.activation))
+                nn.init.xavier_normal_(self.ffn_linear2.weight, gain=compute_gain(self.activation))
         else:
-            nn.init.xavier_normal_(
-                self.ffn_linear1.weight, gain=compute_gain(self.activation))
-        if self.use_depthwise_conv:
-            nn.init.xavier_normal_(
-                self.ffn_dwconv.weight, gain=compute_gain(self.activation))
-            nn.init.xavier_normal_(
-                self.ffn_linear2.weight, gain=compute_gain(self.activation))
+            # Initialize according to Fixup mode (apply scale)
+            # It is standard in Fixup papers to initialize the output side of the residual connection
+            # (out_proj and ffn_linear2) to 0.0, but here we consistently keep the input, intermediate,
+            # and output to a small scale to prevent the entire network from exploding.
+            init_weights(self.q_proj.weight, self.activation, scale=fixup_scale)
+            init_weights(self.k_proj.weight, self.activation, scale=fixup_scale)
+            init_weights(self.v_proj.weight, self.activation, scale=fixup_scale)
+            # The output projection makes the residual contribution initially close to zero,
+            # so it is useful to have it at a smaller scale (or 0.0)
+            init_weights(self.out_proj.weight, self.activation, scale=fixup_scale * 0.5)
+            if self.use_swiglu:
+                init_weights(self.ffn_linear1.weight, "silu", scale=fixup_scale)
+                init_weights(self.ffn_linear_gate.weight, "silu", scale=fixup_scale)
+            else:
+                init_weights(self.ffn_linear1.weight, self.activation, scale=fixup_scale)
+            if self.use_depthwise_conv:
+                init_weights(self.ffn_dwconv.weight, self.activation, scale=fixup_scale)
+                init_weights(self.ffn_linear2.weight, self.activation, scale=fixup_scale * 0.5)
+            else:
+                # Initialization of second Linear layer is required even if depthwise_conv is not present
+                init_weights(self.ffn_linear2.weight, self.activation, scale=fixup_scale * 0.5)
 
     def _compute_tab_bias(self, x_norm, mask, mask_sum_hw, block_shared_data):
         """Compute attention bias from TAB factored keys/queries.
@@ -1992,10 +2007,13 @@ class TransformerAttentionBlock(nn.Module):
             flex_block_mask = block_shared_data[FLEX_BLOCK_MASK]
 
         # if mask is not None:
+        is_onnx = torch.onnx.is_in_onnx_export()
         if mask is not None and flex_block_mask is None:
             mask_flat = mask.reshape(batch_size, 1, 1, seq_len)
             attn_mask = torch.zeros_like(mask_flat, dtype=q.dtype)
-            attn_mask.masked_fill_(mask_flat == 0, float('-inf'))
+            # When using onnx.export, set the minimum value to -10000.0 instead of -inf
+            fill_value = -10000.0 if is_onnx else float('-inf')
+            attn_mask.masked_fill_(mask_flat == 0, fill_value)
         else:
             attn_mask = None
 
@@ -2052,12 +2070,19 @@ class TransformerAttentionBlock(nn.Module):
                 scale * torch.sqrt(ub_qnorm2.amax(dim=-1) * ub_knorm2.amax(dim=-1))  # (B', H)
             )
 
-        if flex_block_mask is not None:
+        if flex_block_mask is not None and not is_onnx:
             attn_output = get_flex_attention_fn()(
                 q, k, v,
                 block_mask=flex_block_mask,
                 scale=scale,
             )
+        elif is_onnx:
+            scores = torch.matmul(q * scale, k.transpose(-2, -1))
+            if attn_mask is not None:
+                scores = scores + attn_mask
+            attn_weights = torch.softmax(scores, dim=-1)
+            # attn_weights: [B, H, S, S], v: [B, H, S, D] -> [B, H, S, D]
+            attn_output = torch.matmul(attn_weights, v)
         else:
             attn_output = torch.nn.functional.scaled_dot_product_attention(
                 q, k, v,
@@ -2503,13 +2528,13 @@ class Network(nn.Module):
                         self.is_pre_act = True  # used Transformer
                     last_is_tran = True
                     if self.reduction_input:
-                        self.reductions = 7 + 9 # ko move + liberties + ladder
+                        self.reductions = 7 + 9 # 9 = ko move:1 + liberties:4 + ladder:4
                     if component ==  "TransformerBlock":
                         num_transformer_blocks += 1
 
         if self.is_pre_act:
             self.input_conv = Convolve(
-                in_channels=self.input_channels - self.reductions,  # default:43 (-16)
+                in_channels=self.input_channels - self.reductions,  # default:43 (-17)
                 out_channels=self.residual_channels,  # default:None
                 kernel_size=3,
                 activation="identity",
@@ -2518,7 +2543,7 @@ class Network(nn.Module):
             )
         else:
             self.input_conv = ConvBlock(
-                in_channels=self.input_channels - self.reductions,  # default:43 (-16)
+                in_channels=self.input_channels - self.reductions,  # default:43 (-17)
                 out_channels=self.residual_channels,   # default:None
                 kernel_size=3,
                 use_gamma=True,
@@ -2725,7 +2750,7 @@ class Network(nn.Module):
             short_term_q_error, short_term_score_error = torch.split(all_errors, [1, 1], dim=1)
             all_scores = 20 * all_scores
             short_term_q_error = 0.25 * short_term_q_error
-            short_term_score_error = 150 * short_term_score_error
+            short_term_score_error = self.cfg.scores_loss_scale * short_term_score_error
             all_errors = torch.cat((short_term_q_error, short_term_score_error), dim=1)
 
             predict = (
@@ -2780,10 +2805,12 @@ class Network(nn.Module):
             return soft_prob
 
         def cross_entropy(pred, target, weight=1.):
+            # Support NaN input for safety
             if torch.isnan(target).any():
                 target = torch.nan_to_num(target, nan=0.0)
             loss_sum = F.cross_entropy(pred.float(), target.float(), reduction="none")
-            return torch.mean(weight * loss_sum, dim=0)
+            # dim=0 removed to account for non-tensors
+            return torch.mean(weight * loss_sum) # , dim=0)
 
         def huber_loss(x, y, delta, weight=1.):
             absdiff = torch.abs(x - y)

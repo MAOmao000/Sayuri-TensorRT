@@ -1,11 +1,23 @@
 import faulthandler
 faulthandler.enable()
 import logging
+# Set the log level of the onnx_ir._convenience module to ERROR or higher and hide WARNINGs
+logging.getLogger("onnx_ir._convenience").setLevel(logging.ERROR)
 import os
 from dataclasses import dataclass
 from itertools import repeat
 from typing import List, Sequence, Tuple
 import torch
+# Dealing with errors regarding aten.sort.stable in onnx.export
+from torch._decomp import register_decomposition
+# Get definition of internal operator
+aten = torch.ops.aten
+# A function that internally switches to normal sort (stable=False) when aten.sort.stable is called.
+@register_decomposition(aten.sort.stable)
+def sort_stable_fallback(input, stable=True, dim=-1, descending=False):
+    # Ignore stable=True, which ONNX does not support, and rewrite it to False, and build the graph as a normal sort.
+    return aten.sort(input, dim=dim, descending=descending)
+#print("==== [INFO] Custom decomposition for aten.sort.stable registered successfully ====")
 torch.set_float32_matmul_precision('high')
 import torch.nn.functional as F
 import torch.distributed as dist
@@ -1454,15 +1466,7 @@ class TrainingPipe():
                 self.net.attn_logit_penalty_batch_frac = self.attn_logit_penalty_batch_frac
             self.module = self.net # linking
             # logging.getLogger("torch._inductor").setLevel(logging.ERROR)
-            self.net = torch.compile(
-                self.net
-                # fullgraph=True
-                # backend="inductor",
-                # options={
-                #     "triton.autotune_cublasLt": False,  # Disable GEMM auto-tuning
-                #     "triton.cudagraphs": True  # Keep CUDA Graphs enabled to maintain performance
-                # }
-            )
+            self.net = torch.compile(self.net)
             self.swa_net = self.swa_net.to(self.device)
         else:
             if self.use_gpu:
@@ -1760,6 +1764,36 @@ class TrainingPipe():
                 self.swa_weights_path, "{}-swa.onnx".format(status))
             # Set model to evaluation mode
             self.swa_net.eval()
+            # Temporarily save and disable fused flag O for ONNX export.
+            # Get the current settings from all TransformerAttentionBlocks in the SWA net.
+            orig_flags = []
+            for block in self.swa_net.residual_tower:
+                if hasattr(block, "fused_rope_backward"): # TransformerAttentionBlock or its stack
+                    orig_flags.append((
+                        block,
+                        block.fused_rope_backward,
+                        block.fused_qkv_proj,
+                        block.fused_gate_proj,
+                        block.fused_swiglu_kernel
+                    ))
+                    # Force everything to False for ONNX compatibility
+                    block.fused_rope_backward = False
+                    block.fused_qkv_proj = False
+                    block.fused_gate_proj = False
+                    block.fused_swiglu_kernel = False
+                elif hasattr(block, "blockstack"): # The case for NestedBottleneckTransformerBlock
+                    for sub_block in block.blockstack:
+                        orig_flags.append((
+                            sub_block,
+                            sub_block.fused_rope_backward,
+                            sub_block.fused_qkv_proj,
+                            sub_block.fused_gate_proj,
+                            sub_block.fused_swiglu_kernel
+                        ))
+                        sub_block.fused_rope_backward = False
+                        sub_block.fused_qkv_proj = False
+                        sub_block.fused_gate_proj = False
+                        sub_block.fused_swiglu_kernel = False
             # Create wrapper for ONNX export
             wrapper = ONNXExportWrapper(self.swa_net)
             wrapper.eval()
@@ -1794,23 +1828,31 @@ class TrainingPipe():
                     'output_val': {0: "batch_size"},
                     'output_ownership': {0: "batch_size"}
                 }
-            with torch.no_grad():
-                torch.onnx.export(
-                    wrapper,            # model to export
-                    tuple(inputs),      # inputs of the model
-                    onnx_model_name,    # filename of the ONNX model
-                    export_params=True, # When ``f`` is specified: If false, parameters (weights) will not be exported
-                    # opset_version=20,            # The version of the default (ai.onnx) opset to target
-                    # do_constant_folding=True,    # Deprecated option
-                    input_names=input_names,       # Rename inputs for the ONNX model
-                    output_names=output_names,     # Rename outputs for the ONNX model
-                    dynamic_axes=dynamic_axes,     # Deprecated: Prefer specifying dynamic_shapes when dynamo=True
-                    dynamic_shapes=dynamic_shapes, # A dictionary or a tuple of dynamic shapes for the model inputs
-                    verbose=False,                 # Whether to enable verbose logging
-                    dynamo=self.cfg.use_dynamo,    # True or False to select the exporter to use
-                    external_data=False,           # Whether to save the model weights as an external data file
-                    report=False                   # Whether to generate a markdown report for the export process
-                )
+
+            try:
+                with torch.no_grad():
+                    torch.onnx.export(
+                        wrapper,            # model to export
+                        tuple(inputs),      # inputs of the model
+                        onnx_model_name,    # filename of the ONNX model
+                        export_params=True, # When ``f`` is specified: If false, parameters (weights) will not be exported
+                        input_names=input_names,       # Rename inputs for the ONNX model
+                        output_names=output_names,     # Rename outputs for the ONNX model
+                        dynamic_axes=dynamic_axes,     # Deprecated: Prefer specifying dynamic_shapes when dynamo=True
+                        dynamic_shapes=dynamic_shapes, # A dictionary or a tuple of dynamic shapes for the model inputs
+                        verbose=False,                 # Whether to enable verbose logging
+                        dynamo=self.cfg.use_dynamo,    # True or False to select the exporter to use
+                        external_data=False,           # Whether to save the model weights as an external data file
+                        report=False                   # Whether to generate a markdown report for the export process
+                    )
+            finally:
+                # Always restore the original acceleration flag regardless of whether
+                # the export is successful or unsuccessful.
+                for block, frb, fqp, fgp, fsk in orig_flags:
+                    block.fused_rope_backward = frb
+                    block.fused_qkv_proj = fqp
+                    block.fused_gate_proj = fgp
+                    block.fused_swiglu_kernel = fsk
             # Add metadata to the ONNX model
             try:
                 import onnx
