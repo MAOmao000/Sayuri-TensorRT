@@ -135,7 +135,7 @@ Deletion configuration definition (selfplay-setting.json):
 
 — Breaking Overfitting and Achieving Full Generalization in 9x9 AlphaZero Reinforcement Learning —
 
-This project documents the journey of "Project Sayuri," where a lightweight architecture (b9xc192h64 RRT3) trained from a completely random scratch initialization (zero state). Utilizing Gumbel MCTS (250 playouts during self-play) alongside cutting-edge mathematical optimizations and decisive hyperparameter interventions, Sayuri successfully reached a level of play that completely overwhelms and outgrows the deeply searching, powerful benchmark bot "sai" (1200 playouts).
+This project documents the journey of "Project Sayuri-TensorRT," where a lightweight architecture (b9xc192h64 RRT3) trained from a completely random scratch initialization (zero state). Utilizing Gumbel MCTS (250 playouts during self-play) alongside cutting-edge mathematical optimizations and decisive hyperparameter interventions, Sayuri successfully reached a level of play that completely overwhelms and outgrows the deeply searching, powerful benchmark bot "sai" (1200 playouts).
 
 ## 5 Core Technical Insights
 
@@ -195,7 +195,7 @@ steps lr     elo     b(w/d/l)   w(w/d/l)
  320K 6e-4 : 1585 -> (3/3/88)   (3/8/95)  
  340K 5e-4 : 1579 -> (5/3/81)   (2/3/106) 
  360K 3e-4 : 1577 -> (2/1/95)   (3/8/91)  
- 380K 2e-4 : 1582 -> (0/4/94)   (4/9/89)  
+ 380K 2e-4 : 1582 -> (0/4/94)   (4/9/89)   "UseFlexAttention" : true (false -> true)
  400K 7e-4 : 1551 -> (0/2/92)   (0/6/100) 
  420K 6e-4 : 1641 -> (8/12/87)  (6/11/76) 
  440K 5e-4 : 1620 -> (5/12/90)  (3/12/78) 
@@ -206,11 +206,11 @@ steps lr     elo     b(w/d/l)   w(w/d/l)
  600K 7e-4 : 1564 -> (2/4/103)  (1/3/87)   "ChunksIncreasingScale" : 2.5 (1.0 -> 2.5)
  620K 6e-4 : 1666 -> (12/6/82)  (10/14/76) "PolicySurpriseFactor" : 0.5 (0.0 -> 0.5)
  640K 5e-4 : 1687 -> (13/15/75) (20/12/65)
- 660K 3e-4 : 1649 -> (13/10/81) (7/10/79)  --playouts 250 (150 -> 250)
+ 660K 3e-4 : 1649 -> (13/10/81) (7/10/79) 
  700K 7e-4 : 1622 -> (8/10/86)  (4/8/84)  
  720K 6e-4 : 1675 -> (11/23/65) (9/12/80) 
  740K 5e-4 : 1687 -> (19/15/57) (7/13/89) 
- 760K 3e-4 : 1665 -> (16/12/86) (10/9/67)  "UseFlexAttention" : true (false -> true)
+ 760K 3e-4 : 1665 -> (16/12/86) (10/9/67)  --playouts 250 (150 -> 250)
  780K 2e-4 : 1649 -> (10/15/78) (5/13/79) 
  800K 7e-4 : 1625 -> (6/9/88)   (9/5/83)  
  820K 6e-4 : 1698 -> (20/18/70) (12/10/70)
