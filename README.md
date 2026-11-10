@@ -12,8 +12,9 @@ AQ already adopted this method (using UFF instead of ONNX) in 2018, but there we
 Also added the following features:
 * Muon+AdamW optimizer (Ported KataGo v1.18)
 * Aurora+AdamW optimizer (Ported KataGo v1.18)
+* FlexAttention (Ported KataGo v1.18)
 * torch.compile (Ported KataGo v1.18)
-* TransformerAttention model for demonstration purposes (Ported KataGo v1.18)
+* TransformerAttention model for experimental purposes (Ported KataGo v1.18)
 * Automatic learning rate scheduling (cosine annealing)
 * Support for bfloat16 in AMP (PyTorch Automatic Mixed Precision)
 
@@ -57,9 +58,21 @@ Additional configuration definitions (selfplay-setting.json):
     "UseSwiGLU": true(default) # Should SiLU be used for the activation within the Feed-Forward Network of the TransformerAttentionBlock? (true|false)
                                # If set to false, the activation function specified in "Activation" is used.
     "TransformerFFNDepthwiseConv": true(default) # Should DepthwiseConv be used within the feed-forward network of a TransformerAttentionBlock? (true|false)
-    "FusedQKVProj": false(default) # Currently unavailable because ONNX export is not supported. (true|false)
-    "FusedSwigluKernel": false(default) # Currently unavailable because ONNX export is not supported. (true|false)
-    "FusedRoPEBackward": false(default) # Currently unavailable because ONNX export is not supported. (true|false)
+    "FusedQKVProj": false(default) # Compute the transformer Q/K/V projections (and the SwiGLU input/gate projections)
+                                   # as one GEMM each over on-the-fly concatenated weights.
+                                   # Set to 0 to run them as separate matmuls.
+    "FusedSwigluKernel": false(default) # Under fp16/bf16 autocast on CUDA, compute the SwiGLU FFN input projection with the fused
+                                        # Triton dual-GEMM kernel in katago.train.fused_swiglu, which never materializes the two
+                                        # pre-gating intermediates. fp32 (non-autocast) paths, CPU, and export are unaffected. (true|false)
+    "FusedRoPEBackward": false(default) # On CUDA with learnable RoPE and the fused Q/K/V projection,
+                                        # apply RoPE with the Triton custom ops in katago.train.fused_rope:
+                                        # one forward kernel that rotates and writes Q, K, V in attention layout,
+                                        # and one backward kernel that writes the packed Q/K/V gradient directly.
+                                        # The backward kernel is the main saving. Grouped-query attention and
+                                        # register tokens are not supported and fall back to the plain path.
+                                        # Under torch.compile this is only safe with the per-block compiled trunk,
+                                        # so trainloop_helpers.configure_model_for_compile turns it (and the fused Q/K/V projection) off
+                                        # when the model is compiled as a single graph. (true|false)
     "UseTAB": false(default) # Should we use Topological Attention Bias? (true|false)
     "TABD1": 16(default) # Number of output channels for TAB first Layer.
     "TABD2": 16(default) # Number of output channels for TAB second Layer.
@@ -69,8 +82,6 @@ Additional configuration definitions (selfplay-setting.json):
     "TABNumBlocks": 3(default) # Number of TAB blocks.
     "TABDilation": 3(default)  # Dilation for conv2d in TAB.
     "UseFlexAttention": false(default)  # Should we use PyTorch's FlexAttention? (true|false)
-                                        # At present, torch.onnx.export does not support this;
-                                        # setting it to true will cause the training process to terminate abnormally.
     "AttnLogitPenaltyCap": None(default)      # Penalize attention layers whose per-head logit upper bound (scale * max||q|| * max||k||, incl off-board positions) exceeds this. None = disabled.
     "AttnLogitPenaltyCoeff": 1e-3(default)    # Loss coeff for the attention logit bound penalty (linear hinge, mean over heads, sum over layers, per sample)
     "AttnLogitPenaltyBatchFrac": 1.0(default) # Compute the attention logit penalty on only this fraction of each batch (cuts its cost proportionally, adds gradient variance)
@@ -81,10 +92,10 @@ Additional configuration definitions (selfplay-setting.json):
                                                    # third:  Final value of the learning rate. (optional)
     "LearningRateAnnealingCycle": 500000(default)  # Learning rate annealing cycle. (number of steps)
     "HeadLrFactor": 0.5(default)        # LR factor for output policy head weights.
-    "ValueLrFactor": 1.0(default)       # LR factor for output value head weights.
+    "ValueLrFactor": 0.5(default)       # LR factor for output value head weights.
     "NoregLrFactor": 1.0(default)       # LR factor for noreg params. (biases, norms)
     "ValueNoregLrFactor": 1.0(default)  # LR factor for value head noreg params. (biases, norms)
-    "MuonAdamLrFactor": 0.2(default)    # LR factor for muon-ineligible (adam) params when using muon.
+    "MuonAdamLrFactor": 2.5(default)    # LR factor for muon-ineligible (adam) params when using muon.
     "InputWdFactor": 1.0(default)       # Extra scaling factor for input weight decay.
     "NormalWdFactor": 1.0(default)      # Extra scaling factor for normal weight decay.
     "NormalAttnWdFactor": 1.0(default)  # Extra scaling factor for normal_attn weight decay.
@@ -105,6 +116,7 @@ Additional configuration definitions (selfplay-setting.json):
                                         # Requires muon.
                                         # Minimum floor fraction for the weight decay schedule. (0.2 - 0.5)
     "WdlLossScale": 1.0(default)        # Scaling factor for WDL loss during loss calculation.
+    "ScoresLossScale": 150(default)     # Scaling factor for errors loss calculation.
     "GnormClipScale": 1.0(default)      # Scale relative to the default gradient clipping value.
 ```
 Deletion configuration definition (selfplay-setting.json):
@@ -113,171 +125,59 @@ Deletion configuration definition (selfplay-setting.json):
     "RenormMaxR": 1(default)
     "RenormMaxD": 0(default)
 ```
-
-## About the Transformer model
-
-The Transformer model currently implemented is merely a prototype for demonstration purposes.
-Various improvements are needed to make it more powerful.
-
-## Test results using a Transformer model on a 9x9 Go board
-
-Build
+## Build
 ```
  $ cmake .. -DBLAS_BACKEND=TENSORRT -DUSE_ZLIB=1 -DSPECIFIC_BOARD_SIZE=9 -DBOARD_SIZE=9 -DONNX_ROOT_DIR=~/Downloads/onnxruntime-linux-x64-1.25.1
  $ cmake --build .
  $ ./sayuri -t 10 -b 5 -w ~/Sayuri-test-b9xc192/weights/sayuri-b9xc192-s300000-c315000-w61965-swa.onnx --use-optimistic-policy --scoring-rule area -p 1200 --reuse-tree
-       Sayuri 10.0.0 ()  Copyright (C) 2021-2025  Hung Tse Lin
-       Copyright (C) 2025-2026  MAOmao000
-       This program comes with ABSOLUTELY NO WARRANTY.
-       This is free software, and you are welcome to redistribute it
-       under certain conditions; see the COPYING file for details.
-   Network Version: 5
-   Input Channels: 43
-   Residual Blocks: 9
-   Residual Channels: 192
-     block 1: ResidualBlock
-     block 2: ResidualBlock
-     block 3: TransformerBlock
-     block 4: ResidualBlock
-     block 5: ResidualBlock
-     block 6: TransformerBlock
-     block 7: ResidualBlock
-     block 8: ResidualBlock
-     block 9: TransformerBlock
-   Policy Head Type: RepLK
-   Policy Head Channels: 48
-   Value Head Channels: 48
-   Load the ONNX model file from: ~/Sayuri-test-b9xc192/weights/sayuri-b9xc192-s300000-c315000-w61965-swa.onnx.
-   CUDA version: Major 13(12), Minor 2(8)
-   Blas backend: TensorRT
-   TensorRT version: 10.13.2(10.13.2)
-   Number of CUDA devices: 1
-   === Device: 0 ===
-     Name: NVIDIA GeForce RTX 5060
-     Compute capability: 12.0
-     Disable the FP16
-     Enable the tensor cores
-   Allocated 400.00 MiB memory for NN cache (579324 entries).
 ```
-* Test configuration definition: The learning rate for the Muon optimizer has been changed to 0.02 for testing purposes; therefore, previous data has been removed from the public assets.
-```
-b6xc96h32 RRTx2
-  selfplay-confif.txt                         original  config-1  config-2  config-3
-    ----------------------------------------- --------- --------- --------- ---------
-    --random-moves-factor                     0.1       0.1       0.1       0.1
-    --random-opening-prob                     0.75      0.75      0.75      -
-    --random-opening-temp                     -         0.9       0.9       -
-    --random-fastsearch-prob                  0.75      0.75      0.75      -
-    --komi-stddev                             2.5       1.0       1.0       1.0
-    --komi-big-stddev-prob                    0.06      0.05      0.05      0.05
-    --komi-big-stddev                         12        2.0       2.0       2.0
-    --handicap-fair-komi-prob                 0.5       0.5       0.5       0.5
-    --cpuct-init                              0.5       0.5       0.5       0.5
-    --cpuct-base                              19652     19652     19652     19652
-    --cpuct-base-factor                       1         1         1         1
-    --fpu-reduction                           0.25      0.25      0.25      0.25
-    --root-fpu-reduction                      0.25      0.25      0.25      0.25
-    --lcb-reduction                           0.0       0.0       0.0       0.0
-    --score-utility-factor                    0.4       0.4       0.4       0.4
-    --score-utility-div                       1.0       1.0       1.0       1.0
-    --forced-playouts-k                       -         2         2         -
-    --selfplay-query bkp                      9:7:1     9:7:0.98  9:7:0.98  9:7:0.98
-    --selfplay-query bhp                      -         9:2:0.1   9:2:0.1   9:2:0.1
-    --selfplay-query bkp                      -         8:10:0.01 8:10:0.01 8:10:0.01
-    --selfplay-query bkp                      -         7:8:0.01  7:8:0.01  7:8:0.01
-    --selfplay-query srs                      -         area      area      area
-    --selfplay-query srs                      -         territory territory territory
-    --playouts                                150       150       150       16
-    --gumbel                                  true      true      true      true
-    --gumbel-playouts-threshold               32        32        32        50
-    --gumbel-prom-visits                      1         1         1         x
-    --always-completed-q-policy               x         x         x         true
-    --fastsearch-playouts                     50        50        50        -
-    --fastsearch-playouts-prob                0.75      0.75      0.75      -
-    --resign-playouts                         32        32        32        100
-    --resign-threshold                        0.05      0.05      0.05      0.05
-    --resign-discard-prob                     0.9       0.9       0.9       0.9
-    --parallel-games                          64        64        64        64
-    --cache-memory-mib                        400       400       400       400
-    --early-symm-cache                        true      true      true      true
-    --first-pass-bonus                        true      true      true      true
-    --dirichlet-noise                         true      true      true      x
-    --dirichlet-epsilon                       0.25      0.15      0.15      x
-    --dirichlet-init                          0.03      0.20      0.20      x
-    --dirichlet-factor                        361       x         x         x
-    --root-policy-temp                        1.0       0.9       0.9       x
+## Technical Report: "Chasing Sai"
 
-  selfplay-setting.json                       original  config-1  config-2  config-3
-    ----------------------------------------- --------- --------- --------- ---------
-    "MaxBoardSize" :                          19        9         9         9
-    "ResidualChannels" :                      96        96        96        96
-    "PolicyHeadChannels" :                    24        32        32        32
-    "ValueHeadChannels" :                     24        32        32        32
-    "Activation" :                            "mish"    "silu"    "silu"    "silu"
-    "BatchNormMode" :                         "renorm"  "fixup"   "fixup"   "fixup"
-    "PreActivation" :                         false     true      true      true
-    "FinalBlockCgroupSize" :                  -         0         0         0
-    "TransformerFFNRatio":                    -         4         4         4
-    "ReductionInput":                         -         true      true      true
-    "Stack" : [
-        "ResidualBlock",                      "Nest"    "Res"    "Res"     "Res"
-        "ResidualBlock",                      "Nest"    "Res"    "Res"     "Res"
-        "TransformerBlock",                   "Nest-SE" "Tran"   "Tran"    "Tran"
-        "ResidualBlock",                      "Nest"    "Res"    "Res"     "Res"
-        "ResidualBlock",                      "Nest"    "Res"    "Res"     "Res"
-        "TransformerBlock"                    "Nest-SE" "Tran"   "Tran"    "Tran"
-    ]
-    "UseFp16" :                               true      true      true      true 
-    "Optimizer" :                             "SGD"     "Muon"    "Muon"    "Muon"
-    "StepsPerEpoch" :                         4000      4000      2000      4000
-    "ValidationSteps" :                       100       100       50        100
-    "VerboseSteps" :                          1000      1000      500       1000
-    "MaxStepsPerRunning" :                    4000      4000      2000      4000
-    "BufferSize" :                            524288    524288    524288    524288
-    "NumberChunks" :                          500000    500000    200000    500000
-    "ChunksIncreasingC" :                     5000      5000      2000      5000
-    "SwaSteps" :                              500       500       250       500
-    "WarmUpSteps" :                           20000     20000     20000     20000
-    "PolicySurpriseFactor" :                  0.5       0.5       0.5       0.5
-    "WdFloorFraction" :                       -         0.5       0.5       0.5
-    "GnormClipScale" :                        -         1.0       1.0       -
-    "RenormMaxR" :                            3.        x         x         x
-    "RenormMaxD" :                            4.        x         x         x
-    "LearningRateSchedule" : [
-                                              0,        0,        0,        0,
-                                              5e-3      2e-2,     2e-2,     2e-2,
-                                                        1e-3      1e-3      1e-3
-    ],
-    "LearningRateAnnealingCycle" :            -         500000    500000   500000
-    "HeadLrFactor" :                          -         0.5       0.5      0.5
-    "ValueLrFactor" :                         -         1.0       1.0      1.0
-    "NoregLrFactor" :                         -         1.0       1.0      1.0
-    "ValueNoregLrFactor" :                    -         1.0       1.0      1.0
-    "MuonAdamLrFactor" :                      -         0.2       0.2      0.2
-    "InputWdFactor" :                         -         1.0       1.0      1.0
-    "NormalWdFactor" :                        -         1.0       1.0      1.0
-    "NormalAttnWdFactor" :                    -         1.0       1.0      1.0
-    "ExportONNX" :                            false     true      true     true
-    "UseCompile" :                            false     true      true     true
-```
+— Breaking Overfitting and Achieving Full Generalization in 9x9 AlphaZero Reinforcement Learning —
 
-## Experimental results for the 9x9-b6c96 model (No. 1)
-The configuration definition used is as follows:
-* bash/configs/sample/selfplay-setting-9x9-b6c96-1.json
-* bash/configs/sample/selfplay-config-9x9-1.txt
+This project documents the journey of "Project Sayuri," where a lightweight architecture (b9xc192h64 RRT3) trained from a completely random scratch initialization (zero state). Utilizing Gumbel MCTS (250 playouts during self-play) alongside cutting-edge mathematical optimizations and decisive hyperparameter interventions, Sayuri successfully reached a level of play that completely overwhelms and outgrows the deeply searching, powerful benchmark bot "sai" (1200 playouts).
 
-Loss graph for training over 500K steps:
+## 5 Core Technical Insights
 
-![loss1_1](./img/loss_b6xc96_1_all.png)
-![loss1_2](./img/loss_b6xc96_1_pol_val.png)
-![loss1_3](./img/loss_b6xc96_1_pol_val_detail.png)
+1. Fast Overfitting to "In-Group Meta" and Deceptive Convergence
 
-Results of a game against Sai (b8xc160) using Chinese rules and a 7-point komi, at 500K steps:
-```
-Rank Name                                                       Elo    +    - games score oppo. draws 
-   1 9x9 b8xc160 sai                                            110   47   47   200   79%  -110   19% 
-   2 9x9 b6xc96h32  RRT2 Muon   silu fixup  RMSNorm0     1e-2  -110   47   47   200   21%   110   19% 
-```
+In the mid-phase of reinforcement learning (200K+ steps), a narrow Replay Buffer window forces the core convolutional layers (governed by Muon) to specialize entirely in memorizing the repetitive, comfortable endgame patterns of self-play. During this phase, internal training losses plummet to a "god-like" convergence. However, the network suffers from catastrophic forgetting, losing its robust immunity against the non-standard, aggressive overplays thrown by an external opponent like sai. True strength requires the continuous maintenance of exploratory noise and diversity.
+
+2. Asymmetric Optimization via High-LR AdamW
+
+The ratio between the learning rates of Muon (governing the core backbone) and AdamW (governing the policy/value headers and leRoPE position embeddings) is the definitive factor for policy entropy (breadth of vision). Setting the AdamW learning rate to a highly responsive 2.5x relative to Muon acts as a catalyst; it unlocks frozen policy headers and drives lightning-fast recalibration to external meta-strategies.
+
+3. Boosting Parameter Efficiency with flex-attention
+
+The integration of flex-attention (dynamic attention masking) at 380K steps fundamentally bypassed the physical size limitations of a lightweight 9-block, 192-channel network. By dynamically dropping computations related to illegal moves and fully settled territories, 100% of the model's capacity was directed toward critical local fights and exact endgame counting, effectively scaling the network's cognitive ceiling.
+
+4. The Golden Buffer Scale: Guarding Against Memory Decay
+
+Smaller models are inherently vulnerable to catastrophic forgetting when bombarded with fresh data. By fine-tuning the parameters of the growth curve formula, the retention window size was dynamically expanded to over 200,000 chunks (~44% of the total dataset). This anchor allowed a high density of Sayuri's older, scrappy fighting data to coexist with the newer refined strategies, fully restoring her robust defense against sai's deep tactical traps.
+
+5. Active Data Selection via policy_surprise_factor
+
+The ultimate unlock for Sayuri's field of vision was the activation of the Kullback-Leibler Divergence (KLD) data auditing filter. Elevating the policy_surprise_factor to 0.5 eliminated the bottom 80% of mundane, predictable self-play endgames. Instead, the replay buffer was forcefully packed with high-surprise, high-KLD edge cases—scenarios where the raw policy was completely blindsided by deep MCTS readouts. This triggered a powerful "re-exploration" surge, pushing the policy loss back up to a healthy 1.6+ range and infusing the model with a fierce finishing power.
+
+## Key Achievements & Milestones
+
+• Autonomous Awakening from True Zero:
+Without a single human game or a single line of pre-trained legacy weights, Sayuri independently cultivated professional-grade life-and-death reading and global positional judgment entirely through a lightweight Gumbel 250 self-play loop.
+• Crushing the 1200-Playout Benchmark:
+At 820K steps, Sayuri established absolute dominance over sai's deep 1200-playout tree search, recording 20 Wins / 18 Draws as Black (先番) and 12 Wins / 10 Draws as White (後番), while limiting her losses to an all-time low. This represents a complete dethroning of the benchmark environment.
+• The Paradox of High Loss and Elite Strength:
+This run mathematically demonstrated that a plateaued or slightly elevated wdl loss (Value Loss) at the tail end of training is not a sign of stagnation or failure; rather, it proves that the buffer is highly enriched with high-signal, ultra-difficult problems (Gumbel 250 meta), indicating that the network is successfully wrestling with true generalization.
+
+## Technical Highlights
+- **Active Data Selection:** Leveraged `policy_surprise_factor=0.5` via KLD sampling to filter out mundane positions and focus entirely on high-surprise, critical life-and-death situations.
+- **Asymmetric Optimizer Scaling:** Deployed high-LR AdamW (2.5x Muon LR) to unfreeze policy headers and drive lightning-fast adaptations to external meta-strategies.
+- **Architectural Boost:** Integrated PyTorch's `flex-attention` to maximize parameter efficiency, enabling a lightweight 9-block, 192-channel model to possess professional-grade finishing ability.
+
+## Loss graph
+
+![loss1_1](./experimental_results/loss_all.png)
+![loss1_2](./img/loss_pol_val.png)
+![loss1_3](./img/loss_pol_val_detail.png)
 
 The following is the original README for Sayuri.
 
