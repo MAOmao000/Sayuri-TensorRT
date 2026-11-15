@@ -131,92 +131,59 @@ Deletion configuration definition (selfplay-setting.json):
  $ cmake --build .
  $ ./sayuri -t 10 -b 5 -w ~/Sayuri-test-b9xc192/weights/sayuri-b9xc192-s300000-c315000-w61965-swa.onnx --use-optimistic-policy --scoring-rule area -p 1200 --reuse-tree
 ```
-## Technical Report: "Chasing Sai"
 
-— Breaking Overfitting and Achieving Full Generalization in 9x9 AlphaZero Reinforcement Learning —
+# Chasing SAI's Shadow
+### *The Marriage of Muon and AlphaZero*
 
-This project documents the journey of "Project Sayuri-TensorRT," where a lightweight architecture (b9xc192h64 RRT3) trained from a completely random scratch initialization (zero state). Utilizing Gumbel MCTS (250 playouts during self-play) alongside cutting-edge mathematical optimizations and decisive hyperparameter interventions, Sayuri successfully reached a level of play that completely overwhelms and outgrows the deeply searching, powerful benchmark bot "sai" (1200 playouts).
+A comprehensive experimental study on training compact hybrid CNN–Transformer 9x9 Go engines from scratch using **Polar Express Muon**, **Head-Split Orthogonalization (`Muon Split`)**, **Gumbel AlphaZero**, and **progressive self-play curricula**.
 
-## 5 Core Technical Insights
+Starting from a baseline `b6xc96h32` model (34.0% non-loss rate against the reference engine **SAI `b8c160`**), iterative architectural and optimization breakthroughs enabled a **4x smaller `b6xc96h32` network** to achieve a **45.5% non-loss rate (52W–39D–109L)**—surpassing even our larger `b6xc192h64` model (44.0%) within just 312K training steps.
 
-1. Fast Overfitting to "In-Group Meta" and Deceptive Convergence
+---
 
-In the mid-phase of reinforcement learning (200K+ steps), a narrow Replay Buffer window forces the core convolutional layers (governed by Muon) to specialize entirely in memorizing the repetitive, comfortable endgame patterns of self-play. During this phase, internal training losses plummet to a "god-like" convergence. However, the network suffers from catastrophic forgetting, losing its robust immunity against the non-standard, aggressive overplays thrown by an external opponent like sai. True strength requires the continuous maintenance of exploratory noise and diversity.
+## 1. Cross-Experiment Benchmark Summary (vs. `SAI b8c160`)
 
-2. Asymmetric Optimization via High-LR AdamW
+All evaluation benchmarks consist of **200 games** on 9x9 Chinese rules (`Komi 7.0`, `1,200 playouts/move`, using SWA weights):
 
-The ratio between the learning rates of Muon (governing the core backbone) and AdamW (governing the policy/value headers and leRoPE position embeddings) is the definitive factor for policy entropy (breadth of vision). Setting the AdamW learning rate to a highly responsive 2.5x relative to Muon acts as a catalyst; it unlocks frozen policy headers and drives lightning-fast recalibration to external meta-strategies.
+| Experiment | Model Topology | Key Innovations | Steps | Black (`W/D/L`) | White (`W/D/L`) | Total (`W/D/L`) | Non-Loss Rate (`W+D`) | Detailed Report |
+| :--- | :---: | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
+| **Exp 1 (Baseline)** | `b6xc96h32` | Initial Muon + Gumbel AZ | 512K | 17 / 20 / 63 | 14 / 17 / 69 | 31 / 37 / 132 | **34.0%** | [View Report](./docs/exp1_baseline_b6xc96.md) |
+| **Exp 2 (Scaled 192c)** | `b6xc192h64` | `192ch` + 2-Stage Search + Damped Restart | 392K | 23 / 22 / 58 | 25 / 18 / 54 | 48 / 40 / 112 | **44.0%** | [View Report](./docs/exp2_scaled_b6xc192.md) |
+| **Exp 3 (Giant Killing)** | **`b6xc96h32`** | **`Muon Split` + `RMSNormMask(24)` + Full 43ch Input + 3-Stage Curriculum** | **312K** | **31 / 26 / 39** | **21 / 13 / 70** | **52 / 39 / 109** | **45.5%** | [View Report](./docs/exp3_giant_killing_b6xc96_split.md) |
 
-3. Boosting Parameter Efficiency with flex-attention
+---
 
-The integration of flex-attention (dynamic attention masking) at 380K steps fundamentally bypassed the physical size limitations of a lightweight 9-block, 192-channel network. By dynamically dropping computations related to illegal moves and fully settled territories, 100% of the model's capacity was directed toward critical local fights and exact endgame counting, effectively scaling the network's cognitive ceiling.
+## 2. Core Key Findings & Takeaways
 
-4. The Golden Buffer Scale: Guarding Against Memory Decay
+Across all experiments, five foundational principles emerged for maximizing sample and parameter efficiency in compact AlphaZero pipelines:
 
-Smaller models are inherently vulnerable to catastrophic forgetting when bombarded with fresh data. By fine-tuning the parameters of the growth curve formula, the retention window size was dynamically expanded to over 200,000 chunks (~44% of the total dataset). This anchor allowed a high density of Sayuri's older, scrappy fighting data to coexist with the newer refined strategies, fully restoring her robust defense against sai's deep tactical traps.
+1. **Compact Models Benefit Most from Spectral & Head-Split Orthogonalization (`Muon Split`):**
+   Eliminating gradient anisotropy via Polar Express Muon—and orthogonalizing `Q`, `K`, `V`, and `Out` projections independently per attention head—prevents cross-head interference and maximizes parameter density. This enabled a `96ch` network to outperform a `192ch` network with 4x more parameters.
+2. **Precomputed Tactical Planes (`ReductionInput: false`) Act as Virtual Capacity:**
+   While a `192ch` trunk can infer liberties and ladders from raw stone planes (`ReductionInput: true`), freeing a compact `96ch` trunk via full 43-channel inputs allows 100% of its capacity to focus on high-level strategy, ko evaluation, and endgame precision (`scores loss: 0.0823`).
+3. **Muon Peak Learning Rate Follows \(\text{Peak LR} \propto 1/\sqrt{C}\) Scaling:**
+   Scaling peak learning rates from `1.5e-2` (`192ch`) to `2.0e-2` (`96ch`) maintained identical relative update magnitudes without instability, confirming μP-style width scaling laws for hybrid CNN–Transformer Go architectures.
+4. **Progressive Self-Play Curricula & Single Damped Restarts Outperform Multi-Cycle Sawtooth Schedules:**
+   Small models are sensitive to noisy targets from shallow search. Escalating self-play depth (`150 → 350 → 500 playouts`) as learning rate anneals—and reserving damped restarts strictly for paired search-depth upgrades—yields steady gains without catastrophic forgetting.
+5. **High-Purity Self-Play Induces Apparent `wdl loss` Plateaus:**
+   As agent strength peaks, self-play games converge toward razor-thin, half-point draws under 7.0 komi. Target winrates cluster near `0.5`, keeping `wdl loss` elevated (`~0.61–0.67`) even as score-lead accuracy (`scores loss`) hits record lows—a healthy indicator of high-level competitive self-play.
 
-5. Active Data Selection via policy_surprise_factor
+> **Theoretical Deep Dive:** For an analysis of how Muon's gradient orthogonalization accelerates self-play quality, see **[How Muon’s Accelerated Learning Elevates Self-Play Game Quality](./docs/muon_selfplay_dynamics.md)**.
 
-The ultimate unlock for Sayuri's field of vision was the activation of the Kullback-Leibler Divergence (KLD) data auditing filter. Elevating the policy_surprise_factor to 0.5 eliminated the bottom 80% of mundane, predictable self-play endgames. Instead, the replay buffer was forcefully packed with high-surprise, high-KLD edge cases—scenarios where the raw policy was completely blindsided by deep MCTS readouts. This triggered a powerful "re-exploration" surge, pushing the policy loss back up to a healthy 1.6+ range and infusing the model with a fierce finishing power.
+---
 
-## Key Achievements & Milestones
+## 3. Repository Structure & Artifacts
 
-- Autonomous Awakening from True Zero:
-Without a single human game or a single line of pre-trained legacy weights, Sayuri independently cultivated professional-grade life-and-death reading and global positional judgment entirely through a lightweight Gumbel 250 self-play loop. 
+* `docs/` — Individual experiment reports and theoretical notes.
+* `configs/` — JSON training configurations and self-play parameter presets.
+* **Best Lightweight Model (`Exp 3`):** `[sayuri-b6xc96-s312000-swa.onnx](LINK_TO_RELEASE)`
+* **Best Wide Model (`Exp 2`):** `[sayuri-b6xc192-s392000-swa.onnx](LINK_TO_RELEASE)`
 
-- Crushing the 1200-Playout Benchmark:
-At 820K steps, Sayuri established absolute dominance over sai's deep 1200-playout tree search, recording 20 Wins / 18 Draws as Black (先番) and 12 Wins / 10 Draws as White (後番), while limiting her losses to an all-time low. This represents a complete dethroning of the benchmark environment. 
+---
 
-- The Paradox of High Loss and Elite Strength:
-This run mathematically demonstrated that a plateaued or slightly elevated wdl loss (Value Loss) at the tail end of training is not a sign of stagnation or failure; rather, it proves that the buffer is highly enriched with high-signal, ultra-difficult problems (Gumbel 250 meta), indicating that the network is successfully wrestling with true generalization. 
+## Acknowledgments
 
-## Technical Highlights
-- **Active Data Selection:** Leveraged `policy_surprise_factor=0.5` via KLD sampling to filter out mundane positions and focus entirely on high-surprise, critical life-and-death situations. 
-- **Asymmetric Optimizer Scaling:** Deployed high-LR AdamW (2.5x Muon LR) to unfreeze policy headers and drive lightning-fast adaptations to external meta-strategies. 
-- **Architectural Boost:** Integrated PyTorch's `flex-attention` to maximize parameter efficiency, enabling a lightweight 9-block, 192-channel model to possess professional-grade finishing ability. 
-
-## Loss graph
-
-![loss1_1](./experimental_results/loss_all.png)
-
-![loss1_2](./experimental_results/loss_pol_val.png)
-
-![loss1_3](./experimental_results/loss_pol_val_detail.png)
-
-## Record vs. against Sai
-```
-steps lr     elo     b(w/d/l)   w(w/d/l)
------ ----   ----    ---------- --------- 
- 220K 6e-4 : 1634 -> (7/7/92)   (7/12/75) 
- 240K 5e-4 : 1588 -> (2/7/81)   (3/8/99)  
- 260K 3e-4 : 1581 -> (2/10/93)  (0/7/88)  
- 280K 2e-4 : 1567 -> (1/4/91)   (1/6/97)  
- 300K 7e-4 : 1585 -> (1/4/79)   (3/10/103)
- 320K 6e-4 : 1585 -> (3/3/88)   (3/8/95)  
- 340K 5e-4 : 1579 -> (5/3/81)   (2/3/106) 
- 360K 3e-4 : 1577 -> (2/1/95)   (3/8/91)  
- 380K 2e-4 : 1582 -> (0/4/94)   (4/9/89)   "UseFlexAttention" : true (false -> true)
- 400K 7e-4 : 1551 -> (0/2/92)   (0/6/100) 
- 420K 6e-4 : 1641 -> (8/12/87)  (6/11/76) 
- 440K 5e-4 : 1620 -> (5/12/90)  (3/12/78) 
- 460K 3e-4 : 1596 -> (9/4/85)   (2/3/97)  
- 480K 2e-4 : 1576 -> (2/1/103)  (4/7/83)  
- 532K 6e-4 : 1616 -> (4/13/92)  (6/5/80)  
- 540K 5e-4 : 1639 -> (11/13/78) (5/6/87)  
- 600K 7e-4 : 1564 -> (2/4/103)  (1/3/87)   "ChunksIncreasingScale" : 2.5 (1.0 -> 2.5)
- 620K 6e-4 : 1666 -> (12/6/82)  (10/14/76) "PolicySurpriseFactor" : 0.5 (0.0 -> 0.5)
- 640K 5e-4 : 1687 -> (13/15/75) (20/12/65)
- 660K 3e-4 : 1649 -> (13/10/81) (7/10/79) 
- 700K 7e-4 : 1622 -> (8/10/86)  (4/8/84)  
- 720K 6e-4 : 1675 -> (11/23/65) (9/12/80) 
- 740K 5e-4 : 1687 -> (19/15/57) (7/13/89) 
- 760K 3e-4 : 1665 -> (16/12/86) (10/9/67)  --playouts 250 (150 -> 250)
- 780K 2e-4 : 1649 -> (10/15/78) (5/13/79) 
- 800K 7e-4 : 1625 -> (6/9/88)   (9/5/83)  
- 820K 6e-4 : 1698 -> (20/18/70) (12/10/70)
-```
-
-
+Special thanks to **Sayuri**, **Muon**, **SAI**, **KataGo**, and their authors for creating the open-source engines, architectures, and optimization techniques that made these experiments possible. Thanks also to **Google AI** for providing continuous analytical support, code reviews, and experimental guidance throughout this research.
 
 The following is the original README for Sayuri.
 
