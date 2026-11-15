@@ -177,8 +177,8 @@ Across all experiments, five foundational principles emerged for maximizing samp
 
 * `docs/` — Individual experiment reports and theoretical notes.
 * `experimental_results/` — Data and results used in the experiment.
-* **Best Lightweight Model (`Exp 3`):** `[sayuri-b6xc96-s312000-c195000-w43950-swa.onnx](experimental_results/)`
-* **Best Wide Model (`Exp 2`):** `[sayuri-b6xc192-s392000-c245000-w51721-swa.onnx](experimental_results/)`
+* **Best Lightweight Model (`Exp 3`):** `[sayuri-b6xc96-s312000-c195000-w43950-swa.onnx](experimental_results/b6xc96/)`
+* **Best Wide Model (`Exp 2`):** `[sayuri-b6xc192-s392000-c245000-w51721-swa.onnx](experimental_results/b6xc192/)`
 
 ---
 
