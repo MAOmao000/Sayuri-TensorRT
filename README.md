@@ -162,7 +162,7 @@ Across all experiments, five foundational principles emerged for maximizing samp
    Eliminating gradient anisotropy via Polar Express Muon—and orthogonalizing `Q`, `K`, `V`, and `Out` projections independently per attention head—prevents cross-head interference and maximizes parameter density. This enabled a `96ch` network to outperform a `192ch` network with 4x more parameters.
 2. **Precomputed Tactical Planes (`ReductionInput: false`) Act as Virtual Capacity:**
    While a `192ch` trunk can infer liberties and ladders from raw stone planes (`ReductionInput: true`), freeing a compact `96ch` trunk via full 43-channel inputs allows 100% of its capacity to focus on high-level strategy, ko evaluation, and endgame precision (`scores loss: 0.0823`).
-3. **Muon Peak Learning Rate Follows** $\text{Peak LR} \propto 1/\sqrt{C}$ **Scaling:**
+3. **Muon Peak Learning Rate Follows** $`\text{Peak LR} \propto 1/\sqrt{C}`$ **Scaling:**
    Scaling peak learning rates from `1.5e-2` (`192ch`) to `2.0e-2` (`96ch`) maintained identical relative update magnitudes without instability, confirming μP-style width scaling laws for hybrid CNN–Transformer Go architectures.
 4. **Progressive Self-Play Curricula & Single Damped Restarts Outperform Multi-Cycle Sawtooth Schedules:**
    Small models are sensitive to noisy targets from shallow search. Escalating self-play depth (`150 → 350 → 500 playouts`) as learning rate anneals—and reserving damped restarts strictly for paired search-depth upgrades—yields steady gains without catastrophic forgetting.
