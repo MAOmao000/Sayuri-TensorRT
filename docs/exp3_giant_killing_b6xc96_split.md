@@ -8,7 +8,7 @@ The goal of Experiment 3 was to test whether our `96ch` architecture (~4x smalle
 * **Head-Split Muon (`Muon Split`):** Split `q_proj`, `k_proj`, `v_proj`, and `out_proj` weights along head dimensions into independent `(32, 96)` matrices prior to Polar Express orthogonalization, preventing cross-head interference and normalizing per-head update scaling.
 * **Group-Spatial RMSNorm:** Enabled `FinalBlockCgroupSize: 24` (`RMSNormMask` over 4 groups of 24 channels) and `AttnLogitPenaltyCap: 30.0`.
 * **Full 43-Channel Input (`ReductionInput: false`):** Supplied precomputed liberty and ladder planes so the compact `96ch` trunk could dedicate its full capacity to strategic and endgame evaluation.
-* **Width-Scaled Peak LR:** Set `Peak LR = 2.0e-2` (matching the theoretical $`\(\sqrt{192/96} \times 1.5\times 10^{-2} \approx 2.12\times 10^{-2}\`$) scaling law).
+* **Width-Scaled Peak LR:** Set `Peak LR = 2.0e-2` (matching the theoretical $\sqrt{192/96} \times 1.5 \times 10^{-2} \approx 2.12 \times 10^{-2}$ scaling law).
 
 ## 3-Stage Self-Play Curriculum (`0 – 312K Steps`)
 * **Stage 1 (`0 – 56K`):** `150` playouts (25% full), `random-opening-prob: 0.75`
