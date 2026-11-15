@@ -1,0 +1,58 @@
+{
+    "NeuralNetwork" : {
+        "NNType" : "Residual",
+        "MaxBoardSize" : 9,
+        "ResidualChannels" : 96,
+        "PolicyHeadChannels" : 32,
+        "ValueHeadChannels" : 64,
+        "PolicyHeadType" : "RepLK",
+        "Activation" : "silu",
+        "BatchNormMode" : "fixup",
+        "PreActivation" : true,
+        "FinalBlockCgroupSize" : 24,
+        "ReductionInput": false,
+        "FusedQKVProj" : true,
+        "FusedSwigluKernel" : true,
+        "FusedRoPEBackward" : true,
+        "UseFlexAttention" : true,
+        "AttnLogitPenaltyCap" : 30.0,
+
+        "Stack" : [
+            "ResidualBlock",
+            "ResidualBlock",
+            "TransformerBlock",
+            "ResidualBlock",
+            "ResidualBlock",
+            "TransformerBlock"
+        ]
+    },
+
+    "Train" : {
+        "Optimizer" : "Muon",
+        "StepsPerEpoch" : 4000,
+        "ValidationSteps" : 100,
+        "VerboseSteps" : 1000,
+        "MaxStepsPerRunning" : 4000,
+        "Workers" : 12,
+        "BatchSize" : 256,
+        "BufferSize" : 524288,
+        "NumberChunks" : 500000,
+        "ChunksIncreasingC" : 5000,
+        "SwaMaxCount" : 16,
+        "SwaSteps" : 500,
+        "WarmUpSteps" : 12000,
+        "PolicySurpriseFactor" : 0.5,
+
+        "LearningRateSchedule" : [
+            [0, 2e-2, 5e-4]
+        ],
+        "LearningRateAnnealingCycle" : 300000,
+        "MuonAdamLrFactor" : 0.2,
+
+        "ExportONNX" : true,
+        "UseCompile" : true,
+        "TrainDirectory" : "selfplay/tdata",
+        "ValidationDirectory" : null,
+        "StorePath" : "workspace"
+    }
+}
