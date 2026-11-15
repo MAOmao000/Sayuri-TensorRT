@@ -1713,6 +1713,20 @@ class TransformerAttentionBlock(nn.Module):
         self.k_proj = torch.nn.Linear(channels, self.num_kv_heads * self.q_head_dim, bias=False)
         self.v_proj = torch.nn.Linear(channels, self.num_kv_heads * self.v_head_dim, bias=False)
         self.out_proj = torch.nn.Linear(self.num_heads * self.v_head_dim, channels, bias=False)
+
+        # --- Adding metadata for Muon Split ---
+        # For q_proj, k_proj, and v_proj, the output dimension (dim=0) is divided by the number of heads.
+        self.q_proj.weight._muon_num_splits = self.num_heads
+        self.q_proj.weight._muon_split_dim = 0
+        self.k_proj.weight._muon_num_splits = self.num_kv_heads
+        self.k_proj.weight._muon_split_dim = 0
+        self.v_proj.weight._muon_num_splits = self.num_kv_heads
+        self.v_proj.weight._muon_split_dim = 0
+        # The `out_proj` can also have its input dimension (dim=1) partitioned, given that
+        # it projects the outputs from each head independently.
+        self.out_proj.weight._muon_num_splits = self.num_heads
+        self.out_proj.weight._muon_split_dim = 1
+
         # Run the Q, K, V projections as a single GEMM over the concatenated weights.
         # At these channel widths the projections are memory-bandwidth-bound, so reading the
         # normalized input once instead of three times (and producing one input-gradient GEMM

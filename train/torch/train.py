@@ -624,20 +624,48 @@ class _MuonWithAuxAdamBase(torch.optim.Optimizer):
         torch._foreach_lerp_(grads, momenta, group["momentum"])
 
         entries_by_shape = {}
+        # Store restoration information for split parameters: param -> [num_splits, split_dim, [None] * num_splits]
+        split_registry = {}
+
         for p, state in chosen:
             update = p.grad
             matrix = update.view(len(update), -1) if update.ndim == 4 else update
             assert matrix.ndim == 2
-            # Normalize orientation to rows <= cols so that transposed shape pairs share a batch.
-            # Zeropower of the transpose is the transpose of zeropower, so this is equivalent to the scalar path.
-            # The same holds for Aurora's polar factor, which always preconditions the tall orientation.
-            was_transposed = matrix.shape[0] > matrix.shape[1]
-            normalized = matrix.mT if was_transposed else matrix
-            key = (normalized.device, normalized.dtype, normalized.shape[0], normalized.shape[1])
-            entries_by_shape.setdefault(key, []).append((p, normalized, was_transposed, state))
+
+            num_splits = getattr(p, "_muon_num_splits", 1)
+            split_dim = getattr(p, "_muon_split_dim", 0)
+
+            if num_splits > 1 and matrix.shape[split_dim] % num_splits == 0:
+                split_registry[p] = (split_dim, [None] * num_splits)
+                for split_idx, sub_mat in enumerate(matrix.chunk(num_splits, dim=split_dim)):
+                    was_transposed = sub_mat.shape[0] > sub_mat.shape[1]
+                    normalized = sub_mat.mT if was_transposed else sub_mat
+                    key = (normalized.device, normalized.dtype, normalized.shape[0], normalized.shape[1])
+                    entries_by_shape.setdefault(key, []).append((p, normalized, was_transposed, state, split_idx))
+            else:
+                was_transposed = matrix.shape[0] > matrix.shape[1]
+                normalized = matrix.mT if was_transposed else matrix
+                key = (normalized.device, normalized.dtype, normalized.shape[0], normalized.shape[1])
+                entries_by_shape.setdefault(key, []).append((p, normalized, was_transposed, state, None))
 
         apply_params = []
         apply_updates = []
+
+        def _register_completed_update(p, update, split_idx):
+            """Once all the split head segments are available, combine them and register the result with `apply_updates` or `deferred_updates`."""
+            if split_idx is not None:
+                split_dim, parts = split_registry[p]
+                parts[split_idx] = update
+                if any(part is None for part in parts):
+                    return
+                update = torch.cat(parts, dim=split_dim)
+
+            if deferred_updates is not None:
+                deferred_updates[p] = update.reshape(p.shape).clone(memory_format=torch.contiguous_format)
+            else:
+                apply_params.append(p)
+                apply_updates.append(update.reshape(p.shape).to(p.dtype))
+
         for entries in entries_by_shape.values():
             for chunk_begin in range(0, len(entries), self.muon_ns_batch_size):
                 chunk = entries[chunk_begin:chunk_begin + self.muon_ns_batch_size]
@@ -654,34 +682,26 @@ class _MuonWithAuxAdamBase(torch.optim.Optimizer):
 
                 if not self.use_normuon and group["adjust_lr_fn"] == "match_rms_adamw":
                     if deferred_updates is not None:
-                        for (p, _, was_transposed, state), update in zip(chunk, orthogonalized.unbind(dim=0)):
+                        for (p, _, was_transposed, state, split_idx), update in zip(chunk, orthogonalized.unbind(dim=0)):
                             if was_transposed:
                                 update = update.mT
-                            # Always copy: the update must outlive later invocations of the compiled
-                            # orthogonalization, whose output buffer can be reused. Under a compile mode
-                            # that uses CUDA graphs (max-autotune) it lives in a CUDA-graph private pool.
-                            deferred_updates[p] = update.reshape(p.shape).clone(memory_format=torch.contiguous_format)
+                            _register_completed_update(p, update, split_idx)
                         continue
-                    # The adjust-lr scale depends only on the (shared) matrix
-                    # shape, so scale the whole stacked chunk in one launch,
-                    # in parameter dtype for the foreach apply below.
                     scale = self._update_scale((orthogonalized.shape[-2], orthogonalized.shape[-1]))
                     scaled = orthogonalized.to(chunk[0][0].dtype) * scale
-                    for (p, _, was_transposed, state), update in zip(chunk, scaled.unbind(dim=0)):
+                    for (p, _, was_transposed, state, split_idx), update in zip(chunk, scaled.unbind(dim=0)):
                         if was_transposed:
                             update = update.mT
-                        apply_params.append(p)
-                        apply_updates.append(update.reshape(p.shape))
+                        _register_completed_update(p, update, split_idx)
                     continue
 
-                for (p, _, was_transposed, state), update in zip(chunk, orthogonalized.unbind(dim=0)):
+                for (p, _, was_transposed, state, split_idx), update in zip(chunk, orthogonalized.unbind(dim=0)):
                     if was_transposed:
                         update = update.mT
-                    # Aurora ignores NorMuon, as aurora_update on the scalar path does.
                     normuon_v = None if self.use_aurora else state.get("normuon_v")
                     if normuon_v is not None:
-                        assert group["adjust_lr_fn"] == "match_rms_adamw", \
-                            f"NorMuon requires adjust_lr_fn='match_rms_adamw', got '{group['adjust_lr_fn']}'"
+                        assert group["adjust_lr_fn"] == "match_rms_adamw"
+                        # ※ When using NorMuon, it must be applied after the full-geometry assembly (prior to any splitting); therefore, the standard Muon approach is recommended.
                         normuon_v.lerp_(update.square().mean(dim=-1).to(normuon_v.dtype), 1 - self.normuon_beta2)
                         update = update / (normuon_v.sqrt().unsqueeze(-1) + self.normuon_eps)
                         update = update * (0.1825 * (update.size(-2) * update.size(-1))**0.5 / (update.norm() + 1e-30))
@@ -694,8 +714,7 @@ class _MuonWithAuxAdamBase(torch.optim.Optimizer):
                         update = update * (max(1, update.size(-2) / update.size(-1))**0.5)
                     else:
                         raise AssertionError(f"Unexpected value adjust_lr_fn={group['adjust_lr_fn']}")
-                    apply_params.append(p)
-                    apply_updates.append(update.reshape(p.shape).to(p.dtype))
+                    _register_completed_update(p, update, split_idx)
 
         self._apply_updates_with_weight_decay(apply_params, apply_updates, group["lr"], group["weight_decay"])
 
