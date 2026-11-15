@@ -176,9 +176,9 @@ Across all experiments, five foundational principles emerged for maximizing samp
 ## 3. Repository Structure & Artifacts
 
 * `docs/` — Individual experiment reports and theoretical notes.
-* `configs/` — JSON training configurations and self-play parameter presets.
-* **Best Lightweight Model (`Exp 3`):** `[sayuri-b6xc96-s312000-swa.onnx](LINK_TO_RELEASE)`
-* **Best Wide Model (`Exp 2`):** `[sayuri-b6xc192-s392000-swa.onnx](LINK_TO_RELEASE)`
+* `experimental_results/` — Data and results used in the experiment.
+* **Best Lightweight Model (`Exp 3`):** `[sayuri-b6xc96-s312000-c195000-w43950-swa.onnx](experimental_results/)`
+* **Best Wide Model (`Exp 2`):** `[sayuri-b6xc192-s392000-c245000-w51721-swa.onnx](experimental_results/)`
 
 ---
 
