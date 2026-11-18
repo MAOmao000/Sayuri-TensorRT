@@ -133,7 +133,7 @@ class Config:
         self.final_block_cgroup_size = network.get("FinalBlockCgroupSize", None)
         self.attention_qk_norm = network.get("AttentionQKNorm", True)
         self.transformer_heads = network.get("TransformerHeads", 3)
-        self.transformer_kv_heads = network.get("TransformerKVHheads", 3)
+        self.transformer_kv_heads = network.get("TransformerKVHeads", 3)
         self.attention_query_head_dim = network.get("AttentionQueryHeadDim",
                                                     self.residual_channels // self.transformer_heads)
         self.attention_value_head_dim = network.get("AttentionValueHeadDim",
