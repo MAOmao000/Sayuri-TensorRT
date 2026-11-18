@@ -5,28 +5,32 @@
     <h3>Sayuri</h3>
 </div>
 
-# TensorRT backend for ONNX
+# Compact & High-Efficiency 9x9 Go AI: Architecture and Optimization Experiments (Exp 1 – Exp 4)
 
-This is a prototype of the TensorRT backend for ONNX (onnx-tensorrt) designed for Sayuri.
-AQ already adopted this method (using UFF instead of ONNX) in 2018, but there were still many restrictions at that time, so it was not adopted in the Go engine for a while.
-Also added the following features:
+## 1. Overview & Motivation (TL;DR)
+In AlphaZero-style board game AI, conventional scaling laws typically assume that stronger play requires massive neural networks trained over millions of steps. However, for single-GPU developers, researchers, and edge/browser deployments, the critical question is: **How small can a model be—and how few training steps does it need—to match established larger engines?**
+
+Using **9x9 Go (Chinese rules, Komi 7.0)** as a testbed, we combined a **Hybrid ResNet-Transformer architecture** with modern optimization techniques (**Head-Split Muon**, **$\mu$P width scaling**, and **Gumbel AlphaZero**). Our experiments demonstrate that a compact **`b6xc128h32` (6-block, 128-channel)** network trained in a **single 312K-step cycle without warm restarts** achieves near-parity overall—and exact 50% parity as Black—against the substantially larger `SAI b8c160` (8-block, 160-channel ResNet) baseline.
+
+For this experiment, we used "Sayuri" (https://github.com/CGLemon/Sayuri.git)—a compact Go bot that already possesses sufficient functionality—after extending it with the features required for our experiments. The primary additions are listed below; most of these were ported from features introduced in KataGo v1.18.
+
 * Muon+AdamW optimizer (Ported KataGo v1.18)
 * Aurora+AdamW optimizer (Ported KataGo v1.18)
 * FlexAttention (Ported KataGo v1.18)
+* torch.onnx.export (Ported KataGo_Transformer (https://github.com/hzyhhzy/KataGo_Transformer.git))
 * torch.compile (Ported KataGo v1.18)
-* TransformerAttention model for experimental purposes (Ported KataGo v1.18)
+* TransformerAttention encoder (Ported KataGo v1.18)
 * Automatic learning rate scheduling (cosine annealing)
 * Support for bfloat16 in AMP (PyTorch Automatic Mixed Precision)
 * Support for Muon Split (Referred to lc0)
 
-## Requirements
-
+## 2. Requirements
 Additional features require the following installation:
 
 * c++ engine: onnx runtime (Used onnxruntime-linux-x64-1.25.1 to check the operation)
 * python: pip install onnxruntime-gpu onnx onnxscript
 
-## Modification of configuration definitions (selfplay-setting.json)
+* Modification of configuration definitions (selfplay-setting.json)
 
 Additional configuration definitions (selfplay-setting.json):
 ```
@@ -43,7 +47,7 @@ Additional configuration definitions (selfplay-setting.json):
     "FinalBlockCgroupSize": None(default) # If specified, RMSNorm is performed using this group size at the end of the intermediate layer's iterative processing.
     "AttentionQKNorm": true(default)  # RMSNorm on Q and K per-head before the attention dot product. (true|false)
     "TransformerHeads": 3(default)    # The number of parallel heads processed in Multi-Head Attention.
-    "TransformerKVHheads": 3(default) # The number of parallel heads processed in Multi-Head Attention.
+    "TransformerKVHeads": 3(default)  # The number of parallel heads processed in Multi-Head Attention.
     "AttentionQueryHeadDim": "ResidualChannels" / "TransformerHeads"(default) # Query size (number of dimensions) per head.
                                          #  = Hidden layer dimension / Number of attention heads.
                                          # The recommended value is 64.
@@ -126,60 +130,79 @@ Deletion configuration definition (selfplay-setting.json):
     "RenormMaxR": 1(default)
     "RenormMaxD": 0(default)
 ```
-## Build
+* Build
 ```
  $ cmake .. -DBLAS_BACKEND=TENSORRT -DUSE_ZLIB=1 -DSPECIFIC_BOARD_SIZE=9 -DBOARD_SIZE=9 -DONNX_ROOT_DIR=~/Downloads/onnxruntime-linux-x64-1.25.1
  $ cmake --build .
  $ ./sayuri -t 10 -b 5 -w ~/Sayuri-test-b9xc192/weights/sayuri-b9xc192-s300000-c315000-w61965-swa.onnx --use-optimistic-policy --scoring-rule area -p 1200 --reuse-tree
 ```
 
-# Chasing SAI's Shadow
-### *The Marriage of Muon and AlphaZero*
+## 3. Cross-Experiment Benchmark Summary (vs. `SAI b8c160`)
 
-A comprehensive experimental study on training compact hybrid CNN–Transformer 9x9 Go engines from scratch using **Polar Express Muon**, **Head-Split Orthogonalization (`Muon Split`)**, **Gumbel AlphaZero**, and **progressive self-play curricula**.
+All evaluation matches consist of **200 games** (100 as Black, 100 as White) on 9x9 Chinese rules (`Komi 7.0`, `1,200 playouts/move`) using SWA (Stochastic Weight Averaging) weights.
 
-Starting from a baseline `b6xc96h32` model (34.0% non-loss rate against the reference engine **SAI `b8c160`**), iterative architectural and optimization breakthroughs enabled a **4x smaller `b6xc96h32` network** to achieve a **45.5% non-loss rate (52W–39D–109L)**—surpassing even our larger `b6xc192h64` model (44.0%) within just 312K training steps.
+> **Evaluation Metrics Note (Point Win Rate vs. Non-Loss Rate):**
+> Because 9x9 Go with Komi 7.0 frequently ends in a theoretical draw (*Jigo*) under optimal play, evaluating solely by Non-Loss Rate (`W + D`) can be misleading. We therefore use **Point Win Rate (`(W + 0.5 * D) / 200`)** and **Estimated Elo Difference** as our primary strength metrics alongside Non-Loss Rate.
 
----
+| Experiment | Model Topology | Training & Key Innovations | Black (`W/D/L`) | White (`W/D/L`) | Total (`W/D/L`) | **Point Win Rate** | **Est. Elo Diff** | Non-Loss (`W+D`) |
+| :--- | :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Exp 1 (Baseline)** | `b6xc96h32` (`96ch`) | Initial Muon + Gumbel AZ (`512K`) | 17 / 20 / 63 | 14 / 17 / 69 | 31 / 37 / 132 | `24.75%` | `-193 Elo` | `34.0%` |
+| **Exp 2 (Naive Scale)** | `b6xc192h64` (`192ch`) | Un-split Muon + Restart (`392K`) | 23 / 22 / 58 | 25 / 18 / 54 | 48 / 40 / 112 | `34.00%` | `-115 Elo` | `44.0%` |
+| **Exp 3 (Giant Killing)** | `b6xc96h32` (`96ch`) | **Head-Split Muon** + RMSNormMask (`312K`) | 31 / 26 / 39 | 21 / 13 / 70 | 52 / 39 / 109 | `35.75%` | `-102 Elo` | `45.5%` |
+| **Exp 3.5 (Restart)** | `b6xc96h32` (`96ch`) | Damped Warm Restart (`312K -> 508K` trough) | 30 / 18 / 52 | 27 / 30 / 43 | 57 / 48 / 95 | `40.50%` | `-67 Elo` | `52.5%` |
+| **Exp 4 (Final Goal)** | **`b6xc128h32` (`128ch`)** | **Single-Cycle + `muP` Scaling (`312K`)** | **`40 / 19 / 40`** | **`26 / 29 / 46`** | **`66 / 48 / 86`** | **`45.00%`** | **`-35 Elo`** | **`57.0%`** |
 
-## 1. Cross-Experiment Benchmark Summary (vs. `SAI b8c160`)
-
-All evaluation benchmarks consist of **200 games** on 9x9 Chinese rules (`Komi 7.0`, `1,200 playouts/move`, using SWA weights):
-
-| Experiment | Model Topology | Key Innovations | Steps | Black (`W/D/L`) | White (`W/D/L`) | Total (`W/D/L`) | Non-Loss Rate (`W+D`) | Detailed Report |
-| :--- | :---: | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
-| **Exp 1 (Baseline)** | `b6xc96h32` | Initial Muon + Gumbel AZ | 512K | 17 / 20 / 63 | 14 / 17 / 69 | 31 / 37 / 132 | **34.0%** | [View Report](./docs/exp1_baseline_b6xc96.md) |
-| **Exp 2 (Scaled 192c)** | `b6xc192h64` | `192ch` + 2-Stage Search + Damped Restart | 392K | 23 / 22 / 58 | 25 / 18 / 54 | 48 / 40 / 112 | **44.0%** | [View Report](./docs/exp2_scaled_b6xc192.md) |
-| **Exp 3 (Giant Killing)** | **`b6xc96h32`** | **`Muon Split` + `RMSNormMask(24)` + Full 43ch Input + 3-Stage Curriculum** | **312K** | **31 / 26 / 39** | **21 / 13 / 70** | **52 / 39 / 109** | **45.5%** | [View Report](./docs/exp3_giant_killing_b6xc96_split.md) |
-
----
-
-## 2. Core Key Findings & Takeaways
-
-Across all experiments, five foundational principles emerged for maximizing sample and parameter efficiency in compact AlphaZero pipelines:
-
-1. **Compact Models Benefit Most from Spectral & Head-Split Orthogonalization (`Muon Split`):**
-   Eliminating gradient anisotropy via Polar Express Muon—and orthogonalizing `Q`, `K`, `V`, and `Out` projections independently per attention head—prevents cross-head interference and maximizes parameter density. This enabled a `96ch` network to outperform a `192ch` network with 4x more parameters.
-2. **Precomputed Tactical Planes (`ReductionInput: false`) Act as Virtual Capacity:**
-   While a `192ch` trunk can infer liberties and ladders from raw stone planes (`ReductionInput: true`), freeing a compact `96ch` trunk via full 43-channel inputs allows 100% of its capacity to focus on high-level strategy, ko evaluation, and endgame precision (`scores loss: 0.0823`).
-3. **Muon Peak Learning Rate Follows** $`\text{Peak LR} \propto 1/\sqrt{C}`$ **Scaling:**
-   Scaling peak learning rates from `1.5e-2` (`192ch`) to `2.0e-2` (`96ch`) maintained identical relative update magnitudes without instability, confirming μP-style width scaling laws for hybrid CNN–Transformer Go architectures.
-4. **Progressive Self-Play Curricula & Single Damped Restarts Outperform Multi-Cycle Sawtooth Schedules:**
-   Small models are sensitive to noisy targets from shallow search. Escalating self-play depth (`150 → 350 → 500 playouts`) as learning rate anneals—and reserving damped restarts strictly for paired search-depth upgrades—yields steady gains without catastrophic forgetting.
-5. **High-Purity Self-Play Induces Apparent `wdl loss` Plateaus:**
-   As agent strength peaks, self-play games converge toward razor-thin, half-point draws under 7.0 komi. Target winrates cluster near `0.5`, keeping `wdl loss` elevated (`~0.61–0.67`) even as score-lead accuracy (`scores loss`) hits record lows—a healthy indicator of high-level competitive self-play.
-
-> **Theoretical Deep Dive:** For an analysis of how Muon's gradient orthogonalization accelerates self-play quality, see **[How Muon’s Accelerated Learning Elevates Self-Play Game Quality](./docs/muon_selfplay_dynamics.md)**.
+### Key Highlights (`Exp 4: b6xc128h32`)
+1. **Exact 50.0% Parity as Black (`40W / 19D / 40L`):** Matched `SAI b8c160` blow-for-blow with the initiative, converting aggressive lines into decisive wins.
+2. **57.0% Overall Non-Loss Rate (`-35 Elo`):** Reached practical competitive parity in a single `312K`-step pass without warm restarts, using significantly fewer parameters than `SAI b8c160`.
 
 ---
 
-## 3. Repository Structure & Artifacts
+## 4. Evolution of Experiments & Breakthroughs
 
-* `docs/` — Individual experiment reports and theoretical notes.
-* `experimental_results/` — Data and results used in the experiment.
-* **Base Model (`Exp 1`):** `[sayuri-b6xc96-s512000-c320000-w62673-swa.onnx](experimental_results/base/)`
-* **Best Lightweight Model (`Exp 3`):** `[sayuri-b6xc96-s312000-c195000-w43950-swa.onnx](experimental_results/b6xc96/)`
-* **Best Wide Model (`Exp 2`):** `[sayuri-b6xc192-s392000-c245000-w51721-swa.onnx](experimental_results/b6xc192/)`
+### Phase 1: Limitations of Naive Scaling (`Exp 1 -> Exp 2`)
+* **Problem:** Our initial `96ch` baseline (`Exp 1`) scored `-193 Elo`. Simply doubling the width to `192ch` (~4x parameters) in `Exp 2` improved performance to `-115 Elo` (`34.00%` Point Win Rate) after `392K` steps, but remained well behind `SAI b8c160`.
+* **Root Cause:** Applying standard Muon orthogonalization across concatenated Q/K/V/Out projection matrices caused cross-head gradient interference, and learning rates were not scaled to match the wider hidden layers.
+
+### Phase 2: Algorithmic "Giant Killing" (`Exp 3`)
+Reverting back to the compact **`b6xc96h32` (`96ch`)** model and introducing four targeted improvements allowed it to **surpass the 4x larger `Exp 2` model in just `312K` steps** (`-102 Elo` / `35.75%` Point Win Rate):
+1. **Head-Split Muon:** Splitting attention projection matrices along `head_dim = 32` prior to Newton-Schulz orthogonalization prevented cross-head interference, allowing each attention head to specialize independently in liberties, connectivity, and global shape.
+2. **Group-Spatial RMSNormMask:** Dividing channels into 4 groups (`24ch x 4`) with board-masked RMSNorm stabilized gradient flow at high learning rates.
+3. **Full 43-Channel Tactical Inputs:** Retaining precomputed tactical features (liberties, ladders) prevented the compact network from wasting capacity recomputing basic local tactics.
+4. **3-Stage Self-Play Curriculum:** Gradually ramping search depth (`150 -> 350 -> 500 playouts`) while tapering opening randomness (`0.65 -> 0.45 -> 0.30`).
+
+### Phase 3: Two Critical Traps Discovered via Warm Restart (`Exp 3.5`)
+To push `b6xc96h32` further, we ran a Damped Warm Restart (`312K -> 512K` steps). At the `508K` annealing trough, Point Win Rate climbed to **`40.50%` (`-67 Elo`)**, revealing two crucial training dynamics:
+1. **Behavioral Over-Specialization (*Jigo* Overfitting):** Tightening opening randomness (`random-opening-prob: 0.15`) and temperature (`0.85`) late in training caused the policy to collapse onto conservative draw lines. While White's Point Win Rate surged (`27.5% -> 42.0%`), Black lost its sharp win-converting variations.
+2. **SWA Contamination at Cosine Annealing Cycle Boundaries:** When `LearningRateAnnealingCycle` aligned exactly with the final stopping step (`512K`), the modulo cycle reset spiked the learning rate back to its peak (`9.0e-3`) during the final 1,000 steps. Because SWA averages the trailing checkpoints (`SwaSteps: 500`), just 2 post-spike checkpoints contaminated the SWA weights, causing a **`-50 Elo` drop between `508K` (`-67 Elo`) and `512K` (`-117 Elo`)**.
+
+### Phase 4: `muP` Scaling & Finding the Minimal Sweet Spot (`Exp 4`)
+Synthesizing all prior lessons, we designed **`b6xc128h32` (`128ch`, 4 heads)** as the minimal architecture capable of matching `SAI b8c160` in a **single ~300K-step cycle without warm restarts**:
+* **Zero-Tuning `muP` Learning Rate Transfer:** Scaling width from `96ch` (`Peak LR = 2.0e-2`) to `128ch` (`4 heads x 32 dim`), we applied Muon's matrix scaling law (`Peak LR = 2.0e-2 * sqrt(96 / 128) = 1.73e-2`). The model converged cleanly on the very first run without grid-searching hyperparameters.
+* **Clean SWA Boundary Alignment:** Setting `WarmUpSteps: 12,000` and `LearningRateAnnealingCycle: 304,000` placed the exact cosine trough at `316,000` steps—ensuring that stopping at `312,000` steps captured pure, uncontaminated trough weights (`LR = 1.07e-4`).
+* **Balanced Late-Stage Diversity:** Maintaining `random-opening-prob: 0.25`, `root-policy-temp: 0.90`, and `score-utility-factor: 0.28` in Stage 3 (`160K -> 312K`) preserved Black's attacking sharpness while achieving a record-low **`scores loss: 0.0686`** (`< 0.1` point endgame accuracy).
+
+---
+
+## 5. Practical Takeaways for Bot Developers & RL Researchers
+
+1. **Always Split Attention Heads for Muon:** Never orthogonalize concatenated Q/K/V/Out matrices as a single block; splitting by `head_dim` (`32`) is essential for parameter efficiency in Transformer-based game engines.
+2. **Use `muP` Width Scaling (`sqrt(d_old / d_new)`) to Save Compute:** Tune learning rates on a fast, small proxy network (`96ch`), then scale directly to wider models (`128ch+`) via `LR_new = LR_old * sqrt(d_old / d_new)`.
+3. **Terminate SWA Strictly Before the Cosine Cycle Resets:** Ensure `WarmUpSteps + LearningRateAnnealingCycle > TargetStopSteps` so post-cycle LR spikes never enter the trailing SWA averaging window.
+4. **Preserve Exploration Diversity in Late Self-Play:** In games with high draw rates (9x9 Go, Chess), overly greedy late-stage self-play triggers mode collapse toward passive draws. Keeping moderate opening randomness (`~0.25`) and score utility (`~0.28`) balances offensive initiative with defensive resilience.
+
+---
+
+## 6. Final Reference Configuration (`Exp 4: b6xc128h32`)
+
+* **Architecture:** 6-block Hybrid (`Res-Res-Trans-Res-Res-Trans`), `ResidualChannels: 128`, `TransformerHeads: 4` (`head_dim: 32`), `TransformerFFNChannels: 512`, `FinalBlockCgroupSize: 32` (`4 x 32ch` spatial RMSNormMask), `BatchNormMode: fixup`, `Activation: silu`, `PolicyHeadType: RepLK`
+* **Optimizer:** `Head-Split Muon` (`Peak LR: 1.73e-2 -> 1.0e-4`, `WarmUpSteps: 12,000`, `LearningRateAnnealingCycle: 304,000`) + auxiliary AdamW (`MuonAdamLrFactor: 0.25`)
+* **3-Stage Self-Play Curriculum (`312K` steps total):**
+  * **Stage 1 (`0 – 48K`)**: `150 playouts` (`Gumbel: 32`), `random-opening-prob: 0.65`
+  * **Stage 2 (`48K – 160K`)**: `350 playouts` (`Gumbel: 85`), `random-opening-prob: 0.45`
+  * **Stage 3 (`160K – 312K`)**: `550 playouts` (`Gumbel: 140`), `random-opening-prob: 0.25`, `score-utility-factor: 0.28`
+
+> **The details of each experiment are provided, see **[Experiment-by-Experiment Technical Breakdown](./docs/exp_report.md)
 
 ---
 
@@ -188,6 +211,8 @@ Across all experiments, five foundational principles emerged for maximizing samp
 Special thanks to **Sayuri**, **Muon**, **SAI**, **KataGo**, and their authors for creating the open-source engines, architectures, and optimization techniques that made these experiments possible. Thanks also to **Google AI** for providing continuous analytical support, code reviews, and experimental guidance throughout this research.
 
 The following is the original README for Sayuri.
+
+---
 
 ## Let's ROCK!
 
