@@ -1,0 +1,64 @@
+{
+    "NeuralNetwork" : {
+        "NNType" : "Residual",
+        "MaxBoardSize" : 9,
+        "ResidualChannels" : 128,
+        "TransformerHeads" : 4,
+        "TransformerKVHeads" : 4,
+        "AttentionQueryHeadDim" : 32,
+        "AttentionValueHeadDim" : 32,
+        "PolicyHeadChannels" : 48,
+        "ValueHeadChannels" : 96,
+        "PolicyHeadType" : "RepLK",
+        "Activation" : "silu",
+        "BatchNormMode" : "fixup",
+        "PreActivation" : true,
+        "FinalBlockCgroupSize" : 32,
+        "ReductionInput": false,
+        "FusedQKVProj" : true,
+        "FusedSwigluKernel" : true,
+        "FusedRoPEBackward" : true,
+        "UseFlexAttention" : true,
+        "AttnLogitPenaltyCap" : 30.0,
+
+        "Stack" : [
+            "ResidualBlock",
+            "ResidualBlock",
+            "TransformerBlock",
+            "ResidualBlock",
+            "ResidualBlock",
+            "TransformerBlock"
+        ]
+    },
+
+    "Train" : {
+        "Optimizer" : "Muon",
+        "StepsPerEpoch" : 4000,
+        "ValidationSteps" : 100,
+        "VerboseSteps" : 1000,
+        "MaxStepsPerRunning" : 4000,
+        "Workers" : 12,
+        "BatchSize" : 256,
+        "BufferSize" : 524288,
+        "NumberChunks" : 400000,
+        "ChunksIncreasingC" : 5000,
+        "SwaMaxCount" : 16,
+        "SwaSteps" : 500,
+        "WarmUpSteps" : 12000,
+        "PolicySurpriseFactor" : 0.60,
+        "DownSampleRate" : 12,
+
+        "LearningRateSchedule" : [
+            [0, 1.73e-2, 1e-4]
+        ],
+        "LearningRateAnnealingCycle" : 304000,
+        "MuonAdamLrFactor" : 0.25,
+        "NormalAttnWdFactor" : 1.5,
+
+        "ExportONNX" : true,
+        "UseCompile" : true,
+        "TrainDirectory" : "selfplay/tdata",
+        "ValidationDirectory" : null,
+        "StorePath" : "workspace"
+    }
+}

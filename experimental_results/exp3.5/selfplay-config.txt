@@ -1,0 +1,83 @@
+#--random-moves-factor 0.1
+--random-moves-factor 0.08
+#--random-opening-prob 0.75
+#--random-opening-prob 0.5
+#--random-opening-prob 0.3
+--random-opening-prob 0.15
+#--random-opening-temp 0.9
+--random-opening-temp 0.85
+#--random-fastsearch-prob 0.75
+--random-fastsearch-prob 0.3
+
+#--komi-stddev 1.0
+--komi-stddev 0.75
+#--komi-big-stddev-prob 0.05
+--komi-big-stddev-prob 0.03
+#--komi-big-stddev 2.0
+--komi-big-stddev 1.5
+
+--handicap-fair-komi-prob 0.5
+
+--cpuct-init 0.5
+--cpuct-base 19652
+--cpuct-base-factor 1
+
+#--fpu-reduction 0.25
+--fpu-reduction 0.35
+--root-fpu-reduction 0.25
+
+--lcb-reduction 0.0
+#--score-utility-factor 0.2
+--score-utility-factor 0.25
+--score-utility-div 4.0
+
+--forced-playouts-k 2
+
+--selfplay-query bkp:9:7:0.98  --selfplay-query bhp:9:2:0.1
+--selfplay-query bkp:8:10:0.01
+--selfplay-query bkp:7:8:0.01
+
+--selfplay-query srs:area
+--selfplay-query srs:territory
+
+#--playouts 150
+#--playouts 350
+#--playouts 500
+--playouts 600
+
+--gumbel
+#--gumbel-playouts-threshold 32
+#--gumbel-playouts-threshold 85
+#--gumbel-playouts-threshold 120
+--gumbel-playouts-threshold 160
+--gumbel-prom-visits 1
+
+#--fastsearch-playouts 50
+--fastsearch-playouts 64
+#--fastsearch-playouts-prob 0.75
+--fastsearch-playouts-prob 0.3
+
+--resign-playouts 32
+#--resign-threshold 0.05
+--resign-threshold 0.03
+#--resign-discard-prob 0.9
+--resign-discard-prob 0.95
+
+#--parallel-games 64
+--parallel-games 96
+#--cache-memory-mib 400
+--cache-memory-mib 512
+--early-symm-cache
+--first-pass-bonus
+
+--dirichlet-noise
+#--dirichlet-epsilon 0.15
+--dirichlet-epsilon 0.12
+--dirichlet-init 0.20
+
+#--root-policy-temp 0.9
+--root-policy-temp 0.85
+
+#--num-games 2500
+--num-games 3000
+
