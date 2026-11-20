@@ -1,6 +1,7 @@
-# Experiment-by-Experiment Technical Breakdown (Exp 1 – Exp 4)
+# Experiment-by-Experiment Technical Breakdown (Exp 1 – Exp 5)
 
-This document provides an individual summary, architectural configuration, training dynamics, and key takeaways for each of the **five experimental stages** conducted on 9x9 Go (`Chinese rules`, `Komi 7.0`, evaluated over `200` games at `1,200 playouts/move` against `SAI b8c160`).
+This document provides an individual summary, architectural configuration, training dynamics, and key takeaways for each of the **six experimental stages** (`Exp 1` through `Exp 5`) conducted on 9x9 Go (`Chinese rules`, `Komi 7.0`, evaluated over `200` games at `1,200 playouts/move` against `SAI b8c160`).
+
 
 ---
 
@@ -101,3 +102,35 @@ Synthesize all lessons from Exp 1–3.5 to find the **smallest architecture capa
 
 ### 3. Key Findings
 * **Target Achieved in One Pass:** Without any warm restarts or hyperparameter grid searches, `b6xc128h32` matched `SAI b8c160` 50/50 as Black (`40W - 40L`) and reached `57.0%` overall non-loss rate (`-35 Elo`) in `312K` steps—confirming `b6xc128h32` as the minimal architectural sweet spot for 9x9 Go.
+
+---
+
+## Experiment 5: Multi-Config Exploration Mixture & Loss–Strength Paradox (`b6xc96h32`, `0 -> 500K`)
+
+### 1. Objective & Configuration
+Test whether mixing self-play data from three distinct MCTS search personalities per cycle—followed by a high-playout warm restart—could enable the compact `b6xc96h32` (`96ch`) model to match `Exp 4` (`128ch`).
+* **Topology:** `b6xc96h32` (`ResidualChannels: 96`, `TransformerHeads: 3`, `head_dim: 32`, `FinalBlockCgroupSize: 32` [`3 x 32ch` spatial RMSNormMask], `PolicyHeadChannels: 32`, `ValueHeadChannels: 64`)
+* **3-Personality Self-Play Mixture (per cycle):**
+  * *Balance:* `score-utility-factor: 0.28 -> 0.35`, `fpu-reduction: 0.35`, `root-policy-temp: 0.90`
+  * *Offense:* `score-utility-factor: 0.40`, `fpu-reduction: 0.15`, `root-policy-temp: 0.95`
+  * *Defense:* `score-utility-factor: 0.15 -> 0.20`, `fpu-reduction: 0.40`, `root-policy-temp: 0.90`
+* **Two-Phase Training Schedule (`500K` steps total):**
+  * *Phase 1 (`0 – 300K`):* `150 playouts` (`Gumbel: 32`), multi-rule/multi-board-size (`7x7`, `8x8`, `9x9`; Chinese & Japanese rules), `Peak LR: 2.0e-2 -> 1.13e-3`
+  * *Phase 2 (`300K – 500K` Warm Restart):* `600 playouts` (`Gumbel: 32`, `fastsearch: 100`), concentrated on 9x9 `Komi 7.0` (~83% Chinese / ~17% Japanese), `LR: 6.0e-3 -> 2.0e-4` (`LearningRateAnnealingCycle: 200,010`), `ChunksIncreasingC: 8000`, `SwaMaxCount: 24`
+
+### 2. Benchmark Results (vs. `SAI b8c160`)
+* **Phase 1 Checkpoint (`300K` steps, `150 playouts`):**
+  * **Black (`W/D/L`):** `8 / 16 / 71` (Point Win Rate: `16.8%`)
+  * **White (`W/D/L`):** `14 / 22 / 69` (Point Win Rate: `23.8%`)
+  * **Total (`W/D/L`):** `22 / 38 / 140` (**Point Win Rate: `20.50%`**, **Est. Elo Diff: `-235 Elo`**, Non-Loss Rate: `30.0%`)
+* **Phase 2 Trough Checkpoint (`492K` SWA, `600 playouts`, `--use-optimistic-policy`):**
+  * **Black (`W/D/L`):** `11 / 26 / 52` (Point Win Rate: `27.0%`, Non-Loss: `41.6%`)
+  * **White (`W/D/L`):** `22 / 21 / 68` (Point Win Rate: `29.3%`, Non-Loss: `38.7%`)
+  * **Total (`W/D/L`):** `33 / 47 / 120` (**Point Win Rate: `28.25%`**, **Est. Elo Diff: `-162 Elo`**, **Non-Loss Rate: `40.0%`**)
+* **Peak Training Metrics (`492K` trough):** `all loss: 3.8088`, `prob loss: 1.3252`, `ownership loss: 0.7545`, `wdl loss: 0.5718`, `scores loss: 0.0746` (lowest overall training loss across all experiments)
+
+### 3. Key Findings
+* **Substantial Intra-Model Gain (`+73 Elo`):** High-playout (`600`) warm restart distillation with optimistic policy search boosted Point Win Rate by `+7.75%` (`20.50% -> 28.25%`), raising Black's point win rate by `+10.2` percentage points (`16.8% -> 27.0%`).
+* **The Training Loss vs. Elo Paradox:** Despite achieving lower training losses (`all loss: 3.8088`) than `Exp 4` (`4.2327`), Exp 5 trailed `Exp 4` (`45.00%` Point Win Rate) by `127 Elo`. Narrowing rule/komi distributions in Phase 2 induced *policy distribution contraction*—allowing the `96ch` model to tightly imitate its own self-play trajectories without acquiring the out-of-distribution generalization required against `SAI b8c160` at `1,200 playouts`.
+* **Takeaway:** Multi-config exploration diversity and high-playout distillation reliably strengthen a fixed topology, but cannot substitute for sufficient channel capacity (`128ch`) and `scores loss` precision (`0.0686`) in deep-search competitive play.
+
