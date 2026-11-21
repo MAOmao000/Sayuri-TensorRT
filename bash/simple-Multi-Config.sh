@@ -25,19 +25,19 @@ function gather_gpu()
 
 function main_loop()
 {
-    #if ! [ -f $SETTING_FILE ]; then
-    #    echo "The training setting file does not exist. Exit!"
-    #    exit 1
-    #fi
-    if ! [ -f $CONFIG_FILE ]; then
-        echo "The engine config file does not exist. Exit!"
+    if ! [ -f $SETTING_FILE ]; then
+        echo "The training setting file does not exist. Exit!"
         exit 1
     fi
+    #if ! [ -f $CONFIG_FILE ]; then
+    #    echo "The engine config file does not exist. Exit!"
+    #    exit 1
+    #fi
     # Define three self-play configuration files in an array.
     CONFIG_LIST=(
-        "configs/selfplay-config-balance-reheat.txt"
-        "configs/selfplay-config-offense-reheat.txt"
-        "configs/selfplay-config-defense-reheat.txt"
+        "configs/selfplay-config-balance.txt"
+        "configs/selfplay-config-offense.txt"
+        "configs/selfplay-config-defense.txt"
     )
     # File existence check
     for cfg in "${CONFIG_LIST[@]}"; do

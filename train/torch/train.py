@@ -1215,13 +1215,14 @@ class StreamLoader:
         return stream
 
 class StreamParser:
-    def __init__(self, down_sample_rate, policy_surprise_factor=0.0):
+    def __init__(self, down_sample_rate, boardsize, policy_surprise_factor=0.0):
         # Use a random sample input data read. This helps improve the spread of
         # games in the shuffle buffer.
         self.down_sample_rate = down_sample_rate
 
-        # We assume each game has 50 positions on average. 
-        self.virtual_buffsize = 8000 * 50
+        # We assume each game has 50 positions on average.
+        # Adjusted to match one cycle of a 9x9 board (approximately 3,000 games) (800 games x 50 moves = 40,000 positions)
+        self.virtual_buffsize = (8000 * 50) if boardsize > 9 else (800 * 50)
         self.running_kld_mean = 1.0
         self.policy_surprise_factor = policy_surprise_factor
         self.num_samples_per_proc = 0
@@ -1500,7 +1501,7 @@ class TrainingPipe():
                 if self.attn_logit_penalty_cap is not None:
                     self.net.attn_logit_penalty_cap = self.attn_logit_penalty_cap
                     self.net.attn_logit_penalty_batch_frac = self.attn_logit_penalty_batch_frac
-                self.module  = self.net.module
+                self.module  = self.net # Delete .module
 
         # Copy the initial weights.
         self.swa_net.accumulate_swa(self.module, 0)
@@ -1711,7 +1712,7 @@ class TrainingPipe():
         files = gather_filenames(self.checkpoint_path, 1, sort_key_fn=sort_fn)
         if len(files) == 0:
             self._status_dict.clear()
-            self.param_init_rms = self._compute_param_init_rms(self.net)
+            self.param_init_rms = self._compute_param_init_rms(self.module) # self.net -> self.module
             self._status_dict.fancy_set(StatusDict.PARAM_INIT_RMS_KEY, self.param_init_rms)
         else:
             checkpoint = files.pop()
@@ -1728,7 +1729,7 @@ class TrainingPipe():
 
         self.param_init_rms = self._status_dict.fancy_get(StatusDict.PARAM_INIT_RMS_KEY)
         if self.param_init_rms is None:
-            self.param_init_rms = _compute_param_init_rms(self.net)
+            self.param_init_rms = self._compute_param_init_rms(self.module) # Add `self._` and change to `self.module`
 
         curr_lr = self._get_lr_schedule(self.current_steps)
 
@@ -1755,7 +1756,7 @@ class TrainingPipe():
             for param in self.opt.param_groups:
                 param["lr"] = curr_lr
                 param["weight_decay"] = self.weight_decay
-        self._set_optimizer_wd_floors(self.opt, self.net, self.param_init_rms)
+        self._set_optimizer_wd_floors(self.opt, self.module, self.param_init_rms) # self.net -> self.module
         self.max_steps = self.max_steps_per_running + self.current_steps
         stdout_write("Current steps is {}. Will stop the training at {}.\n".format(self.current_steps, self.max_steps))
 
@@ -1915,7 +1916,7 @@ class TrainingPipe():
             return round(scale * c * (1 + beta * (math.pow(N/c, alpha) - 1) / alpha))
 
         self._stream_loader = StreamLoader()
-        self._stream_parser = StreamParser(self.down_sample_rate, self.policy_surprise_factor)
+        self._stream_parser = StreamParser(self.down_sample_rate, self.cfg.boardsize, self.policy_surprise_factor)
         self._batch_gen = BatchGenerator(self.cfg.boardsize, self.cfg.input_channels)
 
         self.num_all_chunks = len(gather_filenames(self.train_dir))
