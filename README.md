@@ -7,7 +7,25 @@
 
 # Chasing the Shadow of SAI: The Marriage of AlphaZero and the Muon Optimizer
 
-This repository documents the experimental results and training logs aimed at reaching the playing strength of **SAI** (*Sensible Artificial Intelligence*)—a Go engine named in homage to Fujiwara no Sai from *Hikaru no Go*.
+This repository documents the experimental results and training logs aimed at reaching the playing strength of **SAI** (*Sensible Artificial Intelligence*)
+
+## About SAI (Sensible Artificial Intelligence)
+
+**SAI (Sensible Artificial Intelligence)** is an open-source Go engine based on the Leela Zero framework, designed to handle variable komi and handicap games.
+
+### History & Developers
+* **Developers**: Developed by an Italian research team led by Francesco Morandin (along with Gianluca Amato, Rosa Gini, Carlo Metta, Maurizio Parton, Gian-Carlo Pascutto, and Marco Fantozzi).
+* **Release Period**: 2018 – 2019
+
+### Key Features
+* **Variable Komi & Handicap Support**: Evaluates win rates across different komi values by modeling them with a sigmoid function.
+* **Self-Play Reinforcement Learning**: Trained purely through self-play without relying on human game records.
+* **Score Margin Estimation**: Capable of estimating score differences and targeting higher margins rather than just maximizing win probability.
+
+### References
+* [SAI, a Sensible Artificial Intelligence that plays Go (arXiv, 2018)](https://arxiv.org)
+* [SAI: a Sensible Artificial Intelligence that plays with handicap and targets high scores in 9x9 Go (arXiv, 2019)](https://arxiv.org)
+
 
 ## Key Highlights
 - **The Marriage of AlphaZero & Muon:** Demonstrating how the **Muon optimizer** significantly accelerates and improves the training of AlphaZero-style reinforcement learning algorithms.
