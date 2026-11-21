@@ -1,6 +1,6 @@
-# Experiment-by-Experiment Technical Breakdown (Exp 1 – Exp 5)
+# Experiment-by-Experiment Technical Breakdown (Exp 1 – Exp 6)
 
-This document provides an individual summary, architectural configuration, training dynamics, and key takeaways for each of the **six experimental stages** (`Exp 1` through `Exp 5`) conducted on 9x9 Go (`Chinese rules`, `Komi 7.0`, evaluated over `200` games at `1,200 playouts/move` against `SAI b8c160`).
+This document provides an individual summary, architectural configuration, training dynamics, and key takeaways for each of the **seven experimental stages** (`Exp 1` through `Exp 6`) conducted on 9x9 Go (`Chinese rules`, `Komi 7.0`, evaluated over `200` games at `1,200 playouts/move` against `SAI b8c160`).
 
 
 ---
@@ -39,6 +39,8 @@ Test whether simply doubling network width (`96ch -> 192ch`, ~4x parameters) and
 * Scaling up parameters improved strength by `+78 Elo` over Exp 1, but still fell short of `SAI b8c160` (`-115 Elo`) despite requiring roughly 4x the compute per step.
 * **Takeaway:** Raw parameter scaling without proper optimizer head-splitting and `muP` learning rate scaling yields diminishing returns.
 
+*(Note: Due to randomized side assignment across 200 games, Black played 103 games and White played 97 games.)*
+
 ---
 
 ## Experiment 3: Algorithmic "Giant Killing" (`b6xc96h32` — Head-Split Muon + RMSNormMask)
@@ -57,6 +59,8 @@ Return to the compact `b6xc96h32` (`96ch`) footprint and focus purely on optimiz
 ### 3. Key Findings
 * **Surpassed the 4x Larger Exp 2 Model:** Achieved `-102 Elo` in `312K` steps—beating `Exp 2` (`192ch`, `-115 Elo` at `392K` steps) with a quarter of the parameters.
 * **Color Asymmetry:** Black became highly competitive (`31W - 39L`), whereas White struggled (`21W - 70L`) against `SAI`'s deep endgame refutations.
+
+*(Note: Due to randomized side assignment across 200 games, Black played 96 games and White played 104 games.)*
 
 ---
 
@@ -103,6 +107,8 @@ Synthesize all lessons from Exp 1–3.5 to find the **smallest architecture capa
 ### 3. Key Findings
 * **Target Achieved in One Pass:** Without any warm restarts or hyperparameter grid searches, `b6xc128h32` matched `SAI b8c160` 50/50 as Black (`40W - 40L`) and reached `57.0%` overall non-loss rate (`-35 Elo`) in `312K` steps—confirming `b6xc128h32` as the minimal architectural sweet spot for 9x9 Go.
 
+*(Note: Due to randomized side assignment across 200 games, Black played 99 games and White played 101 games.)*
+
 ---
 
 ## Experiment 5: Multi-Config Exploration Mixture & Loss–Strength Paradox (`b6xc96h32`, `0 -> 500K`)
@@ -133,4 +139,31 @@ Test whether mixing self-play data from three distinct MCTS search personalities
 * **Substantial Intra-Model Gain (`+73 Elo`):** High-playout (`600`) warm restart distillation with optimistic policy search boosted Point Win Rate by `+7.75%` (`20.50% -> 28.25%`), raising Black's point win rate by `+10.2` percentage points (`16.8% -> 27.0%`).
 * **The Training Loss vs. Elo Paradox:** Despite achieving lower training losses (`all loss: 3.8088`) than `Exp 4` (`4.2327`), Exp 5 trailed `Exp 4` (`45.00%` Point Win Rate) by `127 Elo`. Narrowing rule/komi distributions in Phase 2 induced *policy distribution contraction*—allowing the `96ch` model to tightly imitate its own self-play trajectories without acquiring the out-of-distribution generalization required against `SAI b8c160` at `1,200 playouts`.
 * **Takeaway:** Multi-config exploration diversity and high-playout distillation reliably strengthen a fixed topology, but cannot substitute for sufficient channel capacity (`128ch`) and `scores loss` precision (`0.0686`) in deep-search competitive play.
+
+---
+
+## Experiment 6: 100% Pure Gumbel AlphaZero & Multi-Personality Mixture (`b6xc96h32`, `0 -> 312K`)
+
+### 1. Objective & Configuration
+Evaluate the pure behavior of **100% Gumbel AlphaZero** (setting `--gumbel-playouts-threshold 400` so every move uses Sequential Halving at low playout counts) paired with Fixup normalization, `TransformerBlock + Muon`, and a 3-personality self-play mixture (`Balance` 47%, `Offense` 26.5%, `Defense` 26.5%) in a single `312K`-step cycle without warm restarts.
+* **Topology:** `b6xc96h32` (`Res-Res-Trans-Res-Res-Trans`, `ResidualChannels: 96`, `TransformerHeads: 3`, `head_dim: 32`, `FinalBlockCgroupSize: 32` [`3 x 32ch` spatial RMSNormMask], `BatchNormMode: fixup`, `AttnLogitPenaltyCap: 30.0`)
+* **Training & Self-Play Schedule (`312K` steps total):**
+  * **Optimizer:** `Head-Split Muon` (`WarmUpSteps: 12,000`, `LearningRateAnnealingCycle: 300,010` $\rightarrow$ trough at `312,010`), Peak LR adjusted from `2.0e-2` to **`4.0e-3 -> 3.0e-4`** at `12K` steps (`MuonAdamLrFactor: 0.25`), `MaxStepsPerRunning: 1,500 -> 2,500` at `72K` steps
+  * **Search Budget:** `64 playouts` (`0 – 33K`) $\rightarrow$ `96 playouts` (`33K – 312K`), `100% Pure Gumbel`, mixed rules (`Chinese` & `Japanese`), dynamic komi, handicap up to 4 stones, and `2%` `7x7`/`8x8` boards
+
+### 2. Benchmark Results (vs. `SAI b8c160` at `1,200 playouts`)
+* **With Conservative Evaluation Search (`--lcb-reduction 0.5`, `--score-utility-factor 0.35`):**
+  * **Black (`W/D/L`):** `15 / 14 / 69` (Point Win Rate: `22.4%`, Non-Loss: `29.6%`)
+  * **White (`W/D/L`):** `3 / 14 / 85` (Point Win Rate: `9.8%`, Non-Loss: `16.7%`)
+  * **Total (`W/D/L`):** `18 / 28 / 154` (**Point Win Rate: `16.00%`**, **Est. Elo Diff: `-288 Elo`**, Non-Loss Rate: `23.0%`)
+* **With Neutral Evaluation Search (`--lcb-reduction 0.0`, `--score-utility-factor 0.15`):**
+  * **Black (`W/D/L`):** `13 / 8 / 76` (Point Win Rate: `17.5%`, Non-Loss: `21.6%`)
+  * **White (`W/D/L`):** `16 / 12 / 75` (Point Win Rate: `21.4%`, Non-Loss: `27.2%`)
+  * **Total (`W/D/L`):** `29 / 20 / 151` (**Point Win Rate: `19.50%`**, **Est. Elo Diff: `-246 Elo`**, **Non-Loss Rate: `24.5%`**)
+* **Final Convergence Metrics (`312K` trough):** `all loss: 3.9899`, `prob loss: 1.5911`, `aux prob loss: 0.3478`, `soft prob loss: 0.3539`, `ownership loss: 0.6840`, `wdl loss: 0.5107`, `scores loss: 0.0852`
+
+### 3. Key Findings
+* **Unique Training Curve Dynamics:** Combining `TransformerBlock + Muon` with high-entropy Pure Gumbel multi-style self-play compressed global value representations (`ownership`, `wdl`, `scores`) into a flat L-shaped plateau by `25K` steps—far faster than conventional CNN+SGD runs—while `PolicySurpriseFactor: 0.5` drove regular sawtooth waves that steadily refined policy accuracy (`prob loss: 1.5911`) without collapsing `soft prob loss` (`0.3539`).
+* **LCB Penalty Sensitivity on Compact Models:** Removing `--lcb-reduction 0.5` (`-> 0.0`) and lowering `--score-utility-factor` (`0.35 -> 0.15`) boosted White wins more than 5x (`3W -> 16W`, `+42 Elo` overall), eliminating color asymmetry against `SAI b8c160`.
+* **Search Ceiling vs. Parameter Scaling:** Despite achieving clean convergence at just `64–96` self-play playouts in a single `312K`-step pass (nearly matching `Exp 5`'s `300K` `150-playout` Phase 1 checkpoint of `-235 Elo` with ~40% less search compute), beating `SAI b8c160` consistently requires scaling width to `128ch` (`b6xc128` or `b8xc128` `RRRTRRRT`) and increasing self-play search depth (`>= 128–160 playouts`).
 

@@ -1,0 +1,53 @@
+# SAI 9x9 本番対局時：選ばれた SWA モデルを使い
+#   --playouts 1200
+#   コミ 7
+#   中国ルール
+#   --cpuct-init 0.65
+#   --lcb-reduction 0.5
+#   --score-utility-factor 0.35
+# で対局させてください。
+# バランス型 (selfplay_balance.cfg)：1,500局
+# 1サイクルの土台となる標準設定です。
+# 全体の約47%を占め、コミ7・中国ルールの正確な大局観と目数感覚を養います。
+--random-moves-factor 0.15
+
+--komi-stddev 1.5
+--komi-big-stddev-prob 0.05
+--komi-big-stddev 6.0
+--handicap-fair-komi-prob 0.5
+
+--cpuct-init 0.5
+--cpuct-base 19652
+--cpuct-base-factor 1
+
+--fpu-reduction 0.25
+--root-fpu-reduction 0.25
+
+--lcb-reduction 0.0
+--score-utility-factor 0.4
+--score-utility-div 1.0
+
+# 9路盤・コミ7（中国ルール）をメイン（80%）にしつつ、置碁や8・7路盤で局地戦を補強
+--selfplay-query bkp:9:7:0.70  --selfplay-query bhp:9:6:0.10
+--selfplay-query bkp:8:7:0.10
+--selfplay-query bkp:7:7:0.10
+
+--selfplay-query srs:area
+--selfplay-query srs:territory
+
+--playouts 96
+--gumbel
+--gumbel-playouts-threshold 400
+--gumbel-prom-visits 2
+--always-completed-q-policy
+
+--resign-playouts 100
+--resign-threshold 0.05
+--resign-discard-prob 0.9
+
+--parallel-games 128
+--cache-memory-mib 1024
+--early-symm-cache
+#--first-pass-bonus
+
+--num-games 1500

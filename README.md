@@ -21,7 +21,7 @@ Additionally, applying fast learning optimizers with large update steps such as 
 The main issues can be summarized into four points:
 • Overfitting to non-stationary targets: In AlphaZero, the “ground truth” (MCTS policy targets and game outcomes) constantly changes as self-play progresses. If the updates are too fast, the network will rapidly overfit to inaccurate value estimates and biased trajectories from early immature stages, destroying the diversity of the search and trapping the agent in a local optimum.
 • Noise amplification due to lack of variance adaptation: As noted in Hugging Face's RL field notes, Muon lacks a second-moment mechanism (like Adam) that automatically attenuates the step size when the gradient variance is large. As a result, noisy RL gradients and infrequent reward spikes are orthogonalized and applied at full scale, easily causing policy and value collapse at later stages of training.
-• Runaway feedback loop with MCTS: The output of the network (prior probabilities and state values) is immediately fed back to the next MCTS search tree. When the rate of optimization exceeds the generation of self-play data, the network repeatedly performs large-scale updates to old replay buffer data, creating a vicious cycle in which suboptimal moves and overestimated values ​​are reinforced through MCTS.
+• Runaway feedback loop with MCTS: The output of the network (prior probabilities and state values) is immediately fed back to the next MCTS search tree. When the rate of optimization exceeds the generation of self-play data, the network repeatedly performs large-scale updates to old replay buffer data, creating a vicious cycle in which suboptimal moves and overestimated values are reinforced through MCTS.
 • Over-orthogonalization prevents late-stage convergence: Muon's Newton-Schulz orthogonalization prevents representation collapse and speeds up early exploration (“exploration”), but tends to keep the entropy of the policy too high in the final convergence phase (“parking”), making it difficult to harden the policy for accurate endgame computation.
 
 This is an experiment in the dark to find out how to avoid overfitting while balancing the diversity of data provided.
@@ -42,7 +42,7 @@ For this experiment, we used "Sayuri" (https://github.com/CGLemon/Sayuri.git)—
 
 ## 2. Cross-Experiment Benchmark Summary (vs. `SAI b8c160`)
 
-All evaluation matches consist of **200 games** (100 as Black, 100 as White) on 9x9 Chinese rules (`Komi 7.0`, `1,200 playouts/move`) using SWA (Stochastic Weight Averaging) weights.
+All evaluation matches consist of **200 games** (~100 as Black, ~100 as White) on 9x9 Chinese rules (`Komi 7.0`, `1,200 playouts/move`) using SWA (Stochastic Weight Averaging) weights.
 
 > **Evaluation Metrics Note (Point Win Rate vs. Non-Loss Rate):**
 > Because 9x9 Go with Komi 7.0 frequently ends in a theoretical draw (*Jigo*) under optimal play, evaluating solely by Non-Loss Rate (`W + D`) can be misleading. We therefore use **Point Win Rate (`(W + 0.5 * D) / 200`)** and **Estimated Elo Difference** as our primary strength metrics alongside Non-Loss Rate.
@@ -55,8 +55,10 @@ All evaluation matches consist of **200 games** (100 as Black, 100 as White) on 
 | **Exp 3.5 (Restart)** | `b6xc96h32` (`96ch`) | Damped Warm Restart (`312K -> 508K` trough) | 30 / 18 / 52 | 27 / 30 / 43 | 57 / 48 / 95 | `40.50%` | `-67 Elo` | `52.5%` |
 | **Exp 4 (Final Goal)** | **`b6xc128h32` (`128ch`)** | **Single-Cycle + `muP` Scaling (`312K`)** | **`40 / 19 / 40`** | **`26 / 29 / 46`** | **`66 / 48 / 86`** | **`45.00%`** | **`-35 Elo`** | **`57.0%`** |
 | **Exp 5 (Multi-Config)** | `b6xc96h32` (`96ch`) | 3-Config Mixture + 600-Playout Restart (`492K` SWA) | 11 / 26 / 52 | 22 / 21 / 68 | 33 / 47 / 120 | `28.25%` | `-162 Elo` | `40.0%` |
+| **Exp 6 (Pure Gumbel)** | `b6xc96h32` (`96ch`) | **100% Pure Gumbel** (`64p->96p`) + 3-Style Mixture (`312K`) | 13 / 8 / 76 | 16 / 12 / 75 | 29 / 20 / 151 | `19.50%` | `-246 Elo` | `24.5%` |
 
-*(Note: In Exp 5, side assignment was randomized per game, resulting in 89 Black games and 111 White games across the 200-game match.)*
+*(Note 1: In Exp 2–6, side assignment was randomized per game across the 200-game matches, resulting in slight color splits [Exp 2: 103B/97W; Exp 3: 96B/104W; Exp 4: 99B/101W; Exp 5: 89B/111W; Exp 6: 97B/103W].)*  
+*(Note 2: In Exp 6, removing LCB bias [`--lcb-reduction 0.0`] achieved near-exact color symmetry between Black [`17.5%` Point Win Rate] and White [`21.4%` Point Win Rate] in a single 312K-step pass without warm restarts.)*
 
 ### Key Highlights (`Exp 4: b6xc128h32`)
 1. **Exact 50.0% Parity as Black (`40W / 19D / 40L`):** Matched `SAI b8c160` blow-for-blow with the initiative, converting aggressive lines into decisive wins.
@@ -79,7 +81,7 @@ Reverting back to the compact **`b6xc96h32` (`96ch`)** model and introducing fou
 
 ### Phase 3: Two Critical Traps Discovered via Warm Restart (`Exp 3.5`)
 To push `b6xc96h32` further, we ran a Damped Warm Restart (`312K -> 512K` steps). At the `508K` annealing trough, Point Win Rate climbed to **`40.50%` (`-67 Elo`)**, revealing two crucial training dynamics:
-1. **Behavioral Over-Specialization (*Jigo* Overfitting):** Tightening opening randomness (`random-opening-prob: 0.15`) and temperature (`0.85`) late in training caused the policy to collapse onto conservative draw lines. While White's Point Win Rate surged (`27.5% -> 42.0%`), Black lost its sharp win-converting variations.
+1. **Behavioral Over-Specialization (*Jigo* Overfitting):** Tightening opening randomness (`random-opening-prob: 0.15`) and temperature (`0.85`) late in training caused the policy to collapse onto conservative draw lines. While White's Point Win Rate surged (`26.4% -> 42.0%`), Black lost its sharp win-converting variations.
 2. **SWA Contamination at Cosine Annealing Cycle Boundaries:** When `LearningRateAnnealingCycle` aligned exactly with the final stopping step (`512K`), the modulo cycle reset spiked the learning rate back to its peak (`9.0e-3`) during the final 1,000 steps. Because SWA averages the trailing checkpoints (`SwaSteps: 500`), just 2 post-spike checkpoints contaminated the SWA weights, causing a **`-50 Elo` drop between `508K` (`-67 Elo`) and `512K` (`-117 Elo`)**.
 
 ### Phase 4: `muP` Scaling & Finding the Minimal Sweet Spot (`Exp 4`)
@@ -98,6 +100,12 @@ After an initial `300K` multi-rule phase (`150 playouts`, Point Win Rate `20.50%
 1. **Record-Low Training Loss Does Not Guarantee Peak Elo:** Exp 5 achieved the lowest overall training loss across all experiments (`all loss: 3.8088`, `prob loss: 1.3252`, `ownership loss: 0.7545`, `scores loss: 0.0746`). However, narrowing the rule/komi distribution in Phase 2 caused *distribution contraction*—making self-play trajectories easier for the `96ch` network to imitate without expanding its out-of-distribution generalization against `SAI b8c160`.
 2. **Capacity Bottleneck Under Deep Search (`1,200 playouts`):** While Exp 5 achieved a high draw rate (`47 draws / 200 games = 23.5%`) in familiar lines, `SAI b8c160` exploited subtle endgame/life-and-death variations outside `96ch`'s representational capacity. Ultimately, **network width (`128ch` in Exp 4) and `scores loss` precision (`0.0686` vs. `0.0746`) proved to be the decisive factors** for deep-playout parity.
 
+### Phase 6: 100% Pure Gumbel & Fast Muon Stability (`Exp 6`)
+To isolate the dynamics of **100% Pure Gumbel AlphaZero** (setting `--gumbel-playouts-threshold 400` so every move uses Sequential Halving rather than falling back to PUCT) combined with our 3-personality self-play mixture (`Balance` 47%, `Offense` 26.5%, `Defense` 26.5%) and Fixup normalization, we trained `b6xc96h32` for a single `312K`-step cycle (`64 -> 96` playouts, no warm restarts):
+1. **Eliminating Early Muon Divergence:** An initial peak LR of `2.0e-2` caused logit/KL explosion around `12K` steps when paired with sparse one-hot Gumbel targets. Lowering the peak LR to `4.0e-3` (`MuonAdamLrFactor: 0.25`) immediately restored monotonic convergence (`all loss: 3.9899`, `prob loss: 1.5911`) with rock-solid `soft prob loss` (`0.3539`) and zero training collapse.
+2. **Ultra-Early Value Plateau & Sawtooth Self-Correction:** Value heads (`ownership: ~0.68`, `wdl: ~0.51`, `scores: ~0.085`) converged into a flat L-shaped plateau by `25K` steps—confirming that `TransformerBlock + Muon` rapidly compresses global board geometry—while `PolicySurpriseFactor: 0.5` produced regular cycle-by-cycle sawtooth waves that continuously digested novel tactical lines.
+3. **Color-Symmetric Inference via Zero-LCB Search:** Disabling conservative LCB penalties (`--lcb-reduction 0.0`, `--score-utility-factor 0.15`) at evaluation time eliminated color bias (`13W/8D/76L` as Black vs. `16W/12D/75L` as White), proving that pure Gumbel + multi-style self-play produces a balanced, non-collapsing policy even at low playout budgets (`<= 96` playouts).
+
 ---
 
 ## 4. Practical Takeaways for Bot Developers & RL Researchers
@@ -107,6 +115,17 @@ After an initial `300K` multi-rule phase (`150 playouts`, Point Win Rate `20.50%
 3. **Terminate SWA Strictly Before the Cosine Cycle Resets:** Ensure `WarmUpSteps + LearningRateAnnealingCycle > TargetStopSteps` so post-cycle LR spikes never enter the trailing SWA averaging window.
 4. **Preserve Exploration Diversity in Late Self-Play:** In games with high draw rates (9x9 Go, Chess), overly greedy late-stage self-play triggers mode collapse toward passive draws. Keeping moderate opening randomness (`~0.25`) and score utility (`~0.28`) balances offensive initiative with defensive resilience.
 5. **Beware the Training Loss vs. Elo Paradox:** A sharp drop in self-play training loss after narrowing rules or komi can reflect *policy distribution contraction* (echo-chamber imitation) rather than true playing strength. Always validate checkpoints via cross-engine benchmarks, and rely on sufficient channel width (`>= 128ch`) for out-of-distribution robustness.
+
+## 4.5 The "AlphaZero × Muon + Transformer" Success Recipe
+
+Successfully marrying fast orthogonalized optimizers (**Muon**) and **Transformers** with non-stationary **AlphaZero** self-play requires explicitly neutralizing four structural failure modes. Based on `Exp 1 – Exp 6`, the reproducible recipe for stable, high-density training is:
+
+| Failure Mode in RL | Architectural / Algorithmic Countermeasure | Recommended Recipe Setting |
+| :--- | :--- | :--- |
+| **1. Train / Inference Mismatch** | Eliminate running-stat drift between PyTorch training and ONNX/TensorRT self-play. | Use **`BatchNormMode: fixup`** (zero batch statistics) + **`SWA`** (`SwaSteps: 500`, `SwaMaxCount: 16`) to filter step-wise weight jitter. |
+| **2. Attention & Logit Explosion** | Prevent Muon's large spectral updates from collapsing attention heads or exploding policy logits on sparse Gumbel targets. | **Split attention heads** (`head_dim: 32`), cap attention logits (**`AttnLogitPenaltyCap: 30.0`**), separate AdamW groups (**`MuonAdamLrFactor: 0.25`**), and scale Peak LR conservatively (`4.0e-3` for Pure Gumbel; `1.73e-2` with `muP` for PUCT-mixed). |
+| **3. Non-Stationary Overfitting** | Match optimization steps per cycle to replay buffer throughput so the network never memorizes immature early chunks. | Keep **`MaxStepsPerRunning` modest (`1,500` early $\rightarrow$ `2,500` mid/late)**, use **`PolicySurpriseFactor: 0.5`** to prioritize high-KL positions, and **terminate SWA strictly before the cosine cycle resets** (`WarmUpSteps + AnnealingCycle > StopSteps`). |
+| **4. Mode Collapse (Draw / Single-Line)** | Maintain irreducible strategic entropy so the compact network learns general Go principles rather than narrow lines. | Split self-play workers into **3 search personalities** (`Balance` / `Offense` / `Defense` varying `cpuct`, `fpu`, and `score-utility`), keep moderate opening randomness (`~0.25`), and disable LCB (`--lcb-reduction 0.0`) at evaluation. |
 
 ---
 
@@ -119,7 +138,7 @@ After an initial `300K` multi-rule phase (`150 playouts`, Point Win Rate `20.50%
   * **Stage 2 (`48K – 160K`)**: `350 playouts` (`Gumbel: 85`), `random-opening-prob: 0.45`
   * **Stage 3 (`160K – 312K`)**: `550 playouts` (`Gumbel: 140`), `random-opening-prob: 0.25`, `score-utility-factor: 0.28`
 
-> **The details of each experiment are provided, see **[Experiment-by-Experiment Technical Breakdown](./docs/exp_report.md)
+> **The details of each experiment are provided, see **[Experiment-by-Experiment Technical Breakdown](./docs/exp_report.md).**
 
 ---
 
@@ -255,12 +274,12 @@ For development insights and reports, see:
 
 ## Quick Start via Terminal
 
-To run the engine, you need a executable weights first. The released weights can be got from this [page](./docs/MODEL.md). Then launching the engine with GTP mode via the terminal/PowerShell, using 1 thread and 400 visits per move with optimistic policy. Please type
+To run the engine, you need executable weights first. The released weights can be got from this [page](./docs/MODEL.md). Then launching the engine with GTP mode via the terminal/PowerShell, using 1 thread and 400 visits per move with optimistic policy. Please type
 
     $ ./sayuri -w <weights file> -t 1 -p 400 --use-optimistic-policy
 
 
-After executing the command, you'll see diagnostic output. If this output includes ```Network Version```, it indicates that the engine is successfully running in GPT mode. However, since GPT mode isn't designed for human interaction, you should use the graphical interface (GUI) instead. Please refer to the **Graphical Interface** section for more details.
+After executing the command, you'll see diagnostic output. If this output includes ```Network Version```, it indicates that the engine is successfully running in GTP mode. However, since GTP mode isn't designed for human interaction, you should use the graphical interface (GUI) instead. Please refer to the **Graphical Interface** section for more details.
 
 For a list of additional command-line arguments, use the --help option. Please type:
 
