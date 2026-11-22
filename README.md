@@ -7,8 +7,7 @@
 
 # Chasing the Shadow of SAI: The Marriage of AlphaZero and the Muon Optimizer
 
-This repository documents the experimental results and training logs aimed at reaching the playing strength of **SAI** (*Sensible Artificial Intelligence*)
-
+This repository contains experimental results and training logs aimed at reaching the playing strength of **SAI** (*Sensible Artificial Intelligence*) using the original open-source Sayuri.
 ## About SAI (Sensible Artificial Intelligence)
 
 **SAI (Sensible Artificial Intelligence)** is an open-source Go engine based on the Leela Zero framework, designed to handle variable komi and handicap games.
