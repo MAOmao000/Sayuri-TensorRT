@@ -1,14 +1,13 @@
-# SAI 9x9 本番対局時：選ばれた SWA モデルを使い
+# For actual SAI 9x9 matches, please use the selected SWA model with the following settings:
 #   --playouts 1200
-#   コミ 7
-#   中国ルール
+#   Komi: 7
+#   Chinese rules
 #   --cpuct-init 0.65
 #   --lcb-reduction 0.5
 #   --score-utility-factor 0.35
-# で対局させてください。
-# バランス型 (selfplay_balance.cfg)：1,500局
-# 1サイクルの土台となる標準設定です。
-# 全体の約47%を占め、コミ7・中国ルールの正確な大局観と目数感覚を養います。
+# Balanced configuration (selfplay_balance.cfg): 1,500 games
+# This serves as the standard baseline for each cycle.
+# Accounting for approximately 47% of the total games, it helps develop an accurate sense of the overall game state and the score (point count) under Chinese rules with a 7-point komi.
 --random-moves-factor 0.15
 
 --komi-stddev 1.5
@@ -27,7 +26,7 @@
 --score-utility-factor 0.4
 --score-utility-div 1.0
 
-# 9路盤・コミ7（中国ルール）をメイン（80%）にしつつ、置碁や8・7路盤で局地戦を補強
+# Focus primarily (80%) on 9x9 board games with a 7-point komi (under Chinese rules), while supplementing with handicap games and play on 8x8 or 7x7 boards to strengthen skills in localized combat.
 --selfplay-query bkp:9:7:0.70  --selfplay-query bhp:9:6:0.10
 --selfplay-query bkp:8:7:0.10
 --selfplay-query bkp:7:7:0.10

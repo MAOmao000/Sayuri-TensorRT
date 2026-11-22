@@ -1,6 +1,6 @@
-# 攻撃型 (selfplay_attack.cfg)：850局
-# 全体の約26.5%を占めます。
-# 広く探索し、大差勝ちを狙う鋭い仕掛け・死活の殺し筋をバッファに供給します。
+# Aggressive style (selfplay_attack.cfg): 850 games
+# Accounts for approximately 26.5% of the total.
+# Explores the game tree broadly and contributes sharp tactical sequences—aimed at securing large-margin victories—as well as precise methods for capturing opponent groups, to the buffer.
 --random-moves-factor 0.15
 
 --komi-stddev 3.5
@@ -19,7 +19,7 @@
 --score-utility-factor 0.85
 --score-utility-div 1.0
 
-# 9路盤・コミ7（中国ルール）をメイン（80%）にしつつ、置碁や8・7路盤で局地戦を補強
+# Focus primarily (80%) on 9x9 board games with a 7-point komi (under Chinese rules), while supplementing with handicap games and play on 8x8 or 7x7 boards to strengthen skills in localized combat.
 --selfplay-query bkp:9:7:0.70  --selfplay-query bhp:9:6:0.10
 --selfplay-query bkp:8:7:0.10
 --selfplay-query bkp:7:7:0.10

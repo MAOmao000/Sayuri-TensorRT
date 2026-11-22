@@ -1,6 +1,6 @@
-# 防御型 (selfplay_defense.cfg)：850局
-# 全体の約26.5%を占めます。
-# 本手に探索を集中し、コミ7の1目・半目争いを確実に守り切る鉄壁のシノギとヨセを供給します
+# Defensive style (selfplay_defense.cfg): 850 games
+# Accounts for approximately 26.5% of the total.
+# Focuses search efforts on solid, reliable moves, providing an ironclad defensive approach—both in terms of survival (shinogi) and endgame play (yose)—to securely protect a 1-point or 0.5-point lead under 7-point komi.
 --random-moves-factor 0.15
 
 --komi-stddev 0.5
@@ -19,7 +19,7 @@
 --score-utility-factor 0.08
 --score-utility-div 1.0
 
-# 9路盤・コミ7（中国ルール）をメイン（80%）にしつつ、置碁や8・7路盤で局地戦を補強
+# Focus primarily (80%) on 9x9 board games with a 7-point komi (under Chinese rules), while supplementing with handicap games and play on 8x8 or 7x7 boards to strengthen skills in localized combat.
 --selfplay-query bkp:9:7:0.70  --selfplay-query bhp:9:6:0.10
 --selfplay-query bkp:8:7:0.10
 --selfplay-query bkp:7:7:0.10
