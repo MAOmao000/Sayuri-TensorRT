@@ -1,13 +1,28 @@
-
 <div id="sayuri-art" align="center">
-    </br>
+    <br/>
     <img src="./img/sayuri-art.PNG" alt="Sayuri Art" width="768"/>
-    <h3>Sayuri</h3>
+    <h3>Sayuri — Muon × AlphaZero Experimental Fork</h3>
 </div>
 
 # Chasing the Shadow of SAI: The Marriage of AlphaZero and the Muon Optimizer
 
-This repository contains experimental results and training logs aimed at reaching the playing strength of **SAI** (*Sensible Artificial Intelligence*) using the original open-source Sayuri.
+This repository contains experimental results, training configurations, and logs aimed at reaching the playing strength of **SAI** (*Sensible Artificial Intelligence*) using a compact **Hybrid ResNet-Transformer** trained with **Head-Split Muon** and **Gumbel AlphaZero** on top of the open-source Sayuri engine.
+
+> **⚠️ Note on Releases & Precompiled Binaries:**  
+> This is an active research fork of [Sayuri](https://github.com). **No precompiled binaries or GitHub Releases are published here**—please build from source using the [Build instructions](#requirements--build) below or explore the training logs and benchmark results directly.
+
+---
+
+## 🧭 Quick Navigation
+
+* 📊 **[Benchmark Summary](#2-cross-experiment-benchmark-summary-vs-sai-b8c160)** — 200-game match results vs. `SAI b8c160` (`Exp 1` – `Exp 6`)
+* 📝 **[Experiment-by-Experiment Technical Breakdown](./docs/exp_report.md)** — Detailed analysis, loss curves, and failure modes
+* 📁 **[Experimental Results & Logs](./experimental_results)** — Raw evaluation outputs and training records
+* ⚙️ **[Sample Training Configs](./bash/configs/sample)** — Ready-to-use `selfplay-setting.json` presets
+* 🛠️ **[Build & Inference Guide](#requirements--build)** — C++ ONNX Runtime / TensorRT compilation steps
+
+---
+
 ## About SAI (Sensible Artificial Intelligence)
 
 **SAI (Sensible Artificial Intelligence)** is an open-source Go engine based on the Leela Zero framework, designed to handle variable komi and handicap games.
@@ -22,14 +37,15 @@ This repository contains experimental results and training logs aimed at reachin
 * **Score Margin Estimation**: Capable of estimating score differences and targeting higher margins rather than just maximizing win probability.
 
 ### References
-* [SAI, a Sensible Artificial Intelligence that plays Go (arXiv, 2018)](https://arxiv.org)
-* [SAI: a Sensible Artificial Intelligence that plays with handicap and targets high scores in 9x9 Go (arXiv, 2019)](https://arxiv.org)
+* [SAI, a Sensible Artificial Intelligence that plays Go (arXiv:1809.03928, 2018)](https://arxiv.org)
+* [SAI: a Sensible Artificial Intelligence that plays with handicap and targets high scores in 9x9 Go (arXiv:1905.10863, 2019)](https://arxiv.org)
 
+---
 
 ## Key Highlights
 - **The Marriage of AlphaZero & Muon:** Demonstrating how the **Muon optimizer** significantly accelerates and improves the training of AlphaZero-style reinforcement learning algorithms.
-- **Target Benchmark:** Evaluating playing strength and Elo progression against **SAI** (Sensible Artificial Intelligence).
-- **Contents:** Training configurations, loss curves.
+- **Target Benchmark:** Evaluating playing strength and Elo progression against **SAI** (*Sensible Artificial Intelligence*).
+- **Contents:** Training configurations, loss curves, and cross-engine evaluation logs.
 
 ## 1. Overview & Motivation (TL;DR)
 In AlphaZero-style board game AI, conventional scaling laws typically assume that stronger play requires massive neural networks trained over millions of steps. However, for single-GPU developers, researchers, and edge/browser deployments, the critical question is: **How small can a model be—and how few training steps does it need—to match established larger engines?**
@@ -163,7 +179,7 @@ Successfully marrying fast orthogonalized optimizers (**Muon**) and **Transforme
 
 Special thanks to **Sayuri**, **Muon**, **SAI**, **KataGo**, and their authors for creating the open-source engines, architectures, and optimization techniques that made these experiments possible. Thanks also to **Google AI** for providing continuous analytical support, code reviews, and experimental guidance throughout this research.
 
-## Requirements
+## Requirements & Build
 Additional features require the following installation:
 
 * c++ engine: onnx runtime (Used onnxruntime-linux-x64-1.25.1 to check the operation)
@@ -171,6 +187,11 @@ Additional features require the following installation:
 
 * Modification of configuration definitions (selfplay-setting.json)
 
+### Configuration Changes (`selfplay-setting.json` & `selfplay-config.txt`)
+Please refer to the following for the configuration files used in the  experiment[`./experimental_results`](./experimental_results).
+
+<details>
+<summary><b>Click to expand added & deleted parameters in <code>selfplay-setting.json</code></b></summary>
 Additional configuration definitions (selfplay-setting.json):
 ```
   "NeuralNetwork" : {
@@ -269,6 +290,7 @@ Deletion configuration definition (selfplay-setting.json):
     "RenormMaxR": 1(default)
     "RenormMaxD": 0(default)
 ```
+</details>
 * Build
 ```
  $ cmake .. -DBLAS_BACKEND=TENSORRT -DUSE_ZLIB=1 -DSPECIFIC_BOARD_SIZE=9 -DBOARD_SIZE=9 -DONNX_ROOT_DIR=~/Downloads/onnxruntime-linux-x64-1.25.1
@@ -276,7 +298,9 @@ Deletion configuration definition (selfplay-setting.json):
  $ ./sayuri -t 10 -b 5 -w ~/Sayuri-test-b9xc192/weights/sayuri-b9xc192-s300000-c315000-w61965-swa.onnx --use-optimistic-policy --scoring-rule area -p 1200 --reuse-tree
 ```
 
-The following is the original README for Sayuri.
+## Original Sayuri Documentation (Upstream Reference)
+
+> *The sections below are preserved from the upstream [CGLemon/Sayuri](https://github.com) repository for general GTP usage and engine background. Note that precompiled Windows binaries and model links referenced below apply to the original upstream project, not this Muon experimental fork.*
 
 ---
 
