@@ -9,7 +9,7 @@
 This repository contains experimental results, training configurations, and logs aimed at reaching the playing strength of **SAI** (*Sensible Artificial Intelligence*) using a compact **Hybrid ResNet-Transformer** trained with **Head-Split Muon** and **Gumbel AlphaZero** on top of the open-source Sayuri engine.
 
 > **⚠️ Note on Releases & Precompiled Binaries:**  
-> This is an active research fork of [Sayuri](https://github.com). **No precompiled binaries or GitHub Releases are published here**—please build from source using the [Build instructions](#requirements--build) below or explore the training logs and benchmark results directly.
+> This is an active research fork of [Sayuri]([https://github.com/CGLemon/Sayuri]). **No precompiled binaries or GitHub Releases are published here**—please build from source using the [Build instructions](#requirements--build) below or explore the training logs and benchmark results directly.
 
 ---
 
@@ -37,8 +37,8 @@ This repository contains experimental results, training configurations, and logs
 * **Score Margin Estimation**: Capable of estimating score differences and targeting higher margins rather than just maximizing win probability.
 
 ### References
-* [SAI, a Sensible Artificial Intelligence that plays Go (arXiv:1809.03928, 2018)](https://arxiv.org)
-* [SAI: a Sensible Artificial Intelligence that plays with handicap and targets high scores in 9x9 Go (arXiv:1905.10863, 2019)](https://arxiv.org)
+* [SAI, a Sensible Artificial Intelligence that plays Go (arXiv:1809.03928, 2018)](https://arxiv.org/abs/1809.03928)
+* [SAI: a Sensible Artificial Intelligence that plays with handicap and targets high scores in 9x9 Go (arXiv:1905.10863, 2019)](https://arxiv.org/abs/1905.10863)
 
 ---
 
@@ -52,10 +52,10 @@ In AlphaZero-style board game AI, conventional scaling laws typically assume tha
 
 Additionally, applying fast learning optimizers with large update steps such as Muon to AlphaZero-style reinforcement learning runs a high risk of imbalance between data generation (MCTS) and network updates, leading to severe overfitting and training instability in non-stationary environments.
 The main issues can be summarized into four points:
-• Overfitting to non-stationary targets: In AlphaZero, the “ground truth” (MCTS policy targets and game outcomes) constantly changes as self-play progresses. If the updates are too fast, the network will rapidly overfit to inaccurate value estimates and biased trajectories from early immature stages, destroying the diversity of the search and trapping the agent in a local optimum.
-• Noise amplification due to lack of variance adaptation: As noted in Hugging Face's RL field notes, Muon lacks a second-moment mechanism (like Adam) that automatically attenuates the step size when the gradient variance is large. As a result, noisy RL gradients and infrequent reward spikes are orthogonalized and applied at full scale, easily causing policy and value collapse at later stages of training.
-• Runaway feedback loop with MCTS: The output of the network (prior probabilities and state values) is immediately fed back to the next MCTS search tree. When the rate of optimization exceeds the generation of self-play data, the network repeatedly performs large-scale updates to old replay buffer data, creating a vicious cycle in which suboptimal moves and overestimated values are reinforced through MCTS.
-• Over-orthogonalization prevents late-stage convergence: Muon's Newton-Schulz orthogonalization prevents representation collapse and speeds up early exploration (“exploration”), but tends to keep the entropy of the policy too high in the final convergence phase (“parking”), making it difficult to harden the policy for accurate endgame computation.
+* Overfitting to non-stationary targets: In AlphaZero, the “ground truth” (MCTS policy targets and game outcomes) constantly changes as self-play progresses. If the updates are too fast, the network will rapidly overfit to inaccurate value estimates and biased trajectories from early immature stages, destroying the diversity of the search and trapping the agent in a local optimum.
+* Noise amplification due to lack of variance adaptation: As noted in Hugging Face's RL field notes, Muon lacks a second-moment mechanism (like Adam) that automatically attenuates the step size when the gradient variance is large. As a result, noisy RL gradients and infrequent reward spikes are orthogonalized and applied at full scale, easily causing policy and value collapse at later stages of training.
+* Runaway feedback loop with MCTS: The output of the network (prior probabilities and state values) is immediately fed back to the next MCTS search tree. When the rate of optimization exceeds the generation of self-play data, the network repeatedly performs large-scale updates to old replay buffer data, creating a vicious cycle in which suboptimal moves and overestimated values are reinforced through MCTS.
+* Over-orthogonalization prevents late-stage convergence: Muon's Newton-Schulz orthogonalization prevents representation collapse and speeds up early exploration (“exploration”), but tends to keep the entropy of the policy too high in the final convergence phase (“parking”), making it difficult to harden the policy for accurate endgame computation.
 
 This is an experiment in the dark to find out how to avoid overfitting while balancing the diversity of data provided.
 
@@ -188,11 +188,14 @@ Additional features require the following installation:
 * Modification of configuration definitions (selfplay-setting.json)
 
 ### Configuration Changes (`selfplay-setting.json` & `selfplay-config.txt`)
-Please refer to the following for the configuration files used in the  experiment[`./experimental_results`](./experimental_results).
+Please refer to [`./experimental_results`](./experimental_results) for the configuration files used in the experiments.
 
 <details>
 <summary><b>Click to expand added & deleted parameters in <code>selfplay-setting.json</code></b></summary>
-Additional configuration definitions (selfplay-setting.json):
+
+Additional configuration definitions (`selfplay-setting.json`):
+
+
 ```
   "NeuralNetwork" : {
     "ReductionInput": false(default)  # Should it be trained using minimal local input features? (true|false)
@@ -290,7 +293,9 @@ Deletion configuration definition (selfplay-setting.json):
     "RenormMaxR": 1(default)
     "RenormMaxD": 0(default)
 ```
+
 </details>
+
 * Build
 ```
  $ cmake .. -DBLAS_BACKEND=TENSORRT -DUSE_ZLIB=1 -DSPECIFIC_BOARD_SIZE=9 -DBOARD_SIZE=9 -DONNX_ROOT_DIR=~/Downloads/onnxruntime-linux-x64-1.25.1
@@ -300,7 +305,7 @@ Deletion configuration definition (selfplay-setting.json):
 
 ## Original Sayuri Documentation (Upstream Reference)
 
-> *The sections below are preserved from the upstream [CGLemon/Sayuri](https://github.com) repository for general GTP usage and engine background. Note that precompiled Windows binaries and model links referenced below apply to the original upstream project, not this Muon experimental fork.*
+> *The sections below are preserved from the upstream [CGLemon/Sayuri](https://github.com/CGLemon/Sayuri) repository for general GTP usage and engine background. Note that precompiled Windows binaries and model links referenced below apply to the original upstream project, not this Muon experimental fork.*
 
 ---
 
