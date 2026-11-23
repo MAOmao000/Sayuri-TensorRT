@@ -9,7 +9,7 @@
 This repository contains experimental results, training configurations, and logs aimed at reaching the playing strength of **SAI** (*Sensible Artificial Intelligence*) using a compact **Hybrid ResNet-Transformer** trained with **Head-Split Muon** and **Gumbel AlphaZero** on top of the open-source Sayuri engine.
 
 > **⚠️ Note on Releases & Precompiled Binaries:**  
-> This is an active research fork of [Sayuri]([https://github.com/CGLemon/Sayuri]). **No precompiled binaries or GitHub Releases are published here**—please build from source using the [Build instructions](#requirements--build) below or explore the training logs and benchmark results directly.
+> This is an active research fork of [Sayuri](https://github.com/CGLemon/Sayuri). **No precompiled binaries or GitHub Releases are published here**—please build from source using the [Build instructions](#requirements--build) below or explore the training logs and benchmark results directly.
 
 ---
 
