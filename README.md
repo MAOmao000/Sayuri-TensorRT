@@ -20,6 +20,7 @@ This repository contains experimental results, training configurations, and logs
 * 📁 **[Experimental Results & Logs](./experimental_results)** — Raw evaluation outputs and training records
 * ⚙️ **[Sample Training Configs](./bash/configs/sample)** — Ready-to-use `selfplay-setting.json` presets
 * 🛠️ **[Build & Inference Guide](#requirements--build)** — C++ ONNX Runtime / TensorRT compilation steps
+* 🌐 **[Broader Implications for Big Data](#6-broader-implications-lessons-from-rl-for-big-data--diversity-preservation)** — Lessons on diversity preservation and echo chambers from RL
 
 ---
 
