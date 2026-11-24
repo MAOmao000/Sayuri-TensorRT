@@ -1,13 +1,29 @@
-
 <div id="sayuri-art" align="center">
-    </br>
+    <br/>
     <img src="./img/sayuri-art.PNG" alt="Sayuri Art" width="768"/>
-    <h3>Sayuri</h3>
+    <h3>Sayuri — Muon × AlphaZero Experimental Fork</h3>
 </div>
 
 # Chasing the Shadow of SAI: The Marriage of AlphaZero and the Muon Optimizer
 
-This repository contains experimental results and training logs aimed at reaching the playing strength of **SAI** (*Sensible Artificial Intelligence*) using the original open-source Sayuri.
+This repository contains experimental results, training configurations, and logs aimed at reaching the playing strength of **SAI** (*Sensible Artificial Intelligence*) using a compact **Hybrid ResNet-Transformer** trained with **Head-Split Muon** and **Gumbel AlphaZero** on top of the open-source Sayuri engine.
+
+> **⚠️ Note on Releases & Precompiled Binaries:**  
+> This is an active research fork of [Sayuri](https://github.com/CGLemon/Sayuri). **No precompiled binaries or GitHub Releases are published here**—please build from source using the [Build instructions](#requirements--build) below or explore the training logs and benchmark results directly.
+
+---
+
+## 🧭 Quick Navigation
+
+* 📊 **[Benchmark Summary](#2-cross-experiment-benchmark-summary-vs-sai-b8c160)** — 200-game match results vs. `SAI b8c160` (`Exp 1` – `Exp 7`) & `Sayuri b12xc384nbt`
+* 📝 **[Experiment-by-Experiment Technical Breakdown](./docs/exp_report.md)** — Detailed analysis, loss curves, and failure modes
+* 📁 **[Experimental Results & Logs](./experimental_results)** — Raw evaluation outputs and training records
+* ⚙️ **[Sample Training Configs](./bash/configs/sample)** — Ready-to-use `selfplay-setting.json` presets
+* 🛠️ **[Build & Inference Guide](#requirements--build)** — C++ ONNX Runtime / TensorRT compilation steps
+* 🌐 **[Broader Implications for Big Data](#6-broader-implications-lessons-from-rl-for-big-data--diversity-preservation)** — Lessons on diversity preservation and echo chambers from RL
+
+---
+
 ## About SAI (Sensible Artificial Intelligence)
 
 **SAI (Sensible Artificial Intelligence)** is an open-source Go engine based on the Leela Zero framework, designed to handle variable komi and handicap games.
@@ -22,28 +38,27 @@ This repository contains experimental results and training logs aimed at reachin
 * **Score Margin Estimation**: Capable of estimating score differences and targeting higher margins rather than just maximizing win probability.
 
 ### References
-* [SAI, a Sensible Artificial Intelligence that plays Go (arXiv, 2018)](https://arxiv.org)
-* [SAI: a Sensible Artificial Intelligence that plays with handicap and targets high scores in 9x9 Go (arXiv, 2019)](https://arxiv.org)
+* [SAI, a Sensible Artificial Intelligence that plays Go (arXiv:1809.03928, 2018)](https://arxiv.org/abs/1809.03928)
+* [SAI: a Sensible Artificial Intelligence that plays with handicap and targets high scores in 9x9 Go (arXiv:1905.10863, 2019)](https://arxiv.org/abs/1905.10863)
 
+---
 
 ## Key Highlights
 - **The Marriage of AlphaZero & Muon:** Demonstrating how the **Muon optimizer** significantly accelerates and improves the training of AlphaZero-style reinforcement learning algorithms.
-- **Target Benchmark:** Evaluating playing strength and Elo progression against **SAI** (Sensible Artificial Intelligence).
-- **Contents:** Training configurations, loss curves.
+- **Target Benchmark:** Evaluating playing strength and Elo progression against **SAI** (*Sensible Artificial Intelligence*).
+- **Contents:** Training configurations, loss curves, and cross-engine evaluation logs.
 
 ## 1. Overview & Motivation (TL;DR)
 In AlphaZero-style board game AI, conventional scaling laws typically assume that stronger play requires massive neural networks trained over millions of steps. However, for single-GPU developers, researchers, and edge/browser deployments, the critical question is: **How small can a model be—and how few training steps does it need—to match established larger engines?**
 
 Additionally, applying fast learning optimizers with large update steps such as Muon to AlphaZero-style reinforcement learning runs a high risk of imbalance between data generation (MCTS) and network updates, leading to severe overfitting and training instability in non-stationary environments.
 The main issues can be summarized into four points:
-• Overfitting to non-stationary targets: In AlphaZero, the “ground truth” (MCTS policy targets and game outcomes) constantly changes as self-play progresses. If the updates are too fast, the network will rapidly overfit to inaccurate value estimates and biased trajectories from early immature stages, destroying the diversity of the search and trapping the agent in a local optimum.
-• Noise amplification due to lack of variance adaptation: As noted in Hugging Face's RL field notes, Muon lacks a second-moment mechanism (like Adam) that automatically attenuates the step size when the gradient variance is large. As a result, noisy RL gradients and infrequent reward spikes are orthogonalized and applied at full scale, easily causing policy and value collapse at later stages of training.
-• Runaway feedback loop with MCTS: The output of the network (prior probabilities and state values) is immediately fed back to the next MCTS search tree. When the rate of optimization exceeds the generation of self-play data, the network repeatedly performs large-scale updates to old replay buffer data, creating a vicious cycle in which suboptimal moves and overestimated values are reinforced through MCTS.
-• Over-orthogonalization prevents late-stage convergence: Muon's Newton-Schulz orthogonalization prevents representation collapse and speeds up early exploration (“exploration”), but tends to keep the entropy of the policy too high in the final convergence phase (“parking”), making it difficult to harden the policy for accurate endgame computation.
+* Overfitting to non-stationary targets: In AlphaZero, the “ground truth” (MCTS policy targets and game outcomes) constantly changes as self-play progresses. If the updates are too fast, the network will rapidly overfit to inaccurate value estimates and biased trajectories from early immature stages, destroying the diversity of the search and trapping the agent in a local optimum.
+* Noise amplification due to lack of variance adaptation: As noted in Hugging Face's RL field notes, Muon lacks a second-moment mechanism (like Adam) that automatically attenuates the step size when the gradient variance is large. As a result, noisy RL gradients and infrequent reward spikes are orthogonalized and applied at full scale, easily causing policy and value collapse at later stages of training.
+* Runaway feedback loop with MCTS: The output of the network (prior probabilities and state values) is immediately fed back to the next MCTS search tree. When the rate of optimization exceeds the generation of self-play data, the network repeatedly performs large-scale updates to old replay buffer data, creating a vicious cycle in which suboptimal moves and overestimated values are reinforced through MCTS.
+* Over-orthogonalization prevents late-stage convergence: Muon's Newton-Schulz orthogonalization prevents representation collapse and speeds up early exploration (“exploration”), but tends to keep the entropy of the policy too high in the final convergence phase (“parking”), making it difficult to harden the policy for accurate endgame computation.
 
 This is an experiment in the dark to find out how to avoid overfitting while balancing the diversity of data provided.
-
-Using **9x9 Go (Chinese rules, Komi 7.0)** as a testbed, we combined a **Hybrid ResNet-Transformer architecture** with modern optimization techniques (**Head-Split Muon**, **$\mu$P width scaling**, and **Gumbel AlphaZero**). Our experiments demonstrate that a compact **`b6xc128h32` (6-block, 128-channel)** network trained in a **single 312K-step cycle without warm restarts** achieves near-parity overall—and exact 50% parity as Black—against the substantially larger `SAI b8c160` (8-block, 160-channel ResNet) baseline.
 
 For this experiment, we used "Sayuri" (https://github.com/CGLemon/Sayuri.git)—a compact Go bot that already provides a solid foundation—after extending it with the features required for our experiments. The primary additions are listed below; most of these were ported from features introduced in KataGo v1.18.
 
@@ -57,7 +72,9 @@ For this experiment, we used "Sayuri" (https://github.com/CGLemon/Sayuri.git)—
 * Support for bfloat16 in AMP (PyTorch Automatic Mixed Precision)
 * Support for Muon Split (Referred to lc0)
 
-## 2. Cross-Experiment Benchmark Summary (vs. `SAI b8c160`)
+Using **9x9 Go (Chinese rules, Komi 7.0)** as a testbed, we combined a **Hybrid ResNet-Transformer architecture** with modern optimization techniques (**Head-Split Muon**, **$\mu$P width scaling**, and **Gumbel AlphaZero**). Our experiments demonstrate that a compact **`b6xc128h32` (`RRTRRT`, 6-block, 128-channel)** network trained in a **single 310K-step cycle (~400K self-play games) without warm restarts** **outperforms the larger `SAI b8c160` (8-block, 160-channel ResNet) baseline (`52.25%` Point Win Rate / `+16 Elo`)**—winning across both Black and White colors.
+
+## 2. Cross-Experiment Benchmark Summary (vs. `SAI b8c160` & Upstream `Sayuri`)
 
 All evaluation matches consist of **200 games** (~100 as Black, ~100 as White) on 9x9 Chinese rules (`Komi 7.0`, `1,200 playouts/move`) using SWA (Stochastic Weight Averaging) weights.
 
@@ -70,16 +87,21 @@ All evaluation matches consist of **200 games** (~100 as Black, ~100 as White) o
 | **Exp 2 (Naive Scale)** | `b6xc192h64` (`192ch`) | Un-split Muon + Restart (`392K`) | 23 / 22 / 58 | 25 / 18 / 54 | 48 / 40 / 112 | `34.00%` | `-115 Elo` | `44.0%` |
 | **Exp 3 (Giant Killing)** | `b6xc96h32` (`96ch`) | **Head-Split Muon** + RMSNormMask (`312K`) | 31 / 26 / 39 | 21 / 13 / 70 | 52 / 39 / 109 | `35.75%` | `-102 Elo` | `45.5%` |
 | **Exp 3.5 (Restart)** | `b6xc96h32` (`96ch`) | Damped Warm Restart (`312K -> 508K` trough) | 30 / 18 / 52 | 27 / 30 / 43 | 57 / 48 / 95 | `40.50%` | `-67 Elo` | `52.5%` |
-| **Exp 4 (Final Goal)** | **`b6xc128h32` (`128ch`)** | **Single-Cycle + `muP` Scaling (`312K`)** | **`40 / 19 / 40`** | **`26 / 29 / 46`** | **`66 / 48 / 86`** | **`45.00%`** | **`-35 Elo`** | **`57.0%`** |
+| **Exp 4 (Single-Cycle)** | `b6xc128h32` (`128ch`) | Single-Cycle + `muP` Scaling (`312K`) | 40 / 19 / 40 | 26 / 29 / 46 | 66 / 48 / 86 | `45.00%` | `-35 Elo` | `57.0%` |
 | **Exp 5 (Multi-Config)** | `b6xc96h32` (`96ch`) | 3-Config Mixture + 600-Playout Restart (`492K` SWA) | 11 / 26 / 52 | 22 / 21 / 68 | 33 / 47 / 120 | `28.25%` | `-162 Elo` | `40.0%` |
-| **Exp 6 (Pure Gumbel)** | `b6xc96h32` (`96ch`) | **100% Pure Gumbel** (`64p->96p`) + 3-Style Mixture (`312K`) | 13 / 8 / 76 | 16 / 12 / 75 | 29 / 20 / 151 | `19.50%` | `-246 Elo` | `24.5%` |
+| **Exp 6 (Pure Gumbel)** | `b6xc96h32` (`96ch`) | 100% Pure Gumbel (`64p->96p`) + 3-Style Mixture (`312K`) | 13 / 8 / 76 | 16 / 12 / 75 | 29 / 20 / 151 | `19.50%` | `-246 Elo` | `24.5%` |
+| **Exp 7 (Final Synthesis)** | **`b6xc128h32` (`128ch`)** | **2-Stage Gumbel (`128p->256p`) + 3-Style Mixture + Neutral Eval (`310K`)** | **`39 / 24 / 36`** | **`37 / 33 / 31`** | **`76 / 57 / 67`** | **`52.25%`** | **`+16 Elo`** | **`66.5%`** |
 
-*(Note 1: In Exp 2–6, side assignment was randomized per game across the 200-game matches, resulting in slight color splits [Exp 2: 103B/97W; Exp 3: 96B/104W; Exp 4: 99B/101W; Exp 5: 89B/111W; Exp 6: 97B/103W].)*  
-*(Note 2: In Exp 6, removing LCB bias [`--lcb-reduction 0.0`] achieved near-exact color symmetry between Black [`17.5%` Point Win Rate] and White [`21.4%` Point Win Rate] in a single 312K-step pass without warm restarts.)*
+#### Benchmark Against Original Upstream Sayuri (`b12xc384nbt`)
+To measure the ceiling of our compact architecture against a heavily scaled reference engine without our experimental additions, we also evaluated the final **`Exp 7` (`b6xc128h32`, `310K` steps, ~400K self-play games)** model against the original upstream **Sayuri `b12xc384nbt`** (12-block NestedBottleneck ResNet, `384ch`, trained for `3,592K` steps with standard `SGD`):
 
-### Key Highlights (`Exp 4: b6xc128h32`)
-1. **Exact 50.0% Parity as Black (`40W / 19D / 40L`):** Matched `SAI b8c160` blow-for-blow with the initiative, converting aggressive lines into decisive wins.
-2. **57.0% Overall Non-Loss Rate (`-35 Elo`):** Reached practical competitive parity in a single `312K`-step pass without warm restarts, using significantly fewer parameters than `SAI b8c160`.
+| Matchup (`200` Games @ `1,200` playouts) | Black (`W/D/L`) | White (`W/D/L`) | Total (`W/D/L`) | **Point Win Rate** | **Est. Elo Diff** | Non-Loss (`W+D`) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`Exp 7 (b6xc128h32)` vs. `Sayuri b12xc384nbt`** | `15 / 21 / 64` | `15 / 21 / 64` | **`30 / 42 / 128`** | **`25.50%`** | **`-186 Elo`** | **`36.0%`** |
+
+### Key Highlights (`Exp 7: b6xc128h32`)
+1. **Surpassing `SAI b8c160` Across Both Colors (`+16 Elo` / `52.25%` Point Win Rate):** By integrating all findings from `Exp 1 – Exp 6`, `b6xc128h32` (`RRTRRT`) completely solved White's endgame vulnerability (`37W / 33D / 31L`, `52.97%` Point Win Rate) while maintaining winning Black play (`39W / 24D / 36L`, `51.52%` Point Win Rate), achieving a `66.5%` overall non-loss rate against a larger 8-block `160ch` engine.
+2. **Remarkable Parameter Efficiency Against `Sayuri b12xc384nbt`:** Despite using less than 1/15th the parameters and ~1/11th the training steps (`310K` vs. `3,592K`) of the 12-block `384ch` upstream model, `Exp 7` achieved exact color symmetry (`15/21/64` as both Black and White) and secured a `36.0%` non-loss rate (`-186 Elo`).
 
 ---
 
@@ -123,6 +145,11 @@ To isolate the dynamics of **100% Pure Gumbel AlphaZero** (setting `--gumbel-pla
 2. **Ultra-Early Value Plateau & Sawtooth Self-Correction:** Value heads (`ownership: ~0.68`, `wdl: ~0.51`, `scores: ~0.085`) converged into a flat L-shaped plateau by `25K` steps—confirming that `TransformerBlock + Muon` rapidly compresses global board geometry—while `PolicySurpriseFactor: 0.5` produced regular cycle-by-cycle sawtooth waves that continuously digested novel tactical lines.
 3. **Color-Symmetric Inference via Zero-LCB Search:** Disabling conservative LCB penalties (`--lcb-reduction 0.0`, `--score-utility-factor 0.15`) at evaluation time eliminated color bias (`13W/8D/76L` as Black vs. `16W/12D/75L` as White), proving that pure Gumbel + multi-style self-play produces a balanced, non-collapsing policy even at low playout budgets (`<= 96` playouts).
 
+### Phase 7: Full Synthesis & Surpassing `SAI b8c160` (`Exp 7`)
+To validate the combined efficacy of every breakthrough discovered across `Exp 1 – Exp 6`, we trained **`b6xc128h32` (`RRTRRT`, `128ch`, 4 heads, `PolicyHead: 48ch`, `ValueHead: 96ch`)** in a single `310K`-step cycle (~400K self-play games) integrating Head-Split Muon (`Peak LR: 3.46e-3`), Fixup normalization, a 3-personality self-play mixture (`Balance` / `Offense` / `Defense`), a 2-stage Gumbel curriculum (`128 -> 256 playouts` at `100K` steps, retaining `5%` `7x7`/`8x8` boards), and neutral inference settings (`--lcb-reduction 0.0`, `--score-utility-factor 0.15`, `--use-optimistic-policy`):
+1. **Textbook Loss Convergence & `SAI` Parity/Outperformance:** Every training metric followed an ideal monotonic trajectory—breaking `0.06` on endgame score error (`scores loss: 0.0540`) and driving `wdl loss` down to `0.4776`—translating directly into a **`76W / 57D / 67L` (`52.25%` Point Win Rate / `+16 Elo`)** victory over `SAI b8c160`.
+2. **Validating Compact Quality vs. Scaling Boundaries:** While `b6xc128h32` (`RRTRRT`) proved capable of near-optimal learning quality within 9x9 Go's scaling constraints, its `30W / 42D / 128L` (`-186 Elo`) match against the massive upstream `Sayuri b12xc384nbt` (`3,592K` steps, SGD) confirmed that even sample-efficient Gumbel AlphaZero cannot fully overcome an order-of-magnitude gap in network capacity and training playout depth.
+
 ---
 
 ## 4. Practical Takeaways for Bot Developers & RL Researchers
@@ -144,26 +171,50 @@ Successfully marrying fast orthogonalized optimizers (**Muon**) and **Transforme
 | **3. Non-Stationary Overfitting** | Match optimization steps per cycle to replay buffer throughput so the network never memorizes immature early chunks. | Keep **`MaxStepsPerRunning` modest (`1,500` early $\rightarrow$ `2,500` mid/late)**, use **`PolicySurpriseFactor: 0.5`** to prioritize high-KL positions, and **terminate SWA strictly before the cosine cycle resets** (`WarmUpSteps + AnnealingCycle > StopSteps`). |
 | **4. Mode Collapse (Draw / Single-Line)** | Maintain irreducible strategic entropy so the compact network learns general Go principles rather than narrow lines. | Split self-play workers into **3 search personalities** (`Balance` / `Offense` / `Defense` varying `cpuct`, `fpu`, and `score-utility`), keep moderate opening randomness (`~0.25`), and disable LCB (`--lcb-reduction 0.0`) at evaluation. |
 
+## 4.6 Final Project Conclusions
+
+Across seven iterative experiments (`Exp 1 – Exp 7`), we conclude the project with three foundational takeaways:
+1. **Data Diversity is Mandatory for Stable Fast-Optimizer RL:** Mixing distinct MCTS search personalities (`Balance`, `Offense`, `Defense`), retaining multi-rule and multi-board-size queries (`5%` `7x7`/`8x8` in late stages), and preserving opening randomness are essential to prevent Muon's aggressive spectral updates from collapsing into narrow local optima.
+2. **Peak Playing Strength Requires Proportional Model Scale & Search Depth:** While algorithmic innovation enables a compact `b6xc128h32` model to defeat `SAI b8c160` (`+16 Elo`), breaking into the tier of heavily scaled architectures (`b12xc384nbt`) fundamentally requires scaling network width/depth and deep self-play search budgets.
+3. **Practical Single-GPU Research Velocity is Viable:** By combining **Head-Split Muon**, **Hybrid ResNet-Transformer blocks**, and **Gumbel AlphaZero**, meaningful, reproducible reinforcement learning research in 9x9 Go can be completed on a single GPU in just **~400,000 self-play games and 310,000 training steps**.
+
 ---
 
-## 5. Final Reference Configuration (`Exp 4: b6xc128h32`)
+## 5. Final Reference Configuration (`Exp 7: b6xc128h32`)
 
-* **Architecture:** 6-block Hybrid (`Res-Res-Trans-Res-Res-Trans`), `ResidualChannels: 128`, `TransformerHeads: 4` (`head_dim: 32`), `TransformerFFNChannels: 512`, `FinalBlockCgroupSize: 32` (`4 x 32ch` spatial RMSNormMask), `BatchNormMode: fixup`, `Activation: silu`, `PolicyHeadType: RepLK`
-* **Optimizer:** `Head-Split Muon` (`Peak LR: 1.73e-2 -> 1.0e-4`, `WarmUpSteps: 12,000`, `LearningRateAnnealingCycle: 304,000`) + auxiliary AdamW (`MuonAdamLrFactor: 0.25`)
-* **3-Stage Self-Play Curriculum (`312K` steps total):**
-  * **Stage 1 (`0 – 48K`)**: `150 playouts` (`Gumbel: 32`), `random-opening-prob: 0.65`
-  * **Stage 2 (`48K – 160K`)**: `350 playouts` (`Gumbel: 85`), `random-opening-prob: 0.45`
-  * **Stage 3 (`160K – 312K`)**: `550 playouts` (`Gumbel: 140`), `random-opening-prob: 0.25`, `score-utility-factor: 0.28`
+* **Architecture:** 6-block Hybrid (`Res-Res-Trans-Res-Res-Trans`), `ResidualChannels: 128`, `TransformerHeads: 4` (`head_dim: 32`), `TransformerFFNChannels: 512`, `PolicyHeadChannels: 48`, `ValueHeadChannels: 96`, `FinalBlockCgroupSize: 32` (`4 x 32ch` spatial RMSNormMask), `BatchNormMode: fixup`, `Activation: silu`, `PolicyHeadType: RepLK`, `AttnLogitPenaltyCap: 30.0`
+* **Optimizer & Schedule:** `Head-Split Muon` (`Peak LR: 3.46e-3 -> 2.50e-4`, `WarmUpSteps: 12,000`, `LearningRateAnnealingCycle: 300,010` $\rightarrow$ stopped cleanly at `310,000` steps prior to cycle reset) + auxiliary AdamW (`MuonAdamLrFactor: 0.25`), `SwaSteps: 500`, `SwaMaxCount: 16`
+* **2-Stage Gumbel Curriculum & 3-Personality Self-Play (`310K` steps / ~400K games total):**
+  * **Stage 1 (`0 – 100K`)**: `128 playouts` (`100% Pure Gumbel`), `80%` 9x9 + `20%` 7x7/8x8 boards
+  * **Stage 2 (`100K – 310K`)**: `256 playouts` (`Gumbel + PUCT` hybrid), `95%` 9x9 + `5%` 7x7/8x8 boards
+  * **3-Personality Worker Mixture (all stages)**: `Balance` (~47%), `Defense` (~26.5%, `cpuct-init: 0.30`, `lcb-reduction: 0.5`, `score-utility: 0.08`), and `Offense` (~26.5%, `cpuct-init: 0.85`, `score-utility: 0.85`, `komi-stddev: 3.5`)
+* **Recommended Evaluation Inference Flags:** `--lcb-reduction 0.0 --score-utility-factor 0.15 --cpuct-init 0.70 --use-optimistic-policy --reuse-tree`
 
 > **The details of each experiment are provided, see **[Experiment-by-Experiment Technical Breakdown](./docs/exp_report.md).**
 
 ---
 
+## 6. Broader Implications: Lessons from RL for Big Data & Diversity Preservation
+
+Beyond board game AI, the training dynamics uncovered in `Exp 1 – Exp 6` offer a stark warning for how modern **big data** and real-world machine learning pipelines are curated and optimized. In our experiments, preserving **irreducible data diversity** proved to be the single most critical factor separating true out-of-distribution strength (`Exp 4`) from brittle collapse (`Exp 3.5`, `Exp 5`). When big data systems prioritize short-term optimization over distributional breadth, they fall into the exact same traps observed in our self-play loops:
+
+1. **Beware the "Loss–Strength Paradox" (Distribution Contraction & Echo Chambers):**
+   In `Exp 5`, narrowing the self-play rule/komi distribution produced our lowest training loss (`3.8088`), yet actual playing strength stagnated (`-162 Elo`) because the network merely imitated a shrinking, self-reinforcing data loop. Similarly, in real-world big data systems (such as recommendation engines and automated decision pipelines), optimizing solely for immediate engagement or narrow accuracy metrics creates **echo chambers and filter bubbles**. The model reinforces majority patterns while starving future training cycles of diverse, out-of-distribution edge cases—leading to silent model collapse and societal homogenization.
+2. **Do Not Discard "Outliers" as Noise—Preserve Exploratory Entropy:**
+   In `Exp 3.5`, tightening opening randomness (`0.15`) and temperature (`0.85`) late in training caused *Jigo* (draw) overfitting—destroying Black's sharp, win-converting variations. Conversely, `Exp 4` succeeded by intentionally maintaining exploratory noise (`random-opening-prob: 0.25`, `root-policy-temp: 0.90`) and `Exp 6` stabilized learning via multi-personality self-play (`Balance` / `Offense` / `Defense`) and `PolicySurpriseFactor`. In big data preprocessing, mechanically stripping away statistical outliers, rare minority behaviors, or "inefficient" edge cases removes the very signals needed for robustness and innovation. Data pipelines must deliberately preserve structural variance rather than smoothing everything toward an average.
+3. **Treat Datasets as Biased Environments, Not Objective Truth:**
+   Just as an AlphaZero agent rapidly overfits to the immature, biased trajectories of early self-play if optimization outpaces exploration, models trained uncritically on convenience-sampled or survivorship-biased big data will amplify historical inequities as self-fulfilling prophecies. Practitioners must evaluate models not merely on in-distribution validation loss, but on **coverage, fairness, and resilience against unseen, minority scenarios**.
+
+Ultimately, whether training a compact Go engine or deploying large-scale data systems, **aggressive optimization without diversity preservation leads to a local optimum**. Designing intentional "room for exploration" into data collection and model objectives is essential to keep both AI models and the societies they serve adaptable and resilient.
+
+---
+
 ## Acknowledgments
 
-Special thanks to **Sayuri**, **Muon**, **SAI**, **KataGo**, and their authors for creating the open-source engines, architectures, and optimization techniques that made these experiments possible. Thanks also to **Google AI** for providing continuous analytical support, code reviews, and experimental guidance throughout this research.
+Special thanks to the authors of Sayuri, Muon, SAI, and KataGo for their foundational open-source work.
+Note on AI Tools: Google AI was utilized as a research and engineering assistant during this project for debugging, experimental log analysis, and drafting documentation. All experimental designs, implementations, and benchmark evaluations were verified by the author.
 
-## Requirements
+## Requirements & Build
 Additional features require the following installation:
 
 * c++ engine: onnx runtime (Used onnxruntime-linux-x64-1.25.1 to check the operation)
@@ -171,7 +222,15 @@ Additional features require the following installation:
 
 * Modification of configuration definitions (selfplay-setting.json)
 
-Additional configuration definitions (selfplay-setting.json):
+### Configuration Changes (`selfplay-setting.json` & `selfplay-config.txt`)
+Please refer to [`./experimental_results`](./experimental_results) for the configuration files used in the experiments.
+
+<details>
+<summary><b>Click to expand added & deleted parameters in <code>selfplay-setting.json</code></b></summary>
+
+Additional configuration definitions (`selfplay-setting.json`):
+
+
 ```
   "NeuralNetwork" : {
     "ReductionInput": false(default)  # Should it be trained using minimal local input features? (true|false)
@@ -269,6 +328,9 @@ Deletion configuration definition (selfplay-setting.json):
     "RenormMaxR": 1(default)
     "RenormMaxD": 0(default)
 ```
+
+</details>
+
 * Build
 ```
  $ cmake .. -DBLAS_BACKEND=TENSORRT -DUSE_ZLIB=1 -DSPECIFIC_BOARD_SIZE=9 -DBOARD_SIZE=9 -DONNX_ROOT_DIR=~/Downloads/onnxruntime-linux-x64-1.25.1
@@ -276,7 +338,9 @@ Deletion configuration definition (selfplay-setting.json):
  $ ./sayuri -t 10 -b 5 -w ~/Sayuri-test-b9xc192/weights/sayuri-b9xc192-s300000-c315000-w61965-swa.onnx --use-optimistic-policy --scoring-rule area -p 1200 --reuse-tree
 ```
 
-The following is the original README for Sayuri.
+## Original Sayuri Documentation (Upstream Reference)
+
+> *The sections below are preserved from the upstream [CGLemon/Sayuri](https://github.com/CGLemon/Sayuri) repository for general GTP usage and engine background. Note that precompiled Windows binaries and model links referenced below apply to the original upstream project, not this Muon experimental fork.*
 
 ---
 

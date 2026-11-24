@@ -1,0 +1,43 @@
+# バランス型 (selfplay_balance.cfg)：1,500局（後期）
+--random-moves-factor 0.15
+
+--komi-stddev 1.5
+--komi-big-stddev-prob 0.05
+--komi-big-stddev 6.0
+--handicap-fair-komi-prob 0.5
+
+--cpuct-init 0.5
+--cpuct-base 19652
+--cpuct-base-factor 1
+
+--fpu-reduction 0.25
+--root-fpu-reduction 0.25
+
+--lcb-reduction 0.0
+--score-utility-factor 0.30
+--score-utility-div 1.0
+
+# 後期：9路盤比率を95%へ引き上げつつ、過学習防止のため7・8路盤を5%残す
+--selfplay-query bkp:9:7:0.85  --selfplay-query bhp:9:6:0.10
+--selfplay-query bkp:8:7:0.03
+--selfplay-query bkp:7:7:0.02
+
+--selfplay-query srs:area
+--selfplay-query srs:territory
+
+# 後期：256プレイアウト + Gumbel/PUCTハイブリッド
+--playouts 256
+--gumbel
+--gumbel-playouts-threshold 128
+--gumbel-prom-visits 2
+--always-completed-q-policy
+
+--resign-playouts 100
+--resign-threshold 0.05
+--resign-discard-prob 0.9
+
+--parallel-games 192
+--cache-memory-mib 1024
+--early-symm-cache
+
+--num-games 1500

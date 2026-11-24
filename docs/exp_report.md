@@ -1,6 +1,7 @@
-# Experiment-by-Experiment Technical Breakdown (Exp 1 – Exp 6)
+# Experiment-by-Experiment Technical Breakdown (Exp 1 – Exp 7)
 
-This document provides an individual summary, architectural configuration, training dynamics, and key takeaways for each of the **seven experimental stages** (`Exp 1` through `Exp 6`) conducted on 9x9 Go (`Chinese rules`, `Komi 7.0`, evaluated over `200` games at `1,200 playouts/move` against `SAI b8c160`).
+This document provides an individual summary, architectural configuration, training dynamics, and key takeaways for each of the **eight experimental stages** (`Exp 1` through `Exp 7`) conducted on 9x9 Go (`Chinese rules`, `Komi 7.0`, evaluated over `200` games at `1,200 playouts/move` against `SAI b8c160`).
+
 
 
 ---
@@ -166,4 +167,58 @@ Evaluate the pure behavior of **100% Gumbel AlphaZero** (setting `--gumbel-playo
 * **Unique Training Curve Dynamics:** Combining `TransformerBlock + Muon` with high-entropy Pure Gumbel multi-style self-play compressed global value representations (`ownership`, `wdl`, `scores`) into a flat L-shaped plateau by `25K` steps—far faster than conventional CNN+SGD runs—while `PolicySurpriseFactor: 0.5` drove regular sawtooth waves that steadily refined policy accuracy (`prob loss: 1.5911`) without collapsing `soft prob loss` (`0.3539`).
 * **LCB Penalty Sensitivity on Compact Models:** Removing `--lcb-reduction 0.5` (`-> 0.0`) and lowering `--score-utility-factor` (`0.35 -> 0.15`) boosted White wins more than 5x (`3W -> 16W`, `+42 Elo` overall), eliminating color asymmetry against `SAI b8c160`.
 * **Search Ceiling vs. Parameter Scaling:** Despite achieving clean convergence at just `64–96` self-play playouts in a single `312K`-step pass (nearly matching `Exp 5`'s `300K` `150-playout` Phase 1 checkpoint of `-235 Elo` with ~40% less search compute), beating `SAI b8c160` consistently requires scaling width to `128ch` (`b6xc128` or `b8xc128` `RRRTRRRT`) and increasing self-play search depth (`>= 128–160 playouts`).
+
+---
+
+## Experiment 7: Full Synthesis & Surpassing `SAI b8c160` (`b6xc128h32`, `0 -> 310K`)
+
+### 1. Objective & Configuration
+To verify the combined validity of all architectural, optimization, and self-play insights discovered across `Exp 1 – Exp 6`, we designed a unified single-cycle experiment using the compact **`b6xc128h32` (`RRTRRT`)** topology and evaluated its final strength against both `SAI b8c160` and the massive upstream `Sayuri b12xc384nbt` engine.
+* **Topology:** `b6xc128h32` (`Res-Res-Trans-Res-Res-Trans`, `ResidualChannels: 128`, `TransformerHeads: 4`, `AttentionHeadDim: 32`, `TransformerFFNChannels: 512`, `PolicyHeadChannels: 48`, `ValueHeadChannels: 96`, `FinalBlockCgroupSize: 32` [`4 x 32ch` spatial RMSNormMask], `BatchNormMode: fixup`, `AttnLogitPenaltyCap: 30.0`)
+* **Optimizer & Clean SWA Termination:** `Head-Split Muon` (`WarmUpSteps: 12,000`, `Peak LR: 3.46e-3 -> 2.50e-4`, `LearningRateAnnealingCycle: 300,010` $\rightarrow$ trough at `312,010`, `MuonAdamLrFactor: 0.25`). Training was stopped cleanly at **`310,000` steps** (~400,000 self-play games) prior to the cosine cycle reset to guarantee zero LR-spike contamination in the trailing SWA checkpoints.
+* **Two-Stage Gumbel Curriculum & 3-Personality Mixture:**
+  * *Stage 1 (`0 – 100K` steps):* `128 playouts` (`100% Pure Gumbel`), `80%` 9x9 + `20%` 7x7/8x8 boards
+  * *Stage 2 (`100K – 310K` steps):* `256 playouts` (Gumbel + PUCT hybrid), `95%` 9x9 + `5%` 7x7/8x8 boards (retaining `5%` auxiliary board sizes to prevent late-stage distribution contraction)
+  * *Self-Play Mixture (all stages):* `Balance` (~47%), `Defense` (~26.5%, `cpuct-init: 0.30`, `lcb-reduction: 0.5`, `score-utility: 0.08`), and `Offense` (~26.5%, `cpuct-init: 0.85`, `score-utility: 0.85`, `komi-stddev: 3.5`)
+
+### 2. Training Curves & Convergence Dynamics
+Unlike earlier runs that suffered from early divergence or late-stage plateauing, `Exp 7` exhibited textbook monotonic convergence across all loss heads:
+
+| Overall Loss & LR Schedule | Policy & WDL Convergence |
+| :---: | :---: |
+| ![All Loss and LR](../experimental_results/exp7/loss_all.png) | ![Policy and WDL Loss](../experimental_results/exp7/loss_pol_val.png) |
+
+| Score Margin Loss (`100K` Step Inflection) | Soft Policy Stability (`soft prob loss`) |
+| :---: | :---: |
+| ![Score Loss](../experimental_results/exp7/loss_score.png) | ![Soft Prob Loss](../experimental_results/exp7/loss_soft_prob.png) |
+
+| Optimistic Policy Convergence | Board Ownership & Life/Death Loss |
+| :---: | :---: |
+| ![Optimistic Loss](../experimental_results/exp7/loss_optimistic.png) | ![Ownership Loss](../experimental_results/exp7/loss_ownership.png) |
+
+* **Visible `100K` Curriculum Inflection (`score loss` & `ownership loss`):** After plateauing around `scores loss: ~0.095` at `128 playouts`, switching to `256 playouts` at `100K` steps triggered an immediate secondary descent—driving `scores loss` down to **`0.0540`** and `ownership loss` down to **`0.6581`** by `310K` steps.
+* **Late-Stage Endgame Breakthrough (`wdl loss`):** From `170K` to `310K` steps, `wdl loss` steadily declined (`0.517 -> 0.4776`) without rebounding, demonstrating that sub-0.06 score precision enabled the network to accurately resolve half-point (*Jigo*-boundary) close games.
+* **Zero Overfitting Signature (`soft prob loss` & `optimistic loss`):** `soft prob loss` settled into a completely flat horizontal baseline at **`0.3585`** while `optimistic loss` smoothly converged to **`0.199`–`0.204`**, confirming that multi-personality self-play preserved full strategic breadth without mode collapse.
+* **Final Convergence Metrics (`310K` steps):** `all loss: 3.6956`, `prob loss: 1.4280`, `aux prob loss: 0.3213`, `soft prob loss: 0.3585`, `optimistic loss: 0.2048`, `ownership loss: 0.6581`, `wdl loss: 0.4776`, `scores loss: 0.0540`.
+
+### 3. Benchmark Results (`200` Games @ `1,200` Playouts, Neutral Evaluation)
+Evaluated using our neutral inference configuration (`--lcb-reduction 0.0 --score-utility-factor 0.15 --cpuct-init 0.70 --use-optimistic-policy --reuse-tree`):
+
+#### A. vs. `SAI b8c160` (8-Block, `160ch` ResNet)
+* **Black (`W/D/L`, 99 games):** `39 / 24 / 36` (**Point Win Rate: `51.52%`**, Non-Loss: `63.6%`)
+* **White (`W/D/L`, 101 games):** `37 / 33 / 31` (**Point Win Rate: `52.97%`**, Non-Loss: `69.3%`)
+* **Total (`W/D/L`, 200 games):** **`76 / 57 / 67`** (**Point Win Rate: `52.25%`**, **Est. Elo Diff: `+16 Elo`**, **Non-Loss Rate: `66.5%`**)
+
+#### B. vs. Original Upstream Sayuri (`b12xc384nbt` — 12-Block NestedBottleneck, `384ch`, `SGD`, `3,592K` Steps)
+* **Black (`W/D/L`, 100 games):** `15 / 21 / 64` (Point Win Rate: `25.50%`, Non-Loss: `36.0%`)
+* **White (`W/D/L`, 100 games):** `15 / 21 / 64` (Point Win Rate: `25.50%`, Non-Loss: `36.0%`)
+* **Total (`W/D/L`, 200 games):** **`30 / 42 / 128`** (**Point Win Rate: `25.50%`**, **Est. Elo Diff: `-186 Elo`**, **Non-Loss Rate: `36.0%`**)
+
+### 4. Key Findings & Final Conclusions
+1. **Near-Optimal Learning on a Compact Footprint:** Within the constraints of neural scaling laws, `b6xc128h32` (`RRTRRT`) demonstrated that near-maximal learning quality is achievable in 9x9 Go—defeating the larger `SAI b8c160` baseline across both colors (`+16 Elo`) while completely eliminating White's earlier endgame fragility (`40.1%` in Exp 4 $\rightarrow$ `52.97%` in Exp 7).
+2. **Search Depth & Capacity Boundaries (`b12xc384nbt` Matchup):** Against the original upstream `Sayuri b12xc384nbt` (which lacks all experimental additions in this fork, but was trained with `SGD` over `3,592K` steps with ~15x more parameters), `Exp 7` achieved exact color symmetry (`15/21/64` for both sides) and a `36.0%` non-loss rate (`-186 Elo`). This confirms that while Gumbel AlphaZero offers superior sample efficiency, overcoming massive disparities in training playout budgets and network scale still requires proportional model scaling.
+3. **Final Concluding Summary:**
+   * **Data diversity is indispensable** for stable, non-collapsing reinforcement learning under fast orthogonalized optimizers.
+   * **Peak Elo progression requires appropriate model scale and deep search budgets** once algorithmic efficiency has been maximized.
+   * **High-impact RL research is viable on single-GPU hardware:** Using our proposed architecture and training pipeline, a compact `b6xc128h32` model trained over just **~400K self-play games and 310K steps** provides a fast, reproducible, and competitive experimental platform—concluding this series of experiments.
 
