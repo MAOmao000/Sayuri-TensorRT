@@ -193,7 +193,8 @@ Ultimately, whether training a compact Go engine or deploying large-scale data s
 
 ## Acknowledgments
 
-Special thanks to **Sayuri**, **Muon**, **SAI**, **KataGo**, and their authors for creating the open-source engines, architectures, and optimization techniques that made these experiments possible. Thanks also to **Google AI** for providing continuous analytical support, code reviews, and experimental guidance throughout this research.
+Special thanks to the authors of Sayuri, Muon, SAI, and KataGo for their foundational open-source work.
+Note on AI Tools: Google AI was utilized as a research and engineering assistant during this project for debugging, experimental log analysis, and drafting documentation. All experimental designs, implementations, and benchmark evaluations were verified by the author.
 
 ## Requirements & Build
 Additional features require the following installation:
