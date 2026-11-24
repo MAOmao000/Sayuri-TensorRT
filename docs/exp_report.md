@@ -191,7 +191,7 @@ Unlike earlier runs that suffered from early divergence or late-stage plateauing
 
 | Score Margin Loss (`100K` Step Inflection) | Soft Policy Stability (`soft prob loss`) |
 | :---: | :---: |
-| ![Score Loss](../experimental_results/exp7/loss_score.png) | ![Soft Prob Loss](../experimental_results/exp7/loss_soft_prob.png) |
+| ![Score Loss](../experimental_results/exp7/loss_scores.png) | ![Soft Prob Loss](../experimental_results/exp7/loss_soft_prob.png) |
 
 | Optimistic Policy Convergence | Board Ownership & Life/Death Loss |
 | :---: | :---: |
