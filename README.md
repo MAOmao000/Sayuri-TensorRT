@@ -8,7 +8,7 @@
 
 This repository contains experimental results, training configurations, and logs aimed at reaching the playing strength of **SAI** (*Sensible Artificial Intelligence*) using a compact **Hybrid ResNet-Transformer** trained with **Head-Split Muon** and **Gumbel AlphaZero** on top of the open-source Sayuri engine.
 
-> **⚠️ Note on Releases & Precompiled Binaries:**  
+> **⚠ Note on Releases & Precompiled Binaries:**  
 > This is an active research fork of [Sayuri](https://github.com/CGLemon/Sayuri). **No precompiled binaries or GitHub Releases are published here**—please build from source using the [Build instructions](#requirements--build) below or explore the training logs and benchmark results directly.
 
 ---
@@ -18,8 +18,8 @@ This repository contains experimental results, training configurations, and logs
 * 📊 **[Benchmark Summary](#2-cross-experiment-benchmark-summary-vs-sai-b8c160)** — 200-game match results vs. `SAI b8c160` (`Exp 1` – `Exp 7`) & `Sayuri b12xc384nbt`
 * 📝 **[Experiment-by-Experiment Technical Breakdown](./docs/exp_report.md)** — Detailed analysis, loss curves, and failure modes
 * 📁 **[Experimental Results & Logs](./experimental_results)** — Raw evaluation outputs and training records
-* ⚙️ **[Sample Training Configs](./bash/configs/sample)** — Ready-to-use `selfplay-setting.json` presets
-* 🛠️ **[Build & Inference Guide](#requirements--build)** — C++ ONNX Runtime / TensorRT compilation steps
+* ⚙ **[Sample Training Configs](./bash/configs/sample)** — Ready-to-use `selfplay-setting.json` presets
+* 🛠 **[Build & Inference Guide](#requirements--build)** — C++ ONNX Runtime / TensorRT compilation steps
 * 🌐 **[Broader Implications for Big Data](#6-broader-implications-lessons-from-rl-for-big-data--diversity-preservation)** — Lessons on diversity preservation and echo chambers from RL
 
 ---
@@ -101,7 +101,7 @@ To measure the ceiling of our compact architecture against a heavily scaled refe
 
 ### Key Highlights (`Exp 7: b6xc128h32`)
 1. **Surpassing `SAI b8c160` Across Both Colors (`+16 Elo` / `52.25%` Point Win Rate):** By integrating all findings from `Exp 1 – Exp 6`, `b6xc128h32` (`RRTRRT`) completely solved White's endgame vulnerability (`37W / 33D / 31L`, `52.97%` Point Win Rate) while maintaining winning Black play (`39W / 24D / 36L`, `51.52%` Point Win Rate), achieving a `66.5%` overall non-loss rate against a larger 8-block `160ch` engine.
-2. **Remarkable Parameter Efficiency Against `Sayuri b12xc384nbt`:** Despite using less than 1/15th the parameters and ~1/11th the training steps (`310K` vs. `3,592K`) of the 12-block `384ch` upstream model, `Exp 7` achieved exact color symmetry (`15/21/64` as both Black and White) and secured a `36.0%` non-loss rate (`-186 Elo`).
+2. **Remarkable Parameter Efficiency Against `Sayuri b12xc384nbt`:** Despite using roughly 1/15th the parameters and ~1/11th the training steps (`310K` vs. `3,592K`) of the 12-block `384ch` upstream model, `Exp 7` achieved exact color symmetry (`15/21/64` as both Black and White) and secured a `36.0%` non-loss rate (`-186 Elo`).
 
 ---
 
@@ -137,6 +137,7 @@ To test whether generating self-play data from a mixture of distinct MCTS search
 
 After an initial `300K` multi-rule phase (`150 playouts`, Point Win Rate `20.50%`), we applied a `200K` warm restart (`LR: 6.0e-3 -> 2.0e-4`) with deeper search (`600 playouts`) and concentrated 9x9 Chinese `Komi 7.0` queries (~83% Chinese / ~17% Japanese). Stopping at the `492K` loss trough (`s492000-swa.onnx`) boosted Point Win Rate by **`+7.75%` (`+73 Elo`)** to **`28.25%` (`-162 Elo`)**, yet revealed a critical **Loss–Strength Paradox**:
 1. **Record-Low Training Loss Does Not Guarantee Peak Elo:** Exp 5 achieved the lowest overall training loss across all experiments (`all loss: 3.8088`, `prob loss: 1.3252`, `ownership loss: 0.7545`, `scores loss: 0.0746`). However, narrowing the rule/komi distribution in Phase 2 caused *distribution contraction*—making self-play trajectories easier for the `96ch` network to imitate without expanding its out-of-distribution generalization against `SAI b8c160`.
+(Note: Because network width and rule/komi distributions differ between Exp 4 and Exp 5, raw training loss values are not directly comparable on an identical baseline; the paradox primarily reflects intra-model distribution contraction between Phase 1 and Phase 2.)
 2. **Capacity Bottleneck Under Deep Search (`1,200 playouts`):** While Exp 5 achieved a high draw rate (`47 draws / 200 games = 23.5%`) in familiar lines, `SAI b8c160` exploited subtle endgame/life-and-death variations outside `96ch`'s representational capacity. Ultimately, **network width (`128ch` in Exp 4) and `scores loss` precision (`0.0686` vs. `0.0746`) proved to be the decisive factors** for deep-playout parity.
 
 ### Phase 6: 100% Pure Gumbel & Fast Muon Stability (`Exp 6`)
@@ -158,7 +159,7 @@ To validate the combined efficacy of every breakthrough discovered across `Exp 1
 2. **Use `muP` Width Scaling (`sqrt(d_old / d_new)`) to Save Compute:** Tune learning rates on a fast, small proxy network (`96ch`), then scale directly to wider models (`128ch+`) via `LR_new = LR_old * sqrt(d_old / d_new)`.
 3. **Terminate SWA Strictly Before the Cosine Cycle Resets:** Ensure `WarmUpSteps + LearningRateAnnealingCycle > TargetStopSteps` so post-cycle LR spikes never enter the trailing SWA averaging window.
 4. **Preserve Exploration Diversity in Late Self-Play:** In games with high draw rates (9x9 Go, Chess), overly greedy late-stage self-play triggers mode collapse toward passive draws. Keeping moderate opening randomness (`~0.25`) and score utility (`~0.28`) balances offensive initiative with defensive resilience.
-5. **Beware the Training Loss vs. Elo Paradox:** A sharp drop in self-play training loss after narrowing rules or komi can reflect *policy distribution contraction* (echo-chamber imitation) rather than true playing strength. Always validate checkpoints via cross-engine benchmarks, and rely on sufficient channel width (`>= 128ch`) for out-of-distribution robustness.
+5. **Beware the Training Loss vs. Elo Paradox:** A sharp drop in self-play training loss (especially when comparing checkpoints trained on different data distributions or model capacities) after narrowing rules or komi can reflect *policy distribution contraction* (echo-chamber imitation) rather than true playing strength. Always validate checkpoints via cross-engine benchmarks, and rely on sufficient channel width (`>= 128ch`) for out-of-distribution robustness.
 
 ## 4.5 The "AlphaZero × Muon + Transformer" Success Recipe
 
@@ -173,7 +174,7 @@ Successfully marrying fast orthogonalized optimizers (**Muon**) and **Transforme
 
 ## 4.6 Final Project Conclusions
 
-Across seven iterative experiments (`Exp 1 – Exp 7`), we conclude the project with three foundational takeaways:
+Across eight experimental stages (Exp 1 – Exp 7, including Exp 3.5), we conclude the project with three foundational takeaways:
 1. **Data Diversity is Mandatory for Stable Fast-Optimizer RL:** Mixing distinct MCTS search personalities (`Balance`, `Offense`, `Defense`), retaining multi-rule and multi-board-size queries (`5%` `7x7`/`8x8` in late stages), and preserving opening randomness are essential to prevent Muon's aggressive spectral updates from collapsing into narrow local optima.
 2. **Peak Playing Strength Requires Proportional Model Scale & Search Depth:** While algorithmic innovation enables a compact `b6xc128h32` model to defeat `SAI b8c160` (`+16 Elo`), breaking into the tier of heavily scaled architectures (`b12xc384nbt`) fundamentally requires scaling network width/depth and deep self-play search budgets.
 3. **Practical Single-GPU Research Velocity is Viable:** By combining **Head-Split Muon**, **Hybrid ResNet-Transformer blocks**, and **Gumbel AlphaZero**, meaningful, reproducible reinforcement learning research in 9x9 Go can be completed on a single GPU in just **~400,000 self-play games and 310,000 training steps**.
@@ -187,7 +188,7 @@ Across seven iterative experiments (`Exp 1 – Exp 7`), we conclude the project 
 * **2-Stage Gumbel Curriculum & 3-Personality Self-Play (`310K` steps / ~400K games total):**
   * **Stage 1 (`0 – 100K`)**: `128 playouts` (`100% Pure Gumbel`), `80%` 9x9 + `20%` 7x7/8x8 boards
   * **Stage 2 (`100K – 310K`)**: `256 playouts` (`Gumbel + PUCT` hybrid), `95%` 9x9 + `5%` 7x7/8x8 boards
-  * **3-Personality Worker Mixture (all stages)**: `Balance` (~47%), `Defense` (~26.5%, `cpuct-init: 0.30`, `lcb-reduction: 0.5`, `score-utility: 0.08`), and `Offense` (~26.5%, `cpuct-init: 0.85`, `score-utility: 0.85`, `komi-stddev: 3.5`)
+  * **3-Personality Worker Mixture (all stages)**: `Balance` (~47%), `Defense` (~26.5%, `cpuct-init: 0.30`, `lcb-reduction: 0.5`, `score-utility-factor: 0.08`), and `Offense` (~26.5%, `cpuct-init: 0.85`, `score-utility: 0.85`, `komi-stddev: 3.5`)
 * **Recommended Evaluation Inference Flags:** `--lcb-reduction 0.0 --score-utility-factor 0.15 --cpuct-init 0.70 --use-optimistic-policy --reuse-tree`
 
 > **The details of each experiment are provided, see **[Experiment-by-Experiment Technical Breakdown](./docs/exp_report.md).**
@@ -196,7 +197,7 @@ Across seven iterative experiments (`Exp 1 – Exp 7`), we conclude the project 
 
 ## 6. Broader Implications: Lessons from RL for Big Data & Diversity Preservation
 
-Beyond board game AI, the training dynamics uncovered in `Exp 1 – Exp 6` offer a stark warning for how modern **big data** and real-world machine learning pipelines are curated and optimized. In our experiments, preserving **irreducible data diversity** proved to be the single most critical factor separating true out-of-distribution strength (`Exp 4`) from brittle collapse (`Exp 3.5`, `Exp 5`). When big data systems prioritize short-term optimization over distributional breadth, they fall into the exact same traps observed in our self-play loops:
+Beyond board game AI, the training dynamics uncovered in `Exp 1 – Exp 6` offer a stark warning for how modern **big data** and real-world machine learning pipelines are curated and optimized. In our experiments, preserving **irreducible data diversity** proved to be the single most critical factor separating true out-of-distribution strength (`Exp 4`) from brittle collapse (`Exp 3.5`, `Exp 5`). When big data systems prioritize short-term optimization over distributional breadth, they fall into the structural analogs of the traps observed in our self-play loops (viewed as structural analogies from RL mode collapse):
 
 1. **Beware the "Loss–Strength Paradox" (Distribution Contraction & Echo Chambers):**
    In `Exp 5`, narrowing the self-play rule/komi distribution produced our lowest training loss (`3.8088`), yet actual playing strength stagnated (`-162 Elo`) because the network merely imitated a shrinking, self-reinforcing data loop. Similarly, in real-world big data systems (such as recommendation engines and automated decision pipelines), optimizing solely for immediate engagement or narrow accuracy metrics creates **echo chambers and filter bubbles**. The model reinforces majority patterns while starving future training cycles of diverse, out-of-distribution edge cases—leading to silent model collapse and societal homogenization.

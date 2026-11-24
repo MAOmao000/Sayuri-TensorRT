@@ -140,6 +140,7 @@ Test whether mixing self-play data from three distinct MCTS search personalities
 * **Substantial Intra-Model Gain (`+73 Elo`):** High-playout (`600`) warm restart distillation with optimistic policy search boosted Point Win Rate by `+7.75%` (`20.50% -> 28.25%`), raising Black's point win rate by `+10.2` percentage points (`16.8% -> 27.0%`).
 * **The Training Loss vs. Elo Paradox:** Despite achieving lower training losses (`all loss: 3.8088`) than `Exp 4` (`4.2327`), Exp 5 trailed `Exp 4` (`45.00%` Point Win Rate) by `127 Elo`. Narrowing rule/komi distributions in Phase 2 induced *policy distribution contraction*—allowing the `96ch` model to tightly imitate its own self-play trajectories without acquiring the out-of-distribution generalization required against `SAI b8c160` at `1,200 playouts`.
 * **Takeaway:** Multi-config exploration diversity and high-playout distillation reliably strengthen a fixed topology, but cannot substitute for sufficient channel capacity (`128ch`) and `scores loss` precision (`0.0686`) in deep-search competitive play.
+* **Statistical Caveat on Cross-Model Loss Comparisons:** Due to differences in network width (`96ch` vs. `128ch`) and target data distributions across experiments, raw loss values are not directly comparable; conclusions should instead rely on intra-model phase transitions.
 
 ---
 
@@ -221,4 +222,5 @@ Evaluated using our neutral inference configuration (`--lcb-reduction 0.0 --scor
    * **Data diversity is indispensable** for stable, non-collapsing reinforcement learning under fast orthogonalized optimizers.
    * **Peak Elo progression requires appropriate model scale and deep search budgets** once algorithmic efficiency has been maximized.
    * **High-impact RL research is viable on single-GPU hardware:** Using our proposed architecture and training pipeline, a compact `b6xc128h32` model trained over just **~400K self-play games and 310K steps** provides a fast, reproducible, and competitive experimental platform—concluding this series of experiments.
+4. **Methodological Note (Synthesis vs. Ablation):** Because Exp 7 combines multiple modifications simultaneously to test system synergy, isolating the individual contribution of each component through ablation studies is left for future work.
 
