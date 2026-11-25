@@ -1,4 +1,4 @@
-# 防御型 (selfplay_defense.cfg)：850局（全体の約26.5%）
+# Defensive Type (selfplay_defense.cfg): 850 games (approx. 26.5% of total)
 --random-moves-factor 0.15
 
 --komi-stddev 0.5

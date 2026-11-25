@@ -1,4 +1,4 @@
-# 攻撃型 (selfplay_attack.cfg)：850局（後期）
+# Offensive Type (selfplay_attack.cfg): 850 games (Late Stage)
 --random-moves-factor 0.15
 
 --komi-stddev 3.5

@@ -1,14 +1,14 @@
-# SAI 9x9 本番対局時：選ばれた SWA モデルを使い
+# SAI 9x9 Production Match: Use the selected SWA model
 #   --playouts 1200
-#   コミ 7
-#   中国ルール
+#   Komi 7
+#   Chinese rules
 #   --cpuct-init 0.65
 #   --lcb-reduction 0.0
 #   --score-utility-factor 0.15
 #   --use-optimistic-policy
-# で対局させてください。
+# for playing matches.
 
-# バランス型 (selfplay_balance.cfg)：1,500局（全体の約47%）
+# Balanced Type (selfplay_balance.cfg): 1,500 games (approx. 47% of total)
 --random-moves-factor 0.15
 
 --komi-stddev 1.5
@@ -27,7 +27,7 @@
 --score-utility-factor 0.35
 --score-utility-div 1.0
 
-# 前期：9路盤メイン(80%) + 8路盤(10%) + 7路盤(10%)で局地戦を補強
+# Early Stage: Reinforce local fighting with 9x9 main (80%) + 8x8 (10%) + 7x7 (10%)
 --selfplay-query bkp:9:7:0.70  --selfplay-query bhp:9:6:0.10
 --selfplay-query bkp:8:7:0.10
 --selfplay-query bkp:7:7:0.10
@@ -35,7 +35,7 @@
 --selfplay-query srs:area
 --selfplay-query srs:territory
 
-# 前期：128プレイアウト・100% Pure Gumbel
+# Early Stage: 128 playouts, 100% Pure Gumbel
 --playouts 128
 --gumbel
 --gumbel-playouts-threshold 400
@@ -46,7 +46,7 @@
 --resign-threshold 0.05
 --resign-discard-prob 0.9
 
-# RTX 5060 直列実行向け最適化
+# Optimization for RTX 5060 sequential execution
 --parallel-games 192
 --cache-memory-mib 1024
 --early-symm-cache

@@ -1,4 +1,4 @@
-# 防御型 (selfplay_defense.cfg)：850局（後期）
+# Defensive Type (selfplay_defense.cfg): 850 games (Late Stage)
 --random-moves-factor 0.15
 
 --komi-stddev 0.5

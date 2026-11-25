@@ -1,4 +1,4 @@
-# バランス型 (selfplay_balance.cfg)：1,500局（後期）
+# Balanced Type (selfplay_balance.cfg): 1,500 games (Late Stage)
 --random-moves-factor 0.15
 
 --komi-stddev 1.5
@@ -17,7 +17,7 @@
 --score-utility-factor 0.30
 --score-utility-div 1.0
 
-# 後期：9路盤比率を95%へ引き上げつつ、過学習防止のため7・8路盤を5%残す
+# Late Stage: Increase 9x9 ratio to 95%, while keeping 5% of 7x7 and 8x8 to prevent overfitting
 --selfplay-query bkp:9:7:0.85  --selfplay-query bhp:9:6:0.10
 --selfplay-query bkp:8:7:0.03
 --selfplay-query bkp:7:7:0.02
@@ -25,7 +25,7 @@
 --selfplay-query srs:area
 --selfplay-query srs:territory
 
-# 後期：256プレイアウト + Gumbel/PUCTハイブリッド
+# Late Stage: 256 playouts + Gumbel/PUCT hybrid
 --playouts 256
 --gumbel
 --gumbel-playouts-threshold 128
