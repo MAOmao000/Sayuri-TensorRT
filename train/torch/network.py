@@ -1826,7 +1826,7 @@ class TransformerAttentionBlock(nn.Module):
             nn.init.xavier_normal_(self.q_proj.weight, gain=compute_gain(self.activation))
             nn.init.xavier_normal_(self.k_proj.weight, gain=compute_gain(self.activation))
             nn.init.xavier_normal_(self.v_proj.weight, gain=compute_gain(self.activation))
-            nn.init.xavier_normal_(self.out_proj.weight, gain=compute_gain(self.activation))
+            nn.init.xavier_normal_(self.out_proj.weight, gain=compute_gain(self.activation) * 0.5)
             if self.use_swiglu:
                 nn.init.xavier_normal_(self.ffn_linear1.weight, gain=compute_gain("silu"))
                 nn.init.xavier_normal_(self.ffn_linear_gate.weight, gain=compute_gain("silu"))
@@ -1834,17 +1834,14 @@ class TransformerAttentionBlock(nn.Module):
                 nn.init.xavier_normal_(self.ffn_linear1.weight, gain=compute_gain(self.activation))
             if self.use_depthwise_conv:
                 nn.init.xavier_normal_(self.ffn_dwconv.weight, gain=compute_gain(self.activation))
-                nn.init.xavier_normal_(self.ffn_linear2.weight, gain=compute_gain(self.activation))
+                nn.init.xavier_normal_(self.ffn_linear2.weight, gain=compute_gain(self.activation) * 0.5)
+            else:
+                nn.init.xavier_normal_(self.ffn_linear2.weight, gain=compute_gain(self.activation) * 0.5)
         else:
             # Initialize according to Fixup mode (apply scale)
-            # It is standard in Fixup papers to initialize the output side of the residual connection
-            # (out_proj and ffn_linear2) to 0.0, but here we consistently keep the input, intermediate,
-            # and output to a small scale to prevent the entire network from exploding.
             init_weights(self.q_proj.weight, self.activation, scale=fixup_scale)
             init_weights(self.k_proj.weight, self.activation, scale=fixup_scale)
             init_weights(self.v_proj.weight, self.activation, scale=fixup_scale)
-            # The output projection makes the residual contribution initially close to zero,
-            # so it is useful to have it at a smaller scale (or 0.0)
             init_weights(self.out_proj.weight, self.activation, scale=fixup_scale * 0.5)
             if self.use_swiglu:
                 init_weights(self.ffn_linear1.weight, "silu", scale=fixup_scale)
@@ -1855,7 +1852,6 @@ class TransformerAttentionBlock(nn.Module):
                 init_weights(self.ffn_dwconv.weight, self.activation, scale=fixup_scale)
                 init_weights(self.ffn_linear2.weight, self.activation, scale=fixup_scale * 0.5)
             else:
-                # Initialization of second Linear layer is required even if depthwise_conv is not present
                 init_weights(self.ffn_linear2.weight, self.activation, scale=fixup_scale * 0.5)
 
     def _compute_tab_bias(self, x_norm, mask, mask_sum_hw, block_shared_data):

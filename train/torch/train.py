@@ -1374,14 +1374,14 @@ class BatchGenerator:
             batch_weight.append(weight)
 
         batch_dict = {
-            "planes"    : torch.from_numpy(np.array(batch_planes)).float(),
-            "prob"      : torch.from_numpy(np.array(batch_prob)).float(),
-            "aux_prob"  : torch.from_numpy(np.array(batch_aux_prob)).float(),
-            "ownership" : torch.from_numpy(np.array(batch_ownership)).float(),
-            "wdl"       : torch.from_numpy(np.array(batch_wdl)).float(),
-            "q_vals"    : torch.from_numpy(np.array(batch_q_vals)).float(),
-            "scores"    : torch.from_numpy(np.array(batch_scores)).float(),
-            "weight"    : torch.from_numpy(np.array(batch_weight)).float(),
+            "planes"    : torch.from_numpy(np.stack(batch_planes, axis=0)).float(),
+            "prob"      : torch.from_numpy(np.stack(batch_prob, axis=0)).float(),
+            "aux_prob"  : torch.from_numpy(np.stack(batch_aux_prob, axis=0)).float(),
+            "ownership" : torch.from_numpy(np.stack(batch_ownership, axis=0)).float(),
+            "wdl"       : torch.from_numpy(np.stack(batch_wdl, axis=0)).float(),
+            "q_vals"    : torch.from_numpy(np.stack(batch_q_vals, axis=0)).float(),
+            "scores"    : torch.from_numpy(np.stack(batch_scores, axis=0)).float(),
+            "weight"    : torch.tensor(batch_weight, dtype=torch.float32),
         }
         return batch_dict
 
@@ -1447,10 +1447,19 @@ class TrainingPipe():
         # The training device.
         self.use_gpu = cfg.use_gpu
         self.device = torch.device("cuda") if self.use_gpu else torch.device("cpu")
-        self.use_fp16 = cfg.use_fp16
+        self.use_amp = cfg.use_fp16 and self.use_gpu
         if (self.opt_name == "Muon" or self.opt_name == "Aurora") and not torch.cuda.is_bf16_supported():
-            self.use_fp16 = False
-        self.scaler = torch.amp.GradScaler("cuda") if self.use_fp16 else None
+            self.use_amp = False
+
+        if self.use_amp and torch.cuda.is_bf16_supported():
+            self.amp_type = torch.bfloat16
+        else:
+            self.amp_type = torch.float16
+
+        # GradScaler is only required for float16, NOT for bfloat16
+        self.use_scaler = self.use_amp and (self.amp_type == torch.float16)
+        self.scaler = torch.amp.GradScaler("cuda") if self.use_scaler else None
+
         self.net = Network(cfg)
         self.net.train()
         self.netname_postfix = cfg.netname_postfix
@@ -1604,9 +1613,9 @@ class TrainingPipe():
                 return 0.005000 * 0.5 * wd_scaling
             else:
                 return 0.000001 * 0.5 * wd_scaling
-        elif group_name == "input_noreg" or group_name == "noreg":
+        elif group_name in ["input_noreg", "noreg"]:
             return 0.00000001 * wd_scaling
-        elif group_name == "output_noreg" or "value_noreg":
+        elif group_name in ["output_noreg", "value_noreg"]:
             return 0.00000001 * wd_scaling
         else:
             assert False
@@ -2048,7 +2057,7 @@ class TrainingPipe():
         # Move the data to the current device.
         if self.use_gpu:
             for k, v in batch_dict.items():
-                v = v.to(self.device)
+                batch_dict[k] = v.to(self.device, non_blocking=True)
 
         # Gather batch data
         planes = batch_dict["planes"]
@@ -2120,17 +2129,12 @@ class TrainingPipe():
         macro_steps = 0 # actually network forwarding times
         clock_time = time.time() # current time stamp
 
-        if self.use_fp16 and torch.cuda.is_bf16_supported():
-            amp_type = torch.bfloat16
-        else:
-            amp_type = torch.float16
-
         while keep_running:
             for _ in range(self.steps_per_epoch):
                 planes, target = self._gather_data_from_loader(True)
 
                 # forward and backward for loss
-                with torch.amp.autocast("cuda", enabled=self.use_fp16, dtype=amp_type):
+                with torch.amp.autocast("cuda", enabled=self.use_amp, dtype=self.amp_type):
                     if self.cfg.use_compile:
                         planes = planes.to(self.device)
                         target_to = ()
@@ -2152,15 +2156,11 @@ class TrainingPipe():
                         )
                     loss, all_loss_dict = self._handle_loss(all_loss_dict)
 
-                    # Attention logit bound penalty (kept out of loss_sum so the main loss stays comparable
-                    # across runs; logged as its own metrics). mean * batch_size rather than sum: with
-                    # attn-logit-penalty-batch-frac < 1 the penalty is computed on a slice of the batch,
-                    # and this keeps it an unbiased estimate of the full-batch sum (coeff meaning unchanged).
                     if self.attn_logit_penalty_cap is not None:
                         attn_pen_sum = self.module.attn_logit_penalty_per_sample.mean() * self.batchsize
                         loss = loss + self.attn_logit_penalty_coeff * attn_pen_sum
 
-                if self.use_fp16:
+                if self.use_scaler:
                     self.scaler.scale(loss).backward()
                     self.scaler.unscale_(self.opt)
                 else:
@@ -2233,12 +2233,12 @@ class TrainingPipe():
                         self.net.parameters(), max_norm=gnorm_cap).detach().cpu().item()
 
                     # update network parameters
-                    if self.use_fp16:
+                    if self.use_scaler:
                         self.scaler.step(self.opt)
                         self.scaler.update()
                     else:
                         self.opt.step()
-                    self.opt.zero_grad() 
+                    self.opt.zero_grad()
 
                     # update current count
                     self.current_steps += 1
