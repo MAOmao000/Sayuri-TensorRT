@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from itertools import repeat
 from typing import List, Sequence, Tuple
 import torch
+torch._dynamo.config.cache_size_limit = 32
 # Dealing with errors regarding aten.sort.stable in onnx.export
 from torch._decomp import register_decomposition
 # Get definition of internal operator
