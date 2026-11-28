@@ -1,0 +1,43 @@
+# Balanced type (selfplay-config-balance.txt): 1,500 games (later stage)
+--random-moves-factor 0.15
+
+--komi-stddev 1.5
+--komi-big-stddev-prob 0.05
+--komi-big-stddev 6.0
+--handicap-fair-komi-prob 0.5
+
+--cpuct-init 0.5
+--cpuct-base 19652
+--cpuct-base-factor 1
+
+--fpu-reduction 0.25
+--root-fpu-reduction 0.25
+
+--lcb-reduction 0.0
+--score-utility-factor 0.30
+--score-utility-div 1.0
+
+# Later stage: Increase the proportion of 9x9 boards to 95%, while retaining 7x7 and 8x8 boards for the remaining 5% to prevent overfitting.
+--selfplay-query bkp:9:7:0.85  --selfplay-query bhp:9:6:0.10
+--selfplay-query bkp:8:7:0.03
+--selfplay-query bkp:7:7:0.02
+
+--selfplay-query srs:area
+--selfplay-query srs:territory
+
+# Later stage: 256 playouts + Gumbel/PUCT hybrid
+--playouts 256
+--gumbel
+--gumbel-playouts-threshold 128
+--gumbel-prom-visits 2
+--always-completed-q-policy
+
+--resign-playouts 100
+--resign-threshold 0.05
+--resign-discard-prob 0.9
+
+--parallel-games 192
+--cache-memory-mib 1024
+--early-symm-cache
+
+--num-games 1500

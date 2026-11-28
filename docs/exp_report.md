@@ -1,6 +1,6 @@
 # Experiment-by-Experiment Technical Breakdown (Exp 1 – Exp 7)
 
-This document provides an individual summary, architectural configuration, training dynamics, and key takeaways for each of the **eight experimental stages** (`Exp 1` through `Exp 7`) conducted on 9x9 Go (`Chinese rules`, `Komi 7.0`, evaluated over `200` games at `1,200 playouts/move` against `SAI b8c160`).
+This document provides an individual summary, architectural configuration, training dynamics, and key takeaways for each of the **eight experimental stages** (`Exp 1` through `Exp 7`, including Exp 3.5) plus a postscript run (Exp 8) conducted on 9x9 Go (`Chinese rules`, `Komi 7.0`, evaluated over `200` games at `1,200 playouts/move` against `SAI b8c160`).
 
 
 
@@ -175,7 +175,7 @@ Evaluate the pure behavior of **100% Gumbel AlphaZero** (setting `--gumbel-playo
 
 ### 1. Objective & Configuration
 To verify the combined validity of all architectural, optimization, and self-play insights discovered across `Exp 1 – Exp 6`, we designed a unified single-cycle experiment using the compact **`b6xc128h32` (`RRTRRT`)** topology and evaluated its final strength against both `SAI b8c160` and the massive upstream `Sayuri b12xc384nbt` engine.
-* **Topology:** `b6xc128h32` (`Res-Res-Trans-Res-Res-Trans`, `ResidualChannels: 128`, `TransformerHeads: 4`, `AttentionHeadDim: 32`, `TransformerFFNChannels: 512`, `PolicyHeadChannels: 48`, `ValueHeadChannels: 96`, `FinalBlockCgroupSize: 32` [`4 x 32ch` spatial RMSNormMask], `BatchNormMode: fixup`, `AttnLogitPenaltyCap: 30.0`)
+* **Topology:** `b6xc128h32` (`Res-Res-Trans-Res-Res-Trans`, `ResidualChannels: 128`, `TransformerHeads: 4`, `head_dim: 32`, `TransformerFFNChannels: 512`, `PolicyHeadChannels: 48`, `ValueHeadChannels: 96`, `FinalBlockCgroupSize: 32` [`4 x 32ch` spatial RMSNormMask], `BatchNormMode: fixup`, `AttnLogitPenaltyCap: 30.0`)
 * **Optimizer & Clean SWA Termination:** `Head-Split Muon` (`WarmUpSteps: 12,000`, `Peak LR: 3.46e-3 -> 2.50e-4`, `LearningRateAnnealingCycle: 300,010` $\rightarrow$ trough at `312,010`, `MuonAdamLrFactor: 0.25`). Training was stopped cleanly at **`310,000` steps** (~400,000 self-play games) prior to the cosine cycle reset to guarantee zero LR-spike contamination in the trailing SWA checkpoints.
 * **Two-Stage Gumbel Curriculum & 3-Personality Mixture:**
   * *Stage 1 (`0 – 100K` steps):* `128 playouts` (`100% Pure Gumbel`), `80%` 9x9 + `20%` 7x7/8x8 boards
@@ -223,4 +223,38 @@ Evaluated using our neutral inference configuration (`--lcb-reduction 0.0 --scor
    * **Peak Elo progression requires appropriate model scale and deep search budgets** once algorithmic efficiency has been maximized.
    * **High-impact RL research is viable on single-GPU hardware:** Using our proposed architecture and training pipeline, a compact `b6xc128h32` model trained over just **~400K self-play games and 310K steps** provides a fast, reproducible, and competitive experimental platform—concluding this series of experiments.
 4. **Methodological Note (Synthesis vs. Ablation):** Because Exp 7 combines multiple modifications simultaneously to test system synergy, isolating the individual contribution of each component through ablation studies is left for future work.
+
+---
+
+## Appendix: Experiment 8 — Symmetry Bugfix & Accidental Single-Stage Run (`b6xc128h32`, `0 -> 310K`)
+
+### 1. Context & Accidental Setup
+Following the completion of our main roadmap in `Exp 7`, `Exp 8` was launched purely as an engineering sanity check to verify:
+1. A fix for a board-symmetry augmentation bug **introduced by the author during custom `torch.onnx.export` modifications (not a bug in upstream Sayuri)**.
+2. Training throughput optimizations (`~14.5–15.5 it/s` steady-state via `UseBatchedMuonNs` and `UseForeachAuxAdam`).
+
+Due to an accidental configuration carryover, Stage 2 self-play and training settings (`256 playouts`, Gumbel+PUCT hybrid with `threshold: 128`, `95%` 9x9 / `5%` `7x7–8x8` boards, `Peak LR: 3.46e-3`, `WarmUpSteps: 12,000`, `AnnealingCycle: 300,010`) were applied directly from Step `0` in a single continuous `310K`-step cycle (`79.36M` samples), skipping Stage 1's `128`-playout Pure Gumbel / `20%` small-board foundation phase.
+
+### 2. Training Dynamics (`Exp 7` vs. `Exp 8`)
+
+<div align="center">
+  <img src="../experimental_results/exp8/policy_wdl_overlay.png" alt="Policy and WDL Loss Comparison" width="800"/>
+</div>
+
+* **Early Acceleration vs. Mid-Game Value Inflation (`0K -> 180K`):** With intact 8x dihedral augmentation, `prob loss` and `ownership loss` dropped rapidly in the first `40K` steps (`all: 4.8098`, `wdl: 0.4841` at `42K`). However, without Stage 1's small-board (`7x7`/`8x8`) value anchor, high-playout `9x9` (`Komi 7.0`) self-play rapidly saturated into close, *Jigo*-boundary games—pushing `wdl loss` up to `0.5425` (`88K`) and holding it in a flat `0.522–0.524` plateau from `120K` to `180K`.
+* **Late-Stage V-Shaped Convergence (`180K -> 310K`):** Once cosine learning rate decay dropped below `1.5e-3` (`~180K` steps), `wdl loss` broke downward—hitting a single-checkpoint low of **`0.4736`** at `282.5K` steps (undercutting `Exp 7`'s `0.4776` benchmark)—while `all loss` (`3.8226` min / `3.8544` at `310K`), `prob loss` (`1.5153` min / `1.5273` at `310K`), `ownership loss` (`0.6633` min / `0.6711` at `310K`), and `scores loss` (`0.0614` min / `0.0623` at `310K`) converged smoothly into the `310K` SWA window.
+
+### 3. Benchmark Results (`200` Games @ `1,200` Playouts, `s310000-swa.onnx`)
+
+| Opponent & Inference Settings | Black (`W/D/L`) | White (`W/D/L`) | Total (`W/D/L`) | **Point Win Rate** | **Est. Elo Diff** | Non-Loss (`W+D`) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **vs. `SAI b8c160`** (Initial: `cpuct 0.70, lcb 0.0, score 0.15`) | `32 / 18 / 42` | `44 / 32 / 32` | `76 / 50 / 74` | `50.50%` | `+3.5 Elo` | `63.0%` |
+| **vs. `SAI b8c160`** (Neutral: `cpuct 0.65, lcb 0.0, score 0.15`) | `46 / 24 / 38` | `28 / 31 / 33` | `74 / 55 / 71` | `50.75%` | `+5.2 Elo` | `64.5%` |
+| **vs. `SAI b8c160`** (**Tuned: `cpuct 0.58, lcb 0.20, score 0.06`**) | **`42 / 21 / 40`** | **`41 / 20 / 36`** | **`83 / 41 / 76`** | **`51.50%`** | **`+10.4 Elo`** | **`62.0%`** |
+| **vs. `Sayuri b12xc384nbt`** (**Tuned: `cpuct 0.58, lcb 0.20, score 0.06`**) | `8 / 20 / 64` | `11 / 21 / 76` | `19 / 41 / 140` | `19.75%` | `-243 Elo` | `30.0%` |
+
+### 4. Engineering & Methodological Takeaways
+1. **Inference Search Calibration Eliminates Color Bias:** Lowering `--score-utility-factor` (`0.15 -> 0.06`), narrowing `--cpuct-init` (`0.70 -> 0.58`) to match the self-play worker distribution, and enabling mild LCB (`--lcb-reduction 0.20`) converted draws into decisive wins (`55D -> 41D`) and balanced Black (`50.97%`) and White (`52.58%`) performance against `SAI b8c160` (`+10.4 Elo`).
+2. **Value Foundation Matters (`Exp 7` vs. `Exp 8`):** While clean 8x symmetry augmentation enabled `Exp 8` to beat `SAI b8c160` in a single stage without curriculum transitions, `Exp 7`'s 2-stage curriculum still outperformed `Exp 8` against both `SAI b8c160` (`+16 Elo` vs. `+5.2 / +10.4 Elo`) and `Sayuri b12xc384nbt` (`-186 Elo` vs. `-243 Elo`), confirming the benefit of a small-board Pure Gumbel warm-start phase for stabilizing early value targets.
+3. **Generalization & Future Scope:** All findings in `Exp 1–8` apply specifically to zero-scratch 9x9 Go self-play using the lightweight `RRTRRT` trunk. Future work will explore `NorMuon` (`use_normuon=True`), `Aurora` optimization, late-stage `ns_steps` decay (`5 -> 2/1`), single-variable ablations, and automated `training.log`-driven curriculum switching.
 

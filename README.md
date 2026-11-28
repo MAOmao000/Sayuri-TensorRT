@@ -6,6 +6,11 @@
 
 # Chasing the Shadow of SAI: The Marriage of AlphaZero and the Muon Optimizer
 
+> **🚀 TL;DR — Can a tiny model beat a classic engine with modern RL tricks?**
+> * **Ultra-Compact Giant-Killing:** A lightweight 6-block Hybrid ResNet-Transformer (`b6xc128h32`) trained with **Head-Split Muon** and **Gumbel AlphaZero** defeats the larger `SAI b8c160` (`52.25%` win rate / `+16 Elo`) in 9x9 Go.
+> * **Single-GPU Velocity:** Reached target strength in just **310K steps (~400K self-play games)** in a single cycle without warm restarts, avoiding RL mode collapse via a 3-personality MCTS mixture.
+> * **Reproducible Blueprint:** Includes full training configs, loss curves, and battle-tested hyperparameters for stabilizing fast orthogonalized optimizers (Muon) in non-stationary AlphaZero self-play.
+
 This repository contains experimental results, training configurations, and logs aimed at reaching the playing strength of **SAI** (*Sensible Artificial Intelligence*) using a compact **Hybrid ResNet-Transformer** trained with **Head-Split Muon** and **Gumbel AlphaZero** on top of the open-source Sayuri engine.
 
 > **⚠ Note on Releases & Precompiled Binaries:**  
@@ -15,12 +20,14 @@ This repository contains experimental results, training configurations, and logs
 
 ## 🧭 Quick Navigation
 
-* 📊 **[Benchmark Summary](#2-cross-experiment-benchmark-summary-vs-sai-b8c160)** — 200-game match results vs. `SAI b8c160` (`Exp 1` – `Exp 7`) & `Sayuri b12xc384nbt`
+* 📊 **[Benchmark Summary](#2-cross-experiment-benchmark-summary-vs-sai-b8c160--upstream-sayuri)** — 200-game match results vs. `SAI b8c160` (`Exp 1` – `Exp 7`) & `Sayuri b12xc384nbt`
 * 📝 **[Experiment-by-Experiment Technical Breakdown](./docs/exp_report.md)** — Detailed analysis, loss curves, and failure modes
 * 📁 **[Experimental Results & Logs](./experimental_results)** — Raw evaluation outputs and training records
 * ⚙ **[Sample Training Configs](./bash/configs/sample)** — Ready-to-use `selfplay-setting.json` presets
 * 🛠 **[Build & Inference Guide](#requirements--build)** — C++ ONNX Runtime / TensorRT compilation steps
 * 🌐 **[Broader Implications for Big Data](#6-broader-implications-lessons-from-rl-for-big-data--diversity-preservation)** — Lessons on diversity preservation and echo chambers from RL
+* 🧪 **[Postscript: Unplanned Bonus Run (`Exp 8`)](#postscript-unplanned-bonus-run-exp-8--symmetry-fix--single-stage-stress-test)** — Symmetry bugfix & accidental single-stage run
+* 🔭 **[Future Work & Open TODOs](#47-future-work--open-todos)** — NorMuon, Aurora, late-stage `ns_steps` decay, ablations & auto-curriculum
 
 ---
 
@@ -73,6 +80,9 @@ For this experiment, we used "Sayuri" (https://github.com/CGLemon/Sayuri.git)—
 * Support for Muon Split (Referred to lc0)
 
 Using **9x9 Go (Chinese rules, Komi 7.0)** as a testbed, we combined a **Hybrid ResNet-Transformer architecture** with modern optimization techniques (**Head-Split Muon**, **$\mu$P width scaling**, and **Gumbel AlphaZero**). Our experiments demonstrate that a compact **`b6xc128h32` (`RRTRRT`, 6-block, 128-channel)** network trained in a **single 310K-step cycle (~400K self-play games) without warm restarts** **outperforms the larger `SAI b8c160` (8-block, 160-channel ResNet) baseline (`52.25%` Point Win Rate / `+16 Elo`)**—winning across both Black and White colors.
+> **📌 Scope & Architectural Caveats (Important Notes on Generalizability):**
+> * **Zero-Scratch 9x9 Self-Play Scope:** The findings, hyperparameters, and training recipes presented in this repository are specifically derived from **training AlphaZero-style 9x9 Go agents from scratch via pure self-play**. They do not necessarily transfer directly to supervised pre-training on large human datasets, full-sized 19x19 Go, or other board games such as Chess and Shogi.
+> * **Trunk Topology (`RRTRRT`):** The 6-block hybrid trunk (`Res-Res-Trans-Res-Res-Trans`) was selected as the **lightweight, high-throughput baseline** that satisfied our single-GPU experimental constraints—it is not guaranteed to be the strength-optimal block permutation. If peak playing strength is the sole objective, alternative block interleavings and depths should be systematically evaluated at each parameter scale.
 
 ## 2. Cross-Experiment Benchmark Summary (vs. `SAI b8c160` & Upstream `Sayuri`)
 
@@ -171,6 +181,7 @@ Successfully marrying fast orthogonalized optimizers (**Muon**) and **Transforme
 | **2. Attention & Logit Explosion** | Prevent Muon's large spectral updates from collapsing attention heads or exploding policy logits on sparse Gumbel targets. | **Split attention heads** (`head_dim: 32`), cap attention logits (**`AttnLogitPenaltyCap: 30.0`**), separate AdamW groups (**`MuonAdamLrFactor: 0.25`**), and scale Peak LR conservatively (`4.0e-3` for Pure Gumbel; `1.73e-2` with `muP` for PUCT-mixed). |
 | **3. Non-Stationary Overfitting** | Match optimization steps per cycle to replay buffer throughput so the network never memorizes immature early chunks. | Keep **`MaxStepsPerRunning` modest (`1,500` early $\rightarrow$ `2,500` mid/late)**, use **`PolicySurpriseFactor: 0.5`** to prioritize high-KL positions, and **terminate SWA strictly before the cosine cycle resets** (`WarmUpSteps + AnnealingCycle > StopSteps`). |
 | **4. Mode Collapse (Draw / Single-Line)** | Maintain irreducible strategic entropy so the compact network learns general Go principles rather than narrow lines. | Split self-play workers into **3 search personalities** (`Balance` / `Offense` / `Defense` varying `cpuct`, `fpu`, and `score-utility`), keep moderate opening randomness (`~0.25`), and disable LCB (`--lcb-reduction 0.0`) at evaluation. |
+| **5. Cold-Start Instability (Zero-Scratch RL)** | Stabilize early gradient updates when training from random initialization before self-play targets form coherent patterns. | Always apply a **linear learning rate warmup** (`WarmUpSteps: 12,000`) followed by a **smooth cosine annealing decay** (`3.46e-3 -> 2.50e-4`)—never start zero-scratch self-play at full peak LR. |
 
 ## 4.6 Final Project Conclusions
 
@@ -179,12 +190,22 @@ Across eight experimental stages (Exp 1 – Exp 7, including Exp 3.5), we conclu
 2. **Peak Playing Strength Requires Proportional Model Scale & Search Depth:** While algorithmic innovation enables a compact `b6xc128h32` model to defeat `SAI b8c160` (`+16 Elo`), breaking into the tier of heavily scaled architectures (`b12xc384nbt`) fundamentally requires scaling network width/depth and deep self-play search budgets.
 3. **Practical Single-GPU Research Velocity is Viable:** By combining **Head-Split Muon**, **Hybrid ResNet-Transformer blocks**, and **Gumbel AlphaZero**, meaningful, reproducible reinforcement learning research in 9x9 Go can be completed on a single GPU in just **~400,000 self-play games and 310,000 training steps**.
 
+## 4.7 Future Work & Open TODOs
+
+To further push sample efficiency, convergence stability, and reproducibility in future iterations, the following directions remain open for investigation:
+
+1. **Variance-Normalized Muon (`NorMuon`):** Evaluate `use_normuon=True` (disabled by default in `Exp 1–8`), which applies neuron-wise second-moment normalization analogous to the variance-braking mechanism highlighted in Hugging Face's RL field notes—testing both un-split attention projections and Head-Split Muon with `normuon_eps=1e-6`.
+2. **Neuron-Death Prevention via `Aurora`:** Benchmark the `Aurora+AdamW` optimizer (`"Optimizer": "Aurora"`, whereas all experimental runs (Exp 1–8) here used `"Muon"`) to assess whether adaptive neuron-death mitigation improves late-stage representational capacity.
+3. **Late-Stage Orthogonalization Relaxation (`ns_steps` Decay):** In all experiments here, Newton-Schulz iterations were fixed at `ns_steps = 5`. Reducing `ns_steps` to `2` or `1` exclusively during the final annealing phase may alleviate over-orthogonalization ("parking") and sharpen endgame policy convergence.
+4. **Strict Component-Wise Ablation Studies:** Isolate the individual Elo contributions of Head-Split Muon, `Fixup` normalization, `RepLK` policy heads, and the 3-personality self-play mixture through controlled single-variable ablations.
+5. **Automated Curriculum Switching:** Replace manual step-based stage transitions (`Stage 1 -> Stage 2`) with an automated scheduler that monitors `prob loss` convergence and `wdl loss` rebound saturation in `training.log` to trigger phase transitions hands-free.
+
 ---
 
 ## 5. Final Reference Configuration (`Exp 7: b6xc128h32`)
 
 * **Architecture:** 6-block Hybrid (`Res-Res-Trans-Res-Res-Trans`), `ResidualChannels: 128`, `TransformerHeads: 4` (`head_dim: 32`), `TransformerFFNChannels: 512`, `PolicyHeadChannels: 48`, `ValueHeadChannels: 96`, `FinalBlockCgroupSize: 32` (`4 x 32ch` spatial RMSNormMask), `BatchNormMode: fixup`, `Activation: silu`, `PolicyHeadType: RepLK`, `AttnLogitPenaltyCap: 30.0`
-* **Optimizer & Schedule:** `Head-Split Muon` (`Peak LR: 3.46e-3 -> 2.50e-4`, `WarmUpSteps: 12,000`, `LearningRateAnnealingCycle: 300,010` $\rightarrow$ stopped cleanly at `310,000` steps prior to cycle reset) + auxiliary AdamW (`MuonAdamLrFactor: 0.25`), `SwaSteps: 500`, `SwaMaxCount: 16`
+* **Optimizer & Schedule:** `Head-Split Muon` (`Peak LR: 3.46e-3, cosine decay target: 2.50e-4`, `WarmUpSteps: 12,000`, `LearningRateAnnealingCycle: 300,010` $\rightarrow$ stopped cleanly at `310,000` steps prior to cycle reset) + auxiliary AdamW (`MuonAdamLrFactor: 0.25`), `SwaSteps: 500`, `SwaMaxCount: 16`
 * **2-Stage Gumbel Curriculum & 3-Personality Self-Play (`310K` steps / ~400K games total):**
   * **Stage 1 (`0 – 100K`)**: `128 playouts` (`100% Pure Gumbel`), `80%` 9x9 + `20%` 7x7/8x8 boards
   * **Stage 2 (`100K – 310K`)**: `256 playouts` (`Gumbel + PUCT` hybrid), `95%` 9x9 + `5%` 7x7/8x8 boards
@@ -192,6 +213,28 @@ Across eight experimental stages (Exp 1 – Exp 7, including Exp 3.5), we conclu
 * **Recommended Evaluation Inference Flags:** `--lcb-reduction 0.0 --score-utility-factor 0.15 --cpuct-init 0.70 --use-optimistic-policy --reuse-tree`
 
 > **The details of each experiment are provided, see **[Experiment-by-Experiment Technical Breakdown](./docs/exp_report.md).**
+
+---
+
+## Postscript: Unplanned Bonus Run (`Exp 8` — Symmetry Fix & Single-Stage Stress Test)
+
+> **Note & Bug Attribution:** `Exp 7` concluded our primary roadmap. `Exp 8` was originally intended merely as a sanity check after fixing a board-symmetry augmentation bug **introduced by the author during custom `torch.onnx.export` integration (this was not a bug in upstream Sayuri)** and optimizing training throughput (`~14.5 it/s` via `UseBatchedMuonNs` / `UseForeachAuxAdam`). Due to an accidental configuration carryover, Stage 2 hyperparameters (`Peak LR: 3.46e-3`, `256 playouts`, `95%` 9x9) were applied from Step `0` in a single continuous `310K`-step cycle rather than a 2-stage curriculum.
+
+<div align="center">
+  <img src="./experimental_results/exp8/policy_wdl_overlay.png" alt="Exp 8 vs Exp 7 Policy and WDL Loss Overlay" width="800"/>
+  <p><i>Figure: Policy (<code>prob</code>) and WDL loss trajectories comparing single-stage <code>Exp 8</code> (solid lines, symmetry-fixed) against 2-stage <code>Exp 7</code> (dashed lines).</i></p>
+</div>
+
+* **Training Dynamics & Loss Convergence (`310K` Steps):**
+  * **Early Surge & Mid-Game Inflation (`0K -> 90K`):** Restoring clean 8x dihedral symmetry accelerated initial convergence (`10K–40K`), but skipping Stage 1's `7x7/8x8` curriculum caused `wdl loss` to climb to `0.5425` (`~90K`) and plateau around `0.522` (`120K–180K`) due to high-entropy *Jigo*/*half-point* self-play trajectories.
+  * **Late-Stage V-Shaped Recovery (`180K -> 310K`):** As cosine LR decayed below `1.5e-3`, `wdl loss` broke through its plateau—reaching a minimum of **`0.4736`** at `282.5K` (surpassing `Exp 7`'s `0.4776` baseline) and finishing at `310K` with `all: 3.8544`, `prob: 1.5273`, `ownership: 0.6711`, `wdl: 0.4929`, and `scores: 0.0623`.
+* **200-Game Benchmark Results (`1,200` Playouts/Move, SWA Weights):**
+  * **vs. `SAI b8c160` (Under Neutral Inference: `cpuct: 0.65, lcb: 0.0, score: 0.15`):** `74W / 55D / 71L` (`46/24/38` Black, `28/31/33` White) $\rightarrow$ **`50.75%` Point Win Rate (`+5.2 Elo`, `64.5%` Non-Loss)**.
+  * **vs. `SAI b8c160` (Under Tuned Inference: `cpuct: 0.58, lcb: 0.20, score: 0.06`):** **`83W / 41D / 76L`** (`42/21/40` Black, `41/20/36` White) $\rightarrow$ **`51.50%` Point Win Rate (`+10.4 Elo`, `62.0%` Non-Loss)**, achieving winning records across both colors.
+  * **vs. Upstream `Sayuri b12xc384nbt` (Tuned Inference):** `19W / 41D / 140L` (`8/20/64` Black, `11/21/76` White) $\rightarrow$ **`19.75%` Point Win Rate (`-243 Elo`, `30.0%` Non-Loss)**.
+* **Practical Takeaway:** Clean 8x symmetry augmentation + Head-Split Muon + 3-personality self-play is resilient enough to beat `SAI b8c160` (`+10.4 Elo`) even in a single-stage run, and tuning inference search (`cpuct: 0.58, lcb: 0.20, score: 0.06`) eliminates color bias. However, `Exp 7`'s 2-stage curriculum (`+16 Elo` vs. `SAI`, `-186 Elo` vs. `Sayuri b12xc384nbt`) still retains a clear `+6 to +11 Elo` edge by establishing a stronger foundational value baseline before concentrating on 9x9 `256`-playout play.
+
+*(Full numerical breakdowns and logs are documented in [`./docs/exp_report.md`](./docs/exp_report.md).)*
 
 ---
 
@@ -289,6 +332,8 @@ Additional configuration definitions (`selfplay-setting.json`):
     "AttnLogitPenaltyCap": None(default)      # Penalize attention layers whose per-head logit upper bound (scale * max||q|| * max||k||, incl off-board positions) exceeds this. None = disabled.
     "AttnLogitPenaltyCoeff": 1e-3(default)    # Loss coeff for the attention logit bound penalty (linear hinge, mean over heads, sum over layers, per sample)
     "AttnLogitPenaltyBatchFrac": 1.0(default) # Compute the attention logit penalty on only this fraction of each batch (cuts its cost proportionally, adds gradient variance)
+    ...
+    },
   "Train" : {
     "Optimizer": "SGD"(default)                    # ("SGD"|"Adam"|"Muon"|"Aurora")
     "LearningRateSchedule": [[0, 0.2]](default)    # first:  Number of steps at schedule start.
@@ -324,6 +369,7 @@ Additional configuration definitions (`selfplay-setting.json`):
     "GnormClipScale": 1.0(default)      # Scale relative to the default gradient clipping value.
 ```
 Deletion configuration definition (selfplay-setting.json):
+
 ```
   "Train" : {
     "RenormMaxR": 1(default)
